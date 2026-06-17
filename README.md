@@ -1,6 +1,6 @@
-# Veyra Core API
+# nexus-core
 
-NestJS Core API for gradually moving reusable Veyra and Aegis business logic out of n8n while keeping n8n responsible for triggers, credentials, delivery, and orchestration during the migration.
+NestJS API for gradually moving reusable Veyra and Aegis business logic out of n8n while keeping n8n responsible for triggers, credentials, delivery, and orchestration during the migration.
 
 This app is intentionally small. It is a service layer pilot, not a replacement for existing production workflows.
 

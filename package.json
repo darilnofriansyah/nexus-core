@@ -1,8 +1,8 @@
 {
-  "name": "@veyra/core-api",
+  "name": "nexus-core",
   "version": "0.1.0",
   "private": true,
-  "description": "NestJS Core API for gradually moving Veyra and Aegis business logic out of n8n.",
+  "description": "NestJS API for gradually moving Veyra and Aegis business logic out of n8n.",
   "scripts": {
     "build": "nest build",
     "format": "prettier --write \"src/**/*.ts\"",
