@@ -9,9 +9,36 @@ import {
   BudgetStatusRequestDto,
   BudgetStatusResponseDto,
 } from './budgets/dto/budget-status.dto';
+import {
+  OverspendingCheckRequestDto,
+  OverspendingCheckResponseDto,
+} from './budgets/dto/overspending-check.dto';
 import { VeyraTelegramMessageDto } from './dto/telegram-message.dto';
 import { IntentService } from './intent/intent.service';
+import {
+  ClassifyIntentRequestDto,
+  ClassifyIntentResponseDto,
+} from './intents/dto/classify-intent.dto';
+import { IntentsService } from './intents/intents.service';
 import { TelegramResponseFormatterService } from './telegram/telegram-response-formatter.service';
+import {
+  TransactionConfirmationPayloadRequestDto,
+  TransactionConfirmationPayloadResponseDto,
+} from './transactions/dto/confirmation-payload.dto';
+import {
+  ConfirmTransactionRequestDto,
+  ConfirmTransactionResponseDto,
+} from './transactions/dto/confirm-transaction.dto';
+import {
+  TransactionCategoryOptionsRequestDto,
+  TransactionCategoryOptionsResponseDto,
+  TransactionSetCategoryRequestDto,
+  TransactionSetCategoryResponseDto,
+} from './transactions/dto/category-callback.dto';
+import {
+  NormalizeTransactionRequestDto,
+  NormalizeTransactionResponseDto,
+} from './transactions/dto/normalize-transaction.dto';
 import { TransactionService } from './transactions/transaction.service';
 
 @Controller('veyra')
@@ -19,6 +46,7 @@ export class VeyraController {
   constructor(
     private readonly budgetService: BudgetService,
     private readonly intentService: IntentService,
+    private readonly intentsService: IntentsService,
     private readonly telegramFormatter: TelegramResponseFormatterService,
     private readonly transactionService: TransactionService,
   ) {}
@@ -36,6 +64,13 @@ export class VeyraController {
     });
   }
 
+  @Post('intents/classify')
+  classifyIntent(
+    @Body() body: ClassifyIntentRequestDto,
+  ): ClassifyIntentResponseDto {
+    return this.intentsService.classify(body);
+  }
+
   @Post('budgets/status')
   getBudgetStatus(
     @Body() body: BudgetStatusRequestDto,
@@ -48,5 +83,54 @@ export class VeyraController {
     @Body() body: BudgetUpsertRequestDto,
   ): Promise<BudgetUpsertResponseDto> {
     return this.budgetService.upsertBudget(body);
+  }
+
+  @Post('budgets/overspending-check')
+  checkOverspending(
+    @Body() body: OverspendingCheckRequestDto,
+  ): Promise<OverspendingCheckResponseDto> {
+    return this.budgetService.checkOverspending(body);
+  }
+
+  @Post('transactions/normalize')
+  normalizeTransaction(
+    @Body() body: NormalizeTransactionRequestDto,
+  ): Promise<NormalizeTransactionResponseDto> {
+    return this.transactionService.normalizeTransaction(body);
+  }
+
+  @Post('transactions/confirmation-payload')
+  buildTransactionConfirmationPayload(
+    @Body() body: TransactionConfirmationPayloadRequestDto,
+  ): TransactionConfirmationPayloadResponseDto {
+    return this.transactionService.buildConfirmationPayload(body);
+  }
+
+  @Post('transactions/confirm')
+  confirmTransaction(
+    @Body() body: ConfirmTransactionRequestDto,
+  ): Promise<ConfirmTransactionResponseDto> {
+    return this.transactionService.confirmTransaction(body);
+  }
+
+  @Post('transactions/cancel')
+  cancelTransaction(
+    @Body() body: ConfirmTransactionRequestDto,
+  ): Promise<ConfirmTransactionResponseDto> {
+    return this.transactionService.cancelTransaction(body);
+  }
+
+  @Post('transactions/category-options')
+  buildTransactionCategoryOptions(
+    @Body() body: TransactionCategoryOptionsRequestDto,
+  ): Promise<TransactionCategoryOptionsResponseDto> {
+    return this.transactionService.buildCategoryOptions(body);
+  }
+
+  @Post('transactions/set-category')
+  setTransactionCategory(
+    @Body() body: TransactionSetCategoryRequestDto,
+  ): Promise<TransactionSetCategoryResponseDto> {
+    return this.transactionService.setPendingTransactionCategory(body);
   }
 }

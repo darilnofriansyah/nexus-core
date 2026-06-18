@@ -1,154 +1,143 @@
-Scope
+# AGENTS.md
 
-This repository contains the NestJS Core API for Veyra and Aegis.
+## Scope
 
-Veyra is a Telegram personal finance assistant.
-Aegis is a monitoring/admin bot for n8n workflow errors.
+`nexus-core` is the NestJS Core API for Veyra and Aegis.
 
-n8n remains the trigger/orchestration layer for now.
-NestJS Core is the reusable business-logic layer.
+* Veyra: Telegram personal finance assistant.
+* Aegis: n8n workflow error monitoring/admin bot.
+* n8n remains the trigger/orchestration layer.
+* NestJS Core contains reusable business logic.
 
-Core Rule
+## Prime Rule
 
-Do not rewrite everything at once.
+Do not rewrite broadly.
 
-Port n8n behavior into NestJS incrementally, one logic unit at a time.
+Migrate one small n8n logic unit at a time.
 
-For each migration task:
+For each task:
 
-1. Identify the current n8n workflow behavior.
-2. Extract only the business logic into NestJS.
-3. Keep n8n responsible for triggers, scheduling, Gmail triggers, Telegram webhook intake, and basic orchestration unless explicitly told otherwise.
-4. Preserve existing database behavior.
-5. Add tests for the migrated logic.
-6. Document how n8n should call the new NestJS endpoint.
-7. Do not deploy to production unless explicitly asked.
+1. Preserve the current n8n behavior.
+2. Move only the requested business logic into NestJS.
+3. Keep n8n responsible for triggers, scheduling, Gmail triggers, Telegram intake/sending, and simple orchestration unless told otherwise.
+4. Preserve existing PostgreSQL schema and behavior.
+5. Add/update tests.
+6. Document the n8n HTTP Request payload.
+7. Do not deploy unless explicitly asked.
 
-What Belongs in NestJS
-
-Move these into NestJS Core:
-
-* transaction parsing and normalization
-* budget create/update/delete logic
-* budget spending calculation
-* overspending threshold calculation
-* conversational intent routing
-* analytics query services
-* Telegram reply formatting
-* Aegis error message formatting
-* reusable PostgreSQL queries
-* validation and DTOs
-* tests
-
-What Stays in n8n For Now
-
-Keep these in n8n:
-
-* Telegram Trigger nodes
-* Gmail Trigger nodes
-* scheduled workflow triggers
-* simple HTTP Request orchestration
-* callback routing until explicitly migrated
-* production workflow activation/deactivation
-* credentials stored in n8n
-* experimental workflow drafts
-
-Production Safety Rules
+## Safety Rules
 
 Codex must not:
 
-* modify production n8n workflows unless explicitly instructed
-* call n8n MCP unless explicitly instructed
-* delete workflows
-* alter production database schema without approval
-* run destructive SQL
-* commit secrets
-* create fake sample workflows when the user asked for real migration work
+* Modify production n8n workflows unless explicitly instructed.
+* Call n8n MCP unless explicitly instructed.
+* Create fake/sample workflow files when asked for real migration work.
+* Delete, activate, or deactivate workflows.
+* Alter production database schema without approval.
+* Run destructive SQL.
+* Commit secrets, tokens, credentials, `.env`, or private keys.
+* Start broad rewrites without showing scope first.
 
-Migration Style
+## Migration Boundaries
 
-Prefer small, reviewable changes.
+Eligible NestJS migration areas, only when requested:
 
-Each migration should produce:
+* Aegis error formatting.
+* Telegram reply/send payload formatting.
+* Budget lookup, status, upsert, delete, and overspending logic.
+* Transaction parsing, normalization, and confirmation payloads.
+* Conversational intent routing.
+* Analytics query services.
+* Reusable PostgreSQL queries.
+* DTOs, validation, services, controllers, and tests.
 
-* NestJS service/controller/DTO changes
-* tests
-* README or docs update
-* example n8n HTTP Request payload
-* clear notes on what existing n8n nodes can be replaced
+Only implement the requested slice. Do not migrate adjacent features unless required.
 
-Suggested Migration Order
+Keep in n8n for now:
 
-1. Aegis error alert formatter
-2. Aegis Telegram send payload builder
-3. Veyra budget lookup/status calculation
-4. Veyra budget upsert logic
-5. Veyra overspending alert logic
-6. Veyra transaction normalization
-7. Veyra transaction confirmation payload builder
-8. Veyra conversational analytics queries
-9. Veyra intent routing
-10. Telegram callback handling
+* Telegram Trigger nodes.
+* Gmail Trigger nodes.
+* Schedule triggers.
+* HTTP Request orchestration.
+* Telegram message sending.
+* Callback routing.
+* Production workflow management.
+* Credentials.
+* Experimental workflow drafts.
 
-Database Rules
+## Database Rules
 
 Use the existing PostgreSQL schema.
 
 Important tables:
 
-* telegram_users
-* transactions
-* budgets
-* budget_alerts
-* merchant_aliases
-* category_rules
-* merchant_review_queue
-* conversation_states
-* pending_transactions
+* `telegram_users`
+* `transactions`
+* `budgets`
+* `budget_alerts`
+* `merchant_aliases`
+* `category_rules`
+* `merchant_review_queue`
+* `conversation_states`
+* `pending_transactions`
 
 Budget rules:
 
-* budgets.category is currently unique per user.
-* parent_budget_id may be null.
-* parent budgets may aggregate child budgets.
-* monthly cycle must respect telegram_users.cycle_start_day.
-* current period should be calculated using the user’s cycle start day, not calendar month only.
+* `budgets.category` is unique per user.
+* `parent_budget_id` may be null.
+* Parent budgets may aggregate child budgets.
+* Monthly periods must respect `telegram_users.cycle_start_day`.
+* Do not use calendar month only for current budget period.
+* Do not assume parent budgets always have an amount.
 
 Transaction rules:
 
-* transaction_type must match the database constraint.
-* valid types include expense, income, transfer, reversal.
-* status may be pending or confirmed.
-* never assume imported data is clean.
+* Valid `transaction_type`: `expense`, `income`, `transfer`, `reversal`.
+* `status` may be `pending` or `confirmed`.
+* Imported data may be dirty.
+* Normalize and validate before persisting or calculating.
 
-n8n Integration Pattern
+## n8n Integration
 
-n8n should call NestJS with HTTP Request nodes.
+n8n calls NestJS through HTTP Request nodes.
 
-Example:
+NestJS returns structured JSON.
 
-POST /aegis/n8n-error
-Input: raw n8n error trigger payload
-Output: formatted Telegram alert payload
+n8n sends Telegram messages unless explicitly migrated.
 
-POST /veyra/telegram/message
-Input: Telegram message payload or normalized message object
-Output: reply text and optional actions
+Example endpoints:
 
-POST /veyra/budgets/status
-Input: user id and category
-Output: budget status, spent, remaining, threshold state
+* `POST /aegis/n8n-error`
+* `POST /veyra/telegram/message`
+* `POST /veyra/budgets/status`
 
-NestJS should return structured JSON. n8n remains responsible for sending the Telegram message unless explicitly migrated.
+Each migrated endpoint should include an example n8n HTTP Request payload in docs.
 
-Review Requirement
+## Output Expectations
 
-Before large changes, Codex should show:
+Each migration should include:
 
-* proposed file changes
-* migration target
-* behavior being preserved
-* risks
-* test plan
+* Service/controller/DTO changes as needed.
+* Focused tests.
+* README or docs update.
+* Example n8n payload.
+* Notes on which n8n nodes can be replaced.
+* Notes on which n8n nodes stay.
 
-Do not proceed with broad rewrites.
+Before broad or risky changes, show:
+
+* Target behavior.
+* Proposed files.
+* Risks.
+* Test plan.
+
+## Coding Style
+
+Prefer small, reviewable changes.
+
+Use existing conventions.
+
+Do not add libraries unless necessary.
+
+Keep business logic testable outside controllers.
+

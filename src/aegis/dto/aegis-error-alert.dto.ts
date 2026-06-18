@@ -1,4 +1,4 @@
-export type AegisSeverity = 'INFO' | 'WARNING' | 'ERROR' | 'CRITICAL';
+export type AegisSeverity = "INFO" | "WARNING" | "ERROR" | "CRITICAL";
 
 export interface N8nWorkflowReferenceDto {
   id?: string;
@@ -9,6 +9,7 @@ export interface N8nExecutionReferenceDto {
   id?: string;
   url?: string;
   mode?: string;
+  retryOf?: string | number;
   startedAt?: string;
   stoppedAt?: string;
 }
@@ -29,6 +30,7 @@ export interface AegisN8nErrorPayloadDto {
   workflowId?: string;
   executionId?: string | number;
   executionUrl?: string;
+  executionMode?: string;
   errorMessage?: string;
   errorNode?: string;
   severity?: string;
@@ -38,6 +40,11 @@ export interface AegisN8nErrorPayloadDto {
 
 export interface AegisN8nErrorAlertDto {
   chatText: string;
+  chat_id: string;
+  text: string;
+  parse_mode: "HTML";
+  disable_web_page_preview: true;
+  bot_token_env: "AEGIS_TOKEN";
   severity: AegisSeverity;
   workflowId: string | null;
   executionId: string | null;
