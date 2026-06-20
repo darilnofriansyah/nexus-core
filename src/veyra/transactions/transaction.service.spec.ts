@@ -19,55 +19,6 @@ function createService(rowsByCall: unknown[][] = []) {
   };
 }
 
-function createTransactionalService(rowsByCall: Array<unknown[] | Error> = []) {
-  const calls: Array<{ text: string; values: unknown[] }> = [];
-  const txCalls: string[] = [];
-  const client = {
-    query: async (text: string, values: unknown[] = []) => {
-      txCalls.push(text.trim());
-      calls.push({ text, values });
-
-      if (text.trim() === 'BEGIN' || text.trim() === 'COMMIT') {
-        return { rows: [] };
-      }
-
-      if (text.trim() === 'ROLLBACK') {
-        return { rows: [] };
-      }
-
-      const nextRows = rowsByCall.shift();
-
-      if (nextRows instanceof Error) {
-        throw nextRows;
-      }
-
-      return { rows: nextRows ?? [] };
-    },
-  };
-  const database = {
-    withTransaction: async <T>(
-      callback: (transactionClient: typeof client) => Promise<T>,
-    ) => {
-      await client.query('BEGIN');
-
-      try {
-        const result = await callback(client);
-        await client.query('COMMIT');
-        return result;
-      } catch (error) {
-        await client.query('ROLLBACK');
-        throw error;
-      }
-    },
-  } as unknown as DatabaseService;
-
-  return {
-    calls,
-    service: new TransactionService(database),
-    txCalls,
-  };
-}
-
 const pendingTransaction = {
   id: 'pending-1',
   user_id: 'user-1',

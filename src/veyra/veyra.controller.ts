@@ -1,6 +1,16 @@
-import { Body, Controller, Post } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post } from '@nestjs/common';
 import { ok } from '../common/dto/api-response.dto';
-import { BudgetService } from './budgets/budget.service';
+import {
+  BudgetHandleRequestDto,
+  BudgetHandleResponseDto,
+  BudgetService,
+} from './budgets/budget.service';
+import { ConversationStateService } from './conversation-states/conversation-state.service';
+import {
+  ConversationStateResponseDto,
+  ResetConversationStateRequestDto,
+  UpsertConversationStateRequestDto,
+} from './conversation-states/dto/conversation-state.dto';
 import {
   BudgetUpsertRequestDto,
   BudgetUpsertResponseDto,
@@ -45,6 +55,7 @@ import { TransactionService } from './transactions/transaction.service';
 export class VeyraController {
   constructor(
     private readonly budgetService: BudgetService,
+    private readonly conversationStateService: ConversationStateService,
     private readonly intentService: IntentService,
     private readonly intentsService: IntentsService,
     private readonly telegramFormatter: TelegramResponseFormatterService,
@@ -71,11 +82,42 @@ export class VeyraController {
     return this.intentsService.classify(body);
   }
 
+  @Get('conversation-states/:userId')
+  getConversationState(
+    @Param('userId') userId: string,
+  ): Promise<ConversationStateResponseDto> {
+    return this.conversationStateService.getState(userId);
+  }
+
+  @Post('conversation-states')
+  upsertConversationState(
+    @Body() body: UpsertConversationStateRequestDto,
+  ): Promise<ConversationStateResponseDto> {
+    return this.conversationStateService.upsertState(body);
+  }
+
+  @Post('conversation-states/reset')
+  resetConversationState(
+    @Body() body: ResetConversationStateRequestDto,
+  ): Promise<ConversationStateResponseDto> {
+    return this.conversationStateService.resetState(body);
+  }
+
   @Post('budgets/status')
   getBudgetStatus(
     @Body() body: BudgetStatusRequestDto,
   ): Promise<BudgetStatusResponseDto> {
     return this.budgetService.getBudgetStatus(body);
+  }
+
+  @Post('budgets/handle')
+  handleBudget(
+    @Body() body: BudgetHandleRequestDto,
+  ): Promise<BudgetHandleResponseDto> {
+    return this.budgetService.handleBudgetRequest(
+      body,
+      this.conversationStateService,
+    );
   }
 
   @Post('budgets/upsert')

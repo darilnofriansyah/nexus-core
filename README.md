@@ -21,6 +21,8 @@ src/
   veyra/
     budgets/
       Budget lookup, status calculation, and upsert logic.
+    conversation-states/
+      Multi-step Telegram conversation state persistence for n8n orchestration.
     intent/
       Conversational intent detection and routing helpers.
     telegram/
@@ -241,6 +243,81 @@ Example response:
   "action": "created"
 }
 ```
+
+### `POST /api/veyra/budgets/handle`
+
+Orchestrates one parsed budget conversation step for n8n. n8n should run LLM parsing first, pass the previous budget `statePayload` plus the new `llmResult`, then send the returned `message` through Telegram Reliable Sender. Core API saves pending budget state when more information is needed and resets state to `idle` after success, reset/cancel, unsupported delete, or unknown action.
+
+Example request body:
+
+```json
+{
+  "telegramUserId": "123456789",
+  "userId": 1,
+  "text": "1 juta",
+  "statePayload": {},
+  "llmResult": {
+    "intent": "set_budget",
+    "category": "Food",
+    "parent_category": null,
+    "amount": 1000000,
+    "missing_fields": []
+  }
+}
+```
+
+Example response:
+
+```json
+{
+  "ok": true,
+  "state": {
+    "nextState": "idle",
+    "payload": {}
+  },
+  "message": {
+    "text": "Budget updated.\n\nCategory: Food\nAmount: Rp1.000.000",
+    "parse_mode": "HTML",
+    "disable_web_page_preview": true
+  },
+  "data": {
+    "intent": "set_budget",
+    "category": "Food",
+    "parent_category": null,
+    "action": "updated",
+    "budget_id": "example-budget-id"
+  }
+}
+```
+
+Incomplete requests return a follow-up and persist a pending payload:
+
+```json
+{
+  "ok": true,
+  "state": {
+    "nextState": "budget_conversation_state",
+    "payload": {
+      "intent": "set_budget",
+      "category": "Food",
+      "missing_fields": ["amount"],
+      "pending": true
+    }
+  },
+  "message": {
+    "text": "How much for Food?",
+    "parse_mode": "HTML",
+    "disable_web_page_preview": true
+  },
+  "data": {
+    "intent": "set_budget",
+    "category": "Food",
+    "missing_field": "amount"
+  }
+}
+```
+
+Supported intents are `budget_status`, `set_budget`, `set_sub_budget`, `delete_budget`, `delete_sub_budget`, `reset`, and `unknown`. `set_budget` requires `category` and `amount`; `set_sub_budget` requires `category`, `parent_category`, and `amount`; `budget_status` requires `category`. Delete intents currently return a not-wired message and reset state because no budget delete service method exists.
 
 ### `POST /api/veyra/budgets/overspending-check`
 
@@ -471,6 +548,94 @@ Example rejected response:
 ```
 
 If the transaction row is missing, `status` is `not_found`. If it is already confirmed, `status` is `already_confirmed`. If it is already rejected, `status` is `already_rejected`.
+
+### `GET /api/veyra/conversation-states/:userId`
+
+Reads the current multi-step conversation state for one internal `telegram_users.id`. If no row exists in `conversation_states`, Core API returns `idle` with empty `stateData`.
+
+Example response when no row exists:
+
+```json
+{
+  "userId": "123",
+  "stateName": "idle",
+  "stateData": {},
+  "expiresAt": null,
+  "updatedAt": null
+}
+```
+
+### `POST /api/veyra/conversation-states`
+
+Upserts one conversation state row by `userId` using `ON CONFLICT (user_id) DO UPDATE`. `stateData` is optional and stored as JSONB. `updated_at` is refreshed on insert and update.
+
+Supported state names:
+
+```txt
+idle
+record_transaction_state
+budget_conversation_state
+```
+
+Slash command aliases are accepted for n8n convenience:
+
+```txt
+/record -> record_transaction_state
+/budget -> budget_conversation_state
+```
+
+Example request body:
+
+```json
+{
+  "userId": "123",
+  "stateName": "/record",
+  "stateData": {
+    "step": "amount"
+  },
+  "expiresAt": null
+}
+```
+
+Example response:
+
+```json
+{
+  "userId": "123",
+  "stateName": "record_transaction_state",
+  "stateData": {
+    "step": "amount"
+  },
+  "expiresAt": null,
+  "updatedAt": "2026-06-20T10:00:00.000Z"
+}
+```
+
+### `POST /api/veyra/conversation-states/reset`
+
+Resets one user to `idle`, stores `{}` in `state_data`, clears `expires_at`, and refreshes `updated_at`.
+
+Example request body:
+
+```json
+{
+  "userId": "123"
+}
+```
+
+Example response:
+
+```json
+{
+  "userId": "123",
+  "stateName": "idle",
+  "stateData": {},
+  "expiresAt": null,
+  "updatedAt": "2026-06-20T10:00:00.000Z"
+}
+```
+
+This replaces only the duplicated n8n SQL/read-write block for `conversation_states`. Keep Telegram slash-command intake, conflict messages, Telegram sending, callback routing, and workflow orchestration in n8n.
 
 ### `POST /api/veyra/intents/classify`
 
@@ -716,6 +881,24 @@ Period type = {{$json.period_type}}
 
 This replaces only the n8n budget create/update database logic. Keep Telegram triggers, intent parsing, message sending, budget delete behavior, and workflow orchestration in n8n for now.
 
+Recommended Veyra budget handle node settings:
+
+```txt
+Method: POST
+URL: http://core-api:3001/api/veyra/budgets/handle
+Send Body: JSON
+Body:
+{
+  "telegramUserId": "={{$json.telegram_user_id}}",
+  "userId": "={{$json.user_id}}",
+  "text": "={{$json.message_text}}",
+  "statePayload": "={{$json.state_payload || {}}}",
+  "llmResult": "={{$json.llm_result}}"
+}
+```
+
+n8n should run LLM parsing first, then call `/api/veyra/budgets/handle`, then send `message.text`, `message.parse_mode`, and `message.disable_web_page_preview` through Telegram Reliable Sender. This replaces only the budget workflow orchestration step after parsing; keep Telegram Trigger nodes, LLM parsing, Telegram sending, callback routing, credentials, retries, and production workflow management in n8n.
+
 Recommended Veyra overspending check node settings:
 
 ```txt
@@ -945,6 +1128,62 @@ Body:
 Use `{{$json.intent}}` in an n8n Switch node, then route to the matching Core API endpoint. This replaces only the n8n conversational routing Code or Switch pre-processing logic. Keep Telegram triggers, endpoint orchestration, Telegram response sending, and all write/confirmation flows in n8n for now.
 
 The response shape follows the production classifier fields: `intent`, `period`, `merchant`, `category`, `limit`, `target`, `changes`, `selection`, and `confidence`. The deterministic helper also returns legacy helper fields such as `amount`, `transactionId`, `budgetParent`, `requiresConfirmation`, `missingFields`, and `warnings` for current Core API consumers.
+
+Recommended Veyra conversation state check before accepting slash commands:
+
+```txt
+Method: GET
+URL: http://core-api:3001/api/veyra/conversation-states/{{$json.user_id}}
+Send Body: None
+```
+
+If `stateName` is not `idle`, keep the existing n8n branch that rejects or guides the user before starting a new slash-command conversation.
+
+Recommended Veyra conversation state upsert for `/record`:
+
+```txt
+Method: POST
+URL: http://core-api:3001/api/veyra/conversation-states
+Send Body: JSON
+Body:
+{
+  "userId": "={{$json.user_id}}",
+  "stateName": "/record",
+  "stateData": {
+    "source": "telegram_slash_command"
+  }
+}
+```
+
+Recommended Veyra conversation state upsert for `/budget`:
+
+```txt
+Method: POST
+URL: http://core-api:3001/api/veyra/conversation-states
+Send Body: JSON
+Body:
+{
+  "userId": "={{$json.user_id}}",
+  "stateName": "/budget",
+  "stateData": {
+    "source": "telegram_slash_command"
+  }
+}
+```
+
+Recommended Veyra conversation state reset after completion or cancellation:
+
+```txt
+Method: POST
+URL: http://core-api:3001/api/veyra/conversation-states/reset
+Send Body: JSON
+Body:
+{
+  "userId": "={{$json.user_id}}"
+}
+```
+
+Use the response `stateName` and `stateData` in n8n Switch/IF nodes. This state API does not implement Telegram slash-command routing and does not send Telegram messages.
 
 ## What Stays In n8n For Now
 

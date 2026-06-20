@@ -1,0 +1,19 @@
+services:
+  core-api:
+    container_name: core-api
+    build:
+      context: .
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+    expose:
+      - "3000"
+    networks:
+      - veyra-network
+
+networks:
+  veyra-network:
+    external: true

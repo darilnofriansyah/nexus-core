@@ -56,6 +56,62 @@ interface AlertExistsRow extends QueryResultRow {
   exists: boolean;
 }
 
+type BudgetHandleIntent =
+  | 'budget_status'
+  | 'set_budget'
+  | 'set_sub_budget'
+  | 'delete_budget'
+  | 'delete_sub_budget'
+  | 'reset'
+  | 'unknown';
+
+type BudgetHandleStateName = 'idle' | 'budget_conversation_state';
+
+interface BudgetHandlePayload {
+  intent?: BudgetHandleIntent;
+  category?: string;
+  parent_category?: string;
+  amount?: number;
+  missing_fields?: string[];
+  pending?: boolean;
+}
+
+interface BudgetHandleStateStore {
+  upsertState(request: {
+    userId: string | number;
+    stateName: BudgetHandleStateName;
+    stateData?: unknown;
+    expiresAt?: string | null;
+  }): Promise<unknown>;
+  resetState(request: { userId: string | number }): Promise<unknown>;
+}
+
+interface BudgetHandleTelegramMessage {
+  text: string;
+  parse_mode: 'HTML';
+  disable_web_page_preview: true;
+}
+
+interface BudgetHandleStateResponse {
+  nextState: BudgetHandleStateName;
+  payload: BudgetHandlePayload | Record<string, never>;
+}
+
+export interface BudgetHandleRequestDto {
+  telegramUserId?: string;
+  userId: string | number;
+  text?: string;
+  statePayload?: Record<string, unknown>;
+  llmResult?: Record<string, unknown>;
+}
+
+export interface BudgetHandleResponseDto {
+  ok: true;
+  state: BudgetHandleStateResponse;
+  message: BudgetHandleTelegramMessage;
+  data: Record<string, unknown>;
+}
+
 @Injectable()
 export class BudgetService {
   constructor(private readonly database: DatabaseService) {}
@@ -325,6 +381,133 @@ export class BudgetService {
     };
   }
 
+  async handleBudgetRequest(
+    request: BudgetHandleRequestDto,
+    stateStore: BudgetHandleStateStore,
+  ): Promise<BudgetHandleResponseDto> {
+    const userId = request.userId;
+
+    if (this.isResetText(request.text)) {
+      await stateStore.resetState({ userId });
+      return this.buildHandleResponse({
+        nextState: 'idle',
+        payload: {},
+        text: 'Budget action cancelled.',
+        data: { intent: 'reset' },
+      });
+    }
+
+    const payload = this.mergeBudgetHandlePayload(
+      request.statePayload,
+      request.llmResult,
+    );
+    const intent = this.resolveBudgetHandleIntent(payload, request.text);
+
+    if (intent === 'reset') {
+      await stateStore.resetState({ userId });
+      return this.buildHandleResponse({
+        nextState: 'idle',
+        payload: {},
+        text: 'Budget action cancelled.',
+        data: { intent },
+      });
+    }
+
+    if (intent === 'unknown') {
+      await stateStore.resetState({ userId });
+      return this.buildHandleResponse({
+        nextState: 'idle',
+        payload: {},
+        text: 'What do you want to do: show or set a budget?',
+        data: { intent },
+      });
+    }
+
+    if (intent === 'delete_budget' || intent === 'delete_sub_budget') {
+      await stateStore.resetState({ userId });
+      return this.buildHandleResponse({
+        nextState: 'idle',
+        payload: {},
+        text: 'Delete not wired yet. Budget unchanged.',
+        data: {
+          intent,
+          category: payload.category ?? null,
+          parent_category: payload.parent_category ?? null,
+        },
+      });
+    }
+
+    const missingField = this.firstMissingBudgetHandleField(intent, payload);
+
+    if (missingField) {
+      const pendingPayload = this.buildPendingBudgetPayload(
+        intent,
+        payload,
+        missingField,
+      );
+      await stateStore.upsertState({
+        userId,
+        stateName: 'budget_conversation_state',
+        stateData: pendingPayload,
+      });
+
+      return this.buildHandleResponse({
+        nextState: 'budget_conversation_state',
+        payload: pendingPayload,
+        text: this.buildBudgetFollowUpQuestion(missingField, pendingPayload),
+        data: {
+          intent,
+          category: pendingPayload.category ?? null,
+          parent_category: pendingPayload.parent_category ?? null,
+          missing_field: missingField,
+        },
+      });
+    }
+
+    if (intent === 'budget_status') {
+      const status = await this.getBudgetStatus({
+        userId: String(userId),
+        telegramUserId: request.telegramUserId,
+        category: payload.category as string,
+      });
+      await stateStore.resetState({ userId });
+
+      return this.buildHandleResponse({
+        nextState: 'idle',
+        payload: {},
+        text: this.buildBudgetStatusTelegramHtml(status),
+        data: {
+          intent,
+          category: status.category,
+          budget_id: status.budget_id,
+        },
+      });
+    }
+
+    const upsert = await this.upsertBudget({
+      userId: String(userId),
+      category: payload.category as string,
+      amount: payload.amount as number,
+      parentCategory:
+        intent === 'set_sub_budget' ? payload.parent_category : undefined,
+      periodType: 'monthly',
+    });
+    await stateStore.resetState({ userId });
+
+    return this.buildHandleResponse({
+      nextState: 'idle',
+      payload: {},
+      text: this.buildBudgetUpsertTelegramHtml(upsert),
+      data: {
+        intent,
+        category: upsert.category,
+        parent_category: upsert.parent_category,
+        action: upsert.action,
+        budget_id: upsert.budget_id,
+      },
+    });
+  }
+
   calculateCurrentCycle(
     referenceDate: Date,
     cycleStartDay: number | string | null | undefined,
@@ -495,6 +678,249 @@ export class BudgetService {
       `Budget: ${this.formatCurrency(input.budgetAmount)}`,
       `Remaining: ${this.formatCurrency(input.remainingAmount)}`,
     ].join('\n');
+  }
+
+  private mergeBudgetHandlePayload(
+    statePayload: Record<string, unknown> | undefined,
+    llmResult: Record<string, unknown> | undefined,
+  ): BudgetHandlePayload {
+    const previous = this.normalizeBudgetHandlePayload(statePayload);
+    const next = this.normalizeBudgetHandlePayload(llmResult);
+    const merged: BudgetHandlePayload = {
+      ...previous,
+      ...this.withoutUndefinedBudgetFields(next),
+    };
+
+    if (
+      previous.pending &&
+      next.intent === 'unknown' &&
+      previous.intent &&
+      previous.intent !== 'unknown' &&
+      this.hasBudgetHandleProgress(next)
+    ) {
+      merged.intent = previous.intent;
+    }
+
+    return merged;
+  }
+
+  private normalizeBudgetHandlePayload(
+    value: Record<string, unknown> | undefined,
+  ): BudgetHandlePayload {
+    if (!value) {
+      return {};
+    }
+
+    return {
+      intent: this.normalizeBudgetHandleIntent(value.intent),
+      category: this.cleanStringValue(value.category),
+      parent_category:
+        this.cleanStringValue(value.parent_category) ??
+        this.cleanStringValue(value.parentCategory),
+      amount: this.normalizePositiveAmount(value.amount),
+      missing_fields: Array.isArray(value.missing_fields)
+        ? value.missing_fields
+            .map((field) => this.cleanStringValue(field))
+            .filter((field): field is string => Boolean(field))
+        : undefined,
+      pending: value.pending === true,
+    };
+  }
+
+  private withoutUndefinedBudgetFields(
+    payload: BudgetHandlePayload,
+  ): BudgetHandlePayload {
+    return Object.fromEntries(
+      Object.entries(payload).filter(([, value]) => value !== undefined),
+    ) as BudgetHandlePayload;
+  }
+
+  private resolveBudgetHandleIntent(
+    payload: BudgetHandlePayload,
+    text?: string,
+  ): BudgetHandleIntent {
+    const intent = payload.intent ?? 'unknown';
+
+    if (
+      intent === 'set_budget' &&
+      (payload.parent_category || this.hasParentRelationshipText(text))
+    ) {
+      return 'set_sub_budget';
+    }
+
+    return intent;
+  }
+
+  private hasBudgetHandleProgress(payload: BudgetHandlePayload): boolean {
+    return Boolean(payload.category || payload.parent_category || payload.amount);
+  }
+
+  private hasParentRelationshipText(value: string | undefined): boolean {
+    const text = value?.trim().toLowerCase();
+    return Boolean(
+      text && /\b(parent|sub[-\s]?budget|under|inside)\b/.test(text),
+    );
+  }
+
+  private normalizeBudgetHandleIntent(value: unknown): BudgetHandleIntent | undefined {
+    const intent = this.cleanStringValue(value) as BudgetHandleIntent | undefined;
+    const supported: BudgetHandleIntent[] = [
+      'budget_status',
+      'set_budget',
+      'set_sub_budget',
+      'delete_budget',
+      'delete_sub_budget',
+      'reset',
+      'unknown',
+    ];
+
+    return intent && supported.includes(intent) ? intent : undefined;
+  }
+
+  private firstMissingBudgetHandleField(
+    intent: BudgetHandleIntent,
+    payload: BudgetHandlePayload,
+  ): 'category' | 'parent_category' | 'amount' | null {
+    if (intent === 'budget_status') {
+      return payload.category ? null : 'category';
+    }
+
+    if (intent === 'set_budget' || intent === 'set_sub_budget') {
+      if (!payload.category) {
+        return 'category';
+      }
+
+      if (intent === 'set_sub_budget' && !payload.parent_category) {
+        return 'parent_category';
+      }
+
+      if (!payload.amount || payload.amount <= 0) {
+        return 'amount';
+      }
+    }
+
+    return null;
+  }
+
+  private buildPendingBudgetPayload(
+    intent: BudgetHandleIntent,
+    payload: BudgetHandlePayload,
+    missingField: string,
+  ): BudgetHandlePayload {
+    return this.withoutUndefinedBudgetFields({
+      intent,
+      category: payload.category,
+      parent_category: payload.parent_category,
+      amount: payload.amount,
+      missing_fields: [missingField],
+      pending: true,
+    });
+  }
+
+  private buildBudgetFollowUpQuestion(
+    missingField: string,
+    payload: BudgetHandlePayload,
+  ): string {
+    if (missingField === 'amount' && payload.category) {
+      return `How much for ${this.escapeTelegramHtml(payload.category)}?`;
+    }
+
+    if (missingField === 'parent_category' && payload.category) {
+      return `Under which parent budget should ${this.escapeTelegramHtml(payload.category)} sit?`;
+    }
+
+    return 'Which budget category?';
+  }
+
+  private buildBudgetStatusTelegramHtml(
+    status: BudgetStatusResponseDto,
+  ): string {
+    const lines = [
+      'Budget status.',
+      '',
+      `Category: ${this.escapeTelegramHtml(status.category)}`,
+      `Budget: ${this.formatTelegramCurrency(status.budget_amount)}`,
+      `Spent: ${this.formatTelegramCurrency(status.spent_amount)}`,
+      `Remaining: ${this.formatTelegramCurrency(status.remaining_amount)}`,
+      `Used: ${status.spent_percent}%`,
+    ];
+
+    if (status.child_breakdown.length > 0) {
+      lines.push('', 'Children:');
+      status.child_breakdown.forEach((child) => {
+        lines.push(
+          `- ${this.escapeTelegramHtml(child.category)}: ${this.formatTelegramCurrency(
+            child.spent_amount,
+          )}/${this.formatTelegramCurrency(child.budget_amount)} (${child.spent_percent}%)`,
+        );
+      });
+    }
+
+    return lines.join('\n');
+  }
+
+  private buildBudgetUpsertTelegramHtml(
+    upsert: BudgetUpsertResponseDto,
+  ): string {
+    const lines = [
+      'Budget updated.',
+      '',
+      `Category: ${this.escapeTelegramHtml(upsert.category)}`,
+      `Amount: ${this.formatTelegramCurrency(upsert.amount)}`,
+    ];
+
+    if (upsert.parent_category) {
+      lines.push(`Parent: ${this.escapeTelegramHtml(upsert.parent_category)}`);
+    }
+
+    return lines.join('\n');
+  }
+
+  private buildHandleResponse(input: {
+    nextState: BudgetHandleStateName;
+    payload: BudgetHandlePayload | Record<string, never>;
+    text: string;
+    data: Record<string, unknown>;
+  }): BudgetHandleResponseDto {
+    return {
+      ok: true,
+      state: {
+        nextState: input.nextState,
+        payload: input.payload,
+      },
+      message: {
+        text: input.text,
+        parse_mode: 'HTML',
+        disable_web_page_preview: true,
+      },
+      data: input.data,
+    };
+  }
+
+  private isResetText(value: string | undefined): boolean {
+    const text = value?.trim().toLowerCase();
+    return Boolean(
+      text && ['reset', 'cancel', 'exit', 'stop', 'batal', 'keluar'].includes(text),
+    );
+  }
+
+  private normalizePositiveAmount(value: unknown): number | undefined {
+    const amount = this.toNumber(value);
+    return amount > 0 ? amount : undefined;
+  }
+
+  private cleanStringValue(value: unknown): string | undefined {
+    if (typeof value !== 'string') {
+      return undefined;
+    }
+
+    return this.cleanString(value);
+  }
+
+  private formatTelegramCurrency(amount: number): string {
+    return `Rp${new Intl.NumberFormat('id-ID', {
+      maximumFractionDigits: 0,
+    }).format(amount)}`;
   }
 
   private async hasBudgetAlert(input: {

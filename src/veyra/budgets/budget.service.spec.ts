@@ -19,6 +19,24 @@ function createService(rowsByCall: unknown[][] = []) {
   };
 }
 
+function createStateStore() {
+  const calls: Array<{ method: string; request: unknown }> = [];
+
+  return {
+    calls,
+    store: {
+      upsertState: async (request: unknown) => {
+        calls.push({ method: 'upsertState', request });
+        return {};
+      },
+      resetState: async (request: unknown) => {
+        calls.push({ method: 'resetState', request });
+        return {};
+      },
+    },
+  };
+}
+
 test('calculates a current cycle using the user cycle_start_day', () => {
   const { service } = createService();
 
@@ -560,6 +578,298 @@ test('uses case-sensitive parent category matching', async () => {
   assert.match(calls[0].text, /AND category = \$2/);
   assert.doesNotMatch(calls[0].text, /lower\(category\) = lower\(\$2\)/);
   assert.equal(result.parent_category, 'monthly allowance');
+});
+
+test('budget handle complete status resets state and returns status message', async () => {
+  const { service } = createService([
+    [{ cycle_start_day: 15 }],
+    [
+      {
+        budget_id: 'budget-food',
+        category: 'Food',
+        parent_budget_id: null,
+        budget_amount: '1000000',
+        spent_amount: '250000',
+        child_breakdown: [
+          {
+            budget_id: 'budget-snacks',
+            category: 'Snacks',
+            budget_amount: '200000',
+            spent_amount: '50000',
+          },
+        ],
+      },
+    ],
+  ]);
+  const state = createStateStore();
+
+  const result = await service.handleBudgetRequest(
+    {
+      telegramUserId: '123456789',
+      userId: 1,
+      text: 'status Food',
+      statePayload: {},
+      llmResult: {
+        intent: 'budget_status',
+        category: 'Food',
+      },
+    },
+    state.store,
+  );
+
+  assert.equal(result.state.nextState, 'idle');
+  assert.deepEqual(result.state.payload, {});
+  assert.equal(state.calls[0].method, 'resetState');
+  assert.match(result.message.text, /Budget status\./);
+  assert.match(result.message.text, /Category: Food/);
+  assert.match(result.message.text, /Budget: Rp1\.000\.000/);
+  assert.match(result.message.text, /Spent: Rp250\.000/);
+  assert.doesNotMatch(result.message.text, /cycle_start|cycle_end|2026-06-15/);
+  assert.deepEqual(result.data.intent, 'budget_status');
+});
+
+test('budget handle incomplete set budget saves pending state and asks amount', async () => {
+  const { service } = createService();
+  const state = createStateStore();
+
+  const result = await service.handleBudgetRequest(
+    {
+      userId: 1,
+      text: 'set Food budget',
+      statePayload: {},
+      llmResult: {
+        intent: 'set_budget',
+        category: 'Food',
+        missing_fields: ['amount'],
+      },
+    },
+    state.store,
+  );
+
+  assert.equal(result.state.nextState, 'budget_conversation_state');
+  assert.deepEqual(result.state.payload, {
+    intent: 'set_budget',
+    category: 'Food',
+    missing_fields: ['amount'],
+    pending: true,
+  });
+  assert.deepEqual(state.calls, [
+    {
+      method: 'upsertState',
+      request: {
+        userId: 1,
+        stateName: 'budget_conversation_state',
+        stateData: result.state.payload,
+      },
+    },
+  ]);
+  assert.equal(result.message.text, 'How much for Food?');
+});
+
+test('budget handle follow-up amount merges pending state and calls upsert', async () => {
+  const { calls, service } = createService([
+    [
+      {
+        budget_id: 'budget-1',
+        user_id: '1',
+        category: 'Food',
+        amount: '1000000',
+        parent_budget_id: null,
+        parent_category: null,
+        period_type: 'monthly',
+        inserted: false,
+      },
+    ],
+  ]);
+  const state = createStateStore();
+
+  const result = await service.handleBudgetRequest(
+    {
+      userId: 1,
+      text: '1 juta',
+      statePayload: {
+        intent: 'set_budget',
+        category: 'Food',
+        pending: true,
+        missing_fields: ['amount'],
+      },
+      llmResult: {
+        intent: 'unknown',
+        amount: 1000000,
+        missing_fields: [],
+      },
+    },
+    state.store,
+  );
+
+  assert.deepEqual(calls[0].values, [
+    '1',
+    'Food',
+    1000000,
+    null,
+    'monthly',
+    false,
+  ]);
+  assert.equal(state.calls[0].method, 'resetState');
+  assert.equal(result.state.nextState, 'idle');
+  assert.match(result.message.text, /Budget updated\./);
+  assert.match(result.message.text, /Amount: Rp1\.000\.000/);
+  assert.equal(result.data.intent, 'set_budget');
+});
+
+test('budget handle set sub budget without parent asks parent question', async () => {
+  const { service } = createService();
+  const state = createStateStore();
+
+  const result = await service.handleBudgetRequest(
+    {
+      userId: 1,
+      text: 'set Transport under parent',
+      statePayload: {},
+      llmResult: {
+        intent: 'set_sub_budget',
+        category: 'Transport',
+        amount: 500000,
+      },
+    },
+    state.store,
+  );
+
+  assert.equal(result.state.nextState, 'budget_conversation_state');
+  assert.equal(result.message.text, 'Under which parent budget should Transport sit?');
+  assert.deepEqual(result.data, {
+    intent: 'set_sub_budget',
+    category: 'Transport',
+    parent_category: null,
+    missing_field: 'parent_category',
+  });
+  assert.equal(state.calls[0].method, 'upsertState');
+});
+
+test('budget handle complete set sub budget calls upsert with parent category', async () => {
+  const { calls, service } = createService([
+    [{ id: 'parent-1', category: 'Living', inserted: false }],
+    [
+      {
+        budget_id: 'budget-transport',
+        user_id: '1',
+        category: 'Transport',
+        amount: '500000',
+        parent_budget_id: 'parent-1',
+        parent_category: 'Living',
+        period_type: 'monthly',
+        inserted: true,
+      },
+    ],
+  ]);
+  const state = createStateStore();
+
+  const result = await service.handleBudgetRequest(
+    {
+      userId: 1,
+      statePayload: {},
+      llmResult: {
+        intent: 'set_sub_budget',
+        category: 'Transport',
+        parent_category: 'Living',
+        amount: 500000,
+      },
+    },
+    state.store,
+  );
+
+  assert.deepEqual(calls[0].values, ['1', 'Living', 'monthly']);
+  assert.deepEqual(calls[1].values, [
+    '1',
+    'Transport',
+    500000,
+    'parent-1',
+    'monthly',
+    true,
+  ]);
+  assert.equal(result.state.nextState, 'idle');
+  assert.match(result.message.text, /Parent: Living/);
+  assert.equal(result.data.intent, 'set_sub_budget');
+});
+
+test('budget handle reset and cancel set idle', async () => {
+  const { service } = createService();
+  const resetState = createStateStore();
+  const cancelState = createStateStore();
+
+  const resetResult = await service.handleBudgetRequest(
+    {
+      userId: 1,
+      statePayload: { intent: 'set_budget', category: 'Food', pending: true },
+      llmResult: { intent: 'reset' },
+    },
+    resetState.store,
+  );
+  const cancelResult = await service.handleBudgetRequest(
+    {
+      userId: 1,
+      text: 'batal',
+      statePayload: { intent: 'set_budget', category: 'Food', pending: true },
+      llmResult: { intent: 'unknown' },
+    },
+    cancelState.store,
+  );
+
+  assert.equal(resetResult.state.nextState, 'idle');
+  assert.deepEqual(resetResult.state.payload, {});
+  assert.equal(cancelResult.state.nextState, 'idle');
+  assert.deepEqual(cancelResult.state.payload, {});
+  assert.equal(resetState.calls[0].method, 'resetState');
+  assert.equal(cancelState.calls[0].method, 'resetState');
+  assert.equal(cancelResult.message.text, 'Budget action cancelled.');
+});
+
+test('budget handle delete intent returns not wired and sets idle', async () => {
+  const { service } = createService();
+  const state = createStateStore();
+
+  const result = await service.handleBudgetRequest(
+    {
+      userId: 1,
+      statePayload: {},
+      llmResult: {
+        intent: 'delete_budget',
+        category: 'Food',
+      },
+    },
+    state.store,
+  );
+
+  assert.equal(result.state.nextState, 'idle');
+  assert.deepEqual(result.state.payload, {});
+  assert.equal(state.calls[0].method, 'resetState');
+  assert.equal(result.message.text, 'Delete not wired yet. Budget unchanged.');
+  assert.deepEqual(result.data, {
+    intent: 'delete_budget',
+    category: 'Food',
+    parent_category: null,
+  });
+});
+
+test('budget handle unknown intent resets state with short clarification', async () => {
+  const { service } = createService();
+  const state = createStateStore();
+
+  const result = await service.handleBudgetRequest(
+    {
+      userId: 1,
+      text: 'wat',
+      statePayload: {},
+      llmResult: { intent: 'unknown' },
+    },
+    state.store,
+  );
+
+  assert.equal(result.state.nextState, 'idle');
+  assert.deepEqual(result.state.payload, {});
+  assert.equal(state.calls[0].method, 'resetState');
+  assert.equal(result.message.text, 'What do you want to do: show or set a budget?');
+  assert.deepEqual(result.data, { intent: 'unknown' });
 });
 
 test('does not alert below 80 percent spending', async () => {
