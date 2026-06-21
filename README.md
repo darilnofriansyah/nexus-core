@@ -25,6 +25,8 @@ src/
       Multi-step Telegram conversation state persistence for n8n orchestration.
     intent/
       Conversational intent detection and routing helpers.
+    messages/
+      Telegram message route selection for n8n workflow dispatch.
     telegram/
       Telegram response text formatting. n8n still sends messages.
     transactions/
@@ -115,11 +117,82 @@ Example request body:
 }
 ```
 
+### `POST /api/veyra/messages/route`
+
+Selects the Veyra sub-workflow route for one Telegram update. This endpoint only resolves the user, checks active `conversation_states`, and returns a route for n8n; it does not classify intent, call an LLM, execute budget/transaction logic, update conversation state, or send Telegram messages.
+
+Example request body:
+
+```json
+{
+  "telegramUserId": "976684739",
+  "userId": 1,
+  "text": "Get all budgets",
+  "messageType": "text",
+  "callbackQuery": null
+}
+```
+
+`userId` is optional when n8n already has the internal `telegram_users.id`. If it is missing, Core API resolves the user from `telegramUserId`. At least one of `userId` or `telegramUserId` is required. `telegramUserId` is normalized to a string at the API boundary, and database lookup uses text-safe comparisons against bigint columns.
+
+Routing priority is deterministic:
+
+1. Existing `callbackQuery` -> `callback`.
+2. Text beginning with `/` -> `slash_command`.
+3. Active `conversation_states.state_name`:
+   - `budget_conversation_state` -> `budget`.
+   - `record_transaction_state` -> `record`.
+   - `awaiting_confirmation` -> `transaction_edit`.
+   - `awaiting_transaction_selection` -> `transaction_edit`.
+   - Unknown active state -> `fallback`.
+4. No state, `idle`, or expired state -> `conversational`.
+5. Unknown user -> `fallback`.
+
+A state is active only when the row exists, `state_name` is not null, `state_name` is not `idle`, and `expires_at` is null or in the future. Expired states are not cleared by this endpoint.
+
+Example response:
+
+```json
+{
+  "route": "budget",
+  "reason": "active_budget_state",
+  "userId": 1,
+  "telegramUserId": "976684739",
+  "text": "Get all budgets",
+  "messageType": "text",
+  "command": null,
+  "state": {
+    "name": "budget_conversation_state",
+    "data": {}
+  }
+}
+```
+
+Supported `route` values are `callback`, `slash_command`, `budget`, `record`, `transaction_edit`, `conversational`, and `fallback`.
+
+Recommended Veyra message route node settings:
+
+```txt
+Method: POST
+URL: http://core-api:3001/api/veyra/messages/route
+Send Body: JSON
+Body:
+{
+  "telegramUserId": "={{$json.message.from.id}}",
+  "userId": "={{$json.user_id}}",
+  "text": "={{$json.message.text || ''}}",
+  "messageType": "={{$json.message ? 'text' : 'callback_query'}}",
+  "callbackQuery": "={{$json.callback_query || null}}"
+}
+```
+
+Use `{{$json.route}}` in an n8n Switch node to dispatch to the callback, slash-command, budget, record, transaction-edit, conversational, or fallback sub-workflow. This replaces only the duplicated route-selection Code/Switch pre-processing at the front of the Veyra message workflow. Keep Telegram Trigger nodes, callback handling, LLM/intent classification, budget/record/conversational sub-workflows, Telegram sending, credentials, retries, and production workflow management in n8n.
+
 ### `POST /api/veyra/budgets/status`
 
 Looks up one existing budget and calculates current-cycle spending. The cycle uses `telegram_users.cycle_start_day`; spending includes only confirmed expense transactions where `transaction_date >= cycle_start` and `transaction_date < cycle_end`.
 
-Core API reads the production budget amount from `budgets.amount` and returns it as `budget_amount` in the response for n8n compatibility. Inactive budgets are excluded with `COALESCE(is_active, true) = true`. For a parent budget lookup, total spending includes the selected parent category itself plus active child budget categories. `child_breakdown` contains active child categories only so n8n can render parent details without re-running child budget SQL.
+Core API reads the production budget amount from `budgets.amount` and returns it as `budget_amount` in the response for n8n compatibility. Inactive budgets are excluded with `COALESCE(is_active, true) = true`. For a parent budget lookup with active children, top-line budget and spending totals are aggregated from the active child budgets. `child_breakdown` contains active child categories only so n8n can render parent details without re-running child budget SQL.
 
 Direct category request body:
 
@@ -188,9 +261,9 @@ Parent category responses include child details when active children exist:
 
 ### `POST /api/veyra/budgets/upsert`
 
-Creates or updates one budget by the existing `(user_id, category)` uniqueness rule. Production matching for this upsert path is case-sensitive: `Food` and `food` follow the database unique index behavior as distinct categories unless the database is changed. `periodType` defaults to `monthly`; other period types are rejected until the database behavior is reviewed.
+Creates or updates one budget using exact-case category matching for the same user. Child budgets are matched by `parent_budget_id` and `category`, matching the production `budgets_parent_budget_category_unique` constraint. Top-level budgets are matched in code by user and category because PostgreSQL unique constraints allow multiple `NULL` parent values. `periodType` defaults to `monthly`; other period types are rejected until the database behavior is reviewed.
 
-Core API writes the production `budgets.amount` column. New budget rows are inserted with `is_active = true`; updates refresh `updated_at`.
+Core API writes the production `budgets.amount` column. New budget rows are inserted with `is_active = true`.
 
 If `parentCategory` is provided, Core API resolves an exact-case parent budget for the same user or creates it as an active parent row with no amount, then stores its `id` as `parent_budget_id`. If `parentCategory` is omitted, new budgets are created with `parent_budget_id = null`; existing budgets keep their current `parent_budget_id` during amount-only updates.
 
@@ -318,6 +391,46 @@ Incomplete requests return a follow-up and persist a pending payload:
 ```
 
 Supported intents are `budget_status`, `set_budget`, `set_sub_budget`, `delete_budget`, `delete_sub_budget`, `reset`, and `unknown`. `set_budget` requires `category` and `amount`; `set_sub_budget` requires `category`, `parent_category`, and `amount`; `budget_status` requires `category`. Delete intents currently return a not-wired message and reset state because no budget delete service method exists.
+
+`budget_overview` returns all active budgets for the user. It includes parent budgets with active children grouped underneath, top-level budgets without children, and a short empty-state message when no active budgets exist. Each line shows used amount / total budget. Large overviews are split into `data.messages` chunks around 3500 characters so n8n can send each item as a separate Telegram bubble; `message.text` and `data.message` contain the first chunk for existing senders.
+
+Overview request body:
+
+```json
+{
+  "telegramUserId": "123456789",
+  "userId": 1,
+  "text": "show my budgets",
+  "statePayload": {},
+  "llmResult": {
+    "intent": "budget_overview"
+  }
+}
+```
+
+Overview response shape:
+
+```json
+{
+  "ok": true,
+  "state": {
+    "nextState": "idle",
+    "payload": {}
+  },
+  "message": {
+    "text": "📊 Budget Overview\n\nMonthly Allowance - Rp2.000.000 / Rp4.000.000\n├ Food — Rp1.000.000 / Rp2.000.000\n└ Transport — Rp1.000.000 / Rp2.000.000",
+    "parse_mode": "HTML",
+    "disable_web_page_preview": true
+  },
+  "data": {
+    "intent": "budget_overview",
+    "messages": [
+      "📊 Budget Overview\n\nMonthly Allowance - Rp2.000.000 / Rp4.000.000\n├ Food — Rp1.000.000 / Rp2.000.000\n└ Transport — Rp1.000.000 / Rp2.000.000"
+    ],
+    "message": "📊 Budget Overview\n\nMonthly Allowance - Rp2.000.000 / Rp4.000.000\n├ Food — Rp1.000.000 / Rp2.000.000\n└ Transport — Rp1.000.000 / Rp2.000.000"
+  }
+}
+```
 
 ### `POST /api/veyra/budgets/overspending-check`
 
@@ -897,7 +1010,7 @@ Body:
 }
 ```
 
-n8n should run LLM parsing first, then call `/api/veyra/budgets/handle`, then send `message.text`, `message.parse_mode`, and `message.disable_web_page_preview` through Telegram Reliable Sender. This replaces only the budget workflow orchestration step after parsing; keep Telegram Trigger nodes, LLM parsing, Telegram sending, callback routing, credentials, retries, and production workflow management in n8n.
+n8n should run LLM parsing first, then call `/api/veyra/budgets/handle`, then send `message.text`, `message.parse_mode`, and `message.disable_web_page_preview` through Telegram Reliable Sender for single-message replies. For `budget_overview`, iterate over `data.messages` and send each string as its own Telegram Reliable Sender call. This replaces only the budget workflow orchestration step after parsing; keep Telegram Trigger nodes, LLM parsing, Telegram sending, callback routing, credentials, retries, and production workflow management in n8n.
 
 Recommended Veyra overspending check node settings:
 

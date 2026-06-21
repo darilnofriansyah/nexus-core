@@ -52,12 +52,23 @@ interface BudgetUpsertRow extends QueryResultRow {
   inserted: boolean;
 }
 
+interface BudgetOverviewRow extends QueryResultRow {
+  budget_id: string | number;
+  category: string;
+  parent_budget_id: string | number | null;
+  parent_category: string | null;
+  amount: string | number | null;
+  spent_amount: string | number | null;
+  child_count: string | number;
+}
+
 interface AlertExistsRow extends QueryResultRow {
   exists: boolean;
 }
 
 type BudgetHandleIntent =
   | 'budget_status'
+  | 'budget_overview'
   | 'set_budget'
   | 'set_sub_budget'
   | 'delete_budget'
@@ -97,6 +108,16 @@ interface BudgetHandleStateResponse {
   payload: BudgetHandlePayload | Record<string, never>;
 }
 
+interface BudgetOverviewItem {
+  budget_id: string;
+  category: string;
+  parent_budget_id: string | null;
+  parent_category: string | null;
+  amount: number;
+  spent_amount: number;
+  child_count: number;
+}
+
 export interface BudgetHandleRequestDto {
   telegramUserId?: string;
   userId: string | number;
@@ -114,6 +135,8 @@ export interface BudgetHandleResponseDto {
 
 @Injectable()
 export class BudgetService {
+  private readonly budgetOverviewMaxMessageLength = 3500;
+
   constructor(private readonly database: DatabaseService) {}
 
   placeholderStatus() {
@@ -159,28 +182,6 @@ export class BudgetService {
             AND COALESCE(b.is_active, true) = true
           LIMIT 1
         ),
-        budget_scope AS (
-          SELECT id, category
-          FROM selected_budget
-          UNION
-          SELECT child.id, child.category
-          FROM budgets child
-          JOIN selected_budget parent ON child.parent_budget_id = parent.id
-          WHERE COALESCE(child.is_active, true) = true
-        ),
-        spending AS (
-          SELECT COALESCE(SUM(t.amount), 0) AS spent_amount
-          FROM transactions t
-          JOIN matched_user u ON u.id = t.user_id
-          WHERE t.status = 'confirmed'
-            AND t.transaction_type = 'expense'
-            AND t.transaction_date >= $3::date
-            AND t.transaction_date < $4::date
-            AND lower(t.category) IN (
-              SELECT lower(category)
-              FROM budget_scope
-            )
-        ),
         child_spending AS (
           SELECT
             child.id AS budget_id,
@@ -198,6 +199,30 @@ export class BudgetService {
             AND lower(t.category) = lower(child.category)
           WHERE COALESCE(child.is_active, true) = true
           GROUP BY child.id, child.category, child.amount
+        ),
+        direct_spending AS (
+          SELECT COALESCE(SUM(t.amount), 0) AS spent_amount
+          FROM transactions t
+          JOIN matched_user u ON u.id = t.user_id
+          JOIN selected_budget b ON lower(t.category) = lower(b.category)
+          WHERE t.status = 'confirmed'
+            AND t.transaction_type = 'expense'
+            AND t.transaction_date >= $3::date
+            AND t.transaction_date < $4::date
+        ),
+        totals AS (
+          SELECT
+            CASE
+              WHEN EXISTS (SELECT 1 FROM child_spending)
+              THEN COALESCE(SUM(child_spending.budget_amount), 0)
+              ELSE (SELECT budget_amount FROM selected_budget)
+            END AS budget_amount,
+            CASE
+              WHEN EXISTS (SELECT 1 FROM child_spending)
+              THEN COALESCE(SUM(child_spending.spent_amount), 0)
+              ELSE (SELECT spent_amount FROM direct_spending)
+            END AS spent_amount
+          FROM child_spending
         ),
         child_breakdown AS (
           SELECT COALESCE(
@@ -218,11 +243,11 @@ export class BudgetService {
           sb.id AS budget_id,
           sb.category,
           sb.parent_budget_id,
-          sb.budget_amount,
-          spending.spent_amount,
+          totals.budget_amount,
+          totals.spent_amount,
           child_breakdown.child_breakdown
         FROM selected_budget sb
-        CROSS JOIN spending
+        CROSS JOIN totals
         CROSS JOIN child_breakdown
       `,
       [userId, category, cycle.cycle_start, cycle.cycle_end],
@@ -269,37 +294,75 @@ export class BudgetService {
 
     const result = await this.database.query<BudgetUpsertRow>(
       `
-        INSERT INTO budgets (
-          user_id,
-          category,
-          amount,
-          parent_budget_id,
-          period_type,
-          is_active
+        WITH existing_budget AS (
+          SELECT id
+          FROM budgets
+          WHERE user_id::text = $1
+            AND category = $2
+            AND (
+              $6::boolean = false
+              OR parent_budget_id::text = $4
+            )
+          ORDER BY parent_budget_id NULLS FIRST, id
+          LIMIT 1
+        ),
+        updated_budget AS (
+          UPDATE budgets
+          SET
+            amount = $3,
+            period_type = $5,
+            parent_budget_id = CASE
+              WHEN $6::boolean THEN $4::bigint
+              ELSE budgets.parent_budget_id
+            END
+          WHERE id = (SELECT id FROM existing_budget)
+          RETURNING
+            id AS budget_id,
+            user_id,
+            category,
+            amount,
+            parent_budget_id,
+            period_type,
+            false AS inserted
+        ),
+        inserted_budget AS (
+          INSERT INTO budgets (
+            user_id,
+            category,
+            amount,
+            parent_budget_id,
+            period_type,
+            is_active
+          )
+          SELECT $1::bigint, $2, $3, $4::bigint, $5, true
+          WHERE NOT EXISTS (SELECT 1 FROM updated_budget)
+          RETURNING
+            id AS budget_id,
+            user_id,
+            category,
+            amount,
+            parent_budget_id,
+            period_type,
+            true AS inserted
+        ),
+        changed_budget AS (
+          SELECT * FROM updated_budget
+          UNION ALL
+          SELECT * FROM inserted_budget
         )
-        VALUES ($1, $2, $3, $4, $5, true)
-        ON CONFLICT (user_id, category)
-        DO UPDATE SET
-          amount = EXCLUDED.amount,
-          period_type = EXCLUDED.period_type,
-          parent_budget_id = CASE
-            WHEN $6::boolean THEN EXCLUDED.parent_budget_id
-            ELSE budgets.parent_budget_id
-          END,
-          updated_at = now()
-        RETURNING
-          budgets.id AS budget_id,
-          budgets.user_id,
-          budgets.category,
-          budgets.amount AS amount,
-          budgets.parent_budget_id,
-          (
-            SELECT parent.category
-            FROM budgets parent
-            WHERE parent.id = budgets.parent_budget_id
-          ) AS parent_category,
-          budgets.period_type,
-          (xmax = 0) AS inserted
+        SELECT
+          changed_budget.budget_id,
+          changed_budget.user_id,
+          changed_budget.category,
+          changed_budget.amount,
+          changed_budget.parent_budget_id,
+          parent.category AS parent_category,
+          changed_budget.period_type,
+          changed_budget.inserted
+        FROM changed_budget
+        LEFT JOIN budgets parent
+          ON parent.id = changed_budget.parent_budget_id
+        LIMIT 1
       `,
       [
         userId,
@@ -460,6 +523,22 @@ export class BudgetService {
           category: pendingPayload.category ?? null,
           parent_category: pendingPayload.parent_category ?? null,
           missing_field: missingField,
+        },
+      });
+    }
+
+    if (intent === 'budget_overview') {
+      const messages = await this.getBudgetOverviewMessages(String(userId));
+      await stateStore.resetState({ userId });
+
+      return this.buildHandleResponse({
+        nextState: 'idle',
+        payload: {},
+        text: messages[0] ?? '',
+        data: {
+          intent,
+          messages,
+          message: messages[0] ?? '',
         },
       });
     }
@@ -766,6 +845,7 @@ export class BudgetService {
     const intent = this.cleanStringValue(value) as BudgetHandleIntent | undefined;
     const supported: BudgetHandleIntent[] = [
       'budget_status',
+      'budget_overview',
       'set_budget',
       'set_sub_budget',
       'delete_budget',
@@ -781,6 +861,10 @@ export class BudgetService {
     intent: BudgetHandleIntent,
     payload: BudgetHandlePayload,
   ): 'category' | 'parent_category' | 'amount' | null {
+    if (intent === 'budget_overview') {
+      return null;
+    }
+
     if (intent === 'budget_status') {
       return payload.category ? null : 'category';
     }
@@ -800,6 +884,219 @@ export class BudgetService {
     }
 
     return null;
+  }
+
+  private async getBudgetOverviewMessages(userId: string): Promise<string[]> {
+    if (!this.cleanString(userId)) {
+      throw new BadRequestException('userId is required');
+    }
+
+    const cycleStartDay = await this.getCycleStartDay(userId);
+    const cycle = this.calculateCurrentCycle(new Date(), cycleStartDay);
+    const result = await this.database.query<BudgetOverviewRow>(
+      `
+        WITH matched_user AS (
+          SELECT id
+          FROM telegram_users
+          WHERE id::text = $1 OR telegram_id::text = $1
+          LIMIT 1
+        ),
+        active_budgets AS (
+          SELECT
+            b.id,
+            b.category,
+            b.parent_budget_id,
+            b.amount,
+            parent.category AS parent_category,
+            COUNT(child.id) AS child_count
+          FROM budgets b
+          JOIN matched_user u ON u.id = b.user_id
+          LEFT JOIN budgets parent ON parent.id = b.parent_budget_id
+          LEFT JOIN budgets child
+            ON child.parent_budget_id = b.id
+            AND child.is_active = true
+          WHERE b.is_active = true
+          GROUP BY b.id, b.category, b.parent_budget_id, b.amount, parent.category
+        ),
+        spending AS (
+          SELECT
+            b.id AS budget_id,
+            COALESCE(SUM(t.amount), 0) AS spent_amount
+          FROM active_budgets b
+          CROSS JOIN matched_user u
+          LEFT JOIN transactions t ON t.user_id = u.id
+            AND t.status = 'confirmed'
+            AND t.transaction_type = 'expense'
+            AND t.transaction_date >= $2::date
+            AND t.transaction_date < $3::date
+            AND lower(t.category) = lower(b.category)
+          GROUP BY b.id
+        )
+        SELECT
+          b.id AS budget_id,
+          b.category,
+          b.parent_budget_id,
+          b.parent_category,
+          b.amount,
+          spending.spent_amount,
+          b.child_count
+        FROM active_budgets b
+        JOIN spending ON spending.budget_id = b.id
+        ORDER BY
+          CASE WHEN b.parent_budget_id IS NULL THEN 0 ELSE 1 END,
+          lower(COALESCE(b.parent_category, b.category)),
+          lower(b.category)
+      `,
+      [userId, cycle.cycle_start, cycle.cycle_end],
+    );
+
+    const budgets = result.rows.map((row) => this.mapBudgetOverviewRow(row));
+
+    if (budgets.length === 0) {
+      return ['No active budgets yet. Set one when you are ready.'];
+    }
+
+    return this.chunkBudgetOverviewGroups(
+      this.buildBudgetOverviewGroups(budgets),
+    );
+  }
+
+  private mapBudgetOverviewRow(row: BudgetOverviewRow): BudgetOverviewItem {
+    const amount = this.toNumber(row.amount);
+    const spentAmount = this.toNumber(row.spent_amount);
+
+    return {
+      budget_id: String(row.budget_id),
+      category: row.category,
+      parent_budget_id:
+        row.parent_budget_id === null || row.parent_budget_id === undefined
+          ? null
+          : String(row.parent_budget_id),
+      parent_category: row.parent_category ?? null,
+      amount,
+      spent_amount: spentAmount,
+      child_count: this.toNumber(row.child_count),
+    };
+  }
+
+  private buildBudgetOverviewGroups(budgets: BudgetOverviewItem[]): string[] {
+    const childBudgetsByParentId = new Map<string, BudgetOverviewItem[]>();
+    const parentBudgetIds = new Set(
+      budgets
+        .filter((budget) => budget.parent_budget_id === null)
+        .map((budget) => budget.budget_id),
+    );
+    const parentBudgets = budgets.filter(
+      (budget) =>
+        budget.parent_budget_id === null ||
+        !parentBudgetIds.has(budget.parent_budget_id),
+    );
+
+    budgets
+      .filter(
+        (budget) =>
+          budget.parent_budget_id !== null &&
+          parentBudgetIds.has(budget.parent_budget_id),
+      )
+      .forEach((budget) => {
+        const parentId = budget.parent_budget_id as string;
+        const children = childBudgetsByParentId.get(parentId) ?? [];
+        children.push(budget);
+        childBudgetsByParentId.set(parentId, children);
+      });
+
+    return parentBudgets.map((budget) => {
+      const children = childBudgetsByParentId
+        .get(budget.budget_id)
+        ?.sort((left, right) => left.category.localeCompare(right.category));
+
+      if (!children || children.length === 0) {
+        return this.formatBudgetOverviewLine(budget);
+      }
+
+      const childBudgetAmount = children.reduce(
+        (total, child) => total + child.amount,
+        0,
+      );
+      const childSpentAmount = children.reduce(
+        (total, child) => total + child.spent_amount,
+        0,
+      );
+      const parentLine = this.formatBudgetOverviewLine({
+        category: budget.category,
+        amount: childBudgetAmount || budget.amount,
+        spent_amount: childSpentAmount,
+      });
+      const childLines = children.map((child, index) => {
+        const prefix = index === children.length - 1 ? '└' : '├';
+        return `${prefix} ${this.formatBudgetOverviewLine(child, '—')}`;
+      });
+
+      return [parentLine, ...childLines].join('\n');
+    });
+  }
+
+  private formatBudgetOverviewLine(
+    budget: Pick<
+      BudgetOverviewItem,
+      'category' | 'amount' | 'spent_amount'
+    >,
+    separator = '-',
+  ): string {
+    return `${this.escapeTelegramHtml(budget.category)} ${separator} ${this.formatTelegramCurrency(
+      budget.spent_amount,
+    )} / ${this.formatTelegramCurrency(budget.amount)}`;
+  }
+
+  private chunkBudgetOverviewGroups(groups: string[]): string[] {
+    const header = '📊 Budget Overview';
+    const messages: string[] = [];
+    let current = header;
+
+    for (const group of groups) {
+      const candidate = `${current}\n\n${group}`;
+
+      if (candidate.length <= this.budgetOverviewMaxMessageLength) {
+        current = candidate;
+        continue;
+      }
+
+      messages.push(current);
+
+      if (group.length + header.length + 2 <= this.budgetOverviewMaxMessageLength) {
+        current = `${header}\n\n${group}`;
+        continue;
+      }
+
+      const splitGroupMessages = this.chunkLongBudgetOverviewGroup(header, group);
+      messages.push(...splitGroupMessages.slice(0, -1));
+      current = splitGroupMessages[splitGroupMessages.length - 1] ?? header;
+    }
+
+    messages.push(current);
+
+    return messages;
+  }
+
+  private chunkLongBudgetOverviewGroup(header: string, group: string): string[] {
+    const messages: string[] = [];
+    let current = header;
+
+    for (const line of group.split('\n')) {
+      const candidate = `${current}\n${line}`;
+
+      if (candidate.length <= this.budgetOverviewMaxMessageLength) {
+        current = candidate;
+        continue;
+      }
+
+      messages.push(current);
+      current = `${header}\n\n${line}`;
+    }
+
+    messages.push(current);
+
+    return messages;
   }
 
   private buildPendingBudgetPayload(
@@ -984,7 +1281,7 @@ export class BudgetService {
             period_type,
             is_active
           )
-          SELECT $1, $2, NULL, NULL, $3, true
+          SELECT $1::bigint, $2, NULL, NULL, $3, true
           WHERE NOT EXISTS (SELECT 1 FROM existing_parent)
           RETURNING id, category, true AS inserted
         )

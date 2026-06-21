@@ -8,7 +8,7 @@ This checklist turns the parity audit into reviewable migration work. It reflect
 
 - Aegis has `POST /aegis/n8n-error` and a formatter service that accepts raw-ish n8n error payloads and returns structured alert fields plus `chatText`.
 - Veyra budget status has `POST /veyra/budgets/status`, cycle-start-day calculation, confirmed expense spending, inactive budget filtering, parent/child budget scope, and production `budgets.amount` usage.
-- Veyra budget upsert has `POST /veyra/budgets/upsert`, writes `budgets.amount`, inserts new rows as active, updates existing rows by `(user_id, category)`, and preserves parent links unless a parent category is explicitly supplied.
+- Veyra budget upsert has `POST /veyra/budgets/upsert`, writes `budgets.amount`, inserts new rows as active, updates existing rows by exact-case user/category matching, and preserves parent links unless a parent category is explicitly supplied.
 - Veyra overspending has `POST /veyra/budgets/overspending-check`, threshold classification at 80/100/120, and duplicate-alert read checks.
 - Transaction normalization has `POST /veyra/transactions/normalize`, type normalization, amount normalization, merchant alias lookup, category rule lookup, confidence, and warnings.
 - Transaction confirmation payloads now default to production callback names: `save_transaction:{transactionId}`, `cancel_transaction:{transactionId}`, and `change_categories:{transactionId}`.
@@ -66,7 +66,7 @@ This checklist turns the parity audit into reviewable migration work. It reflect
 - [x] Add fixture tests for direct category, parent budget with children, missing category, inactive category, and custom cycle day.
 - [x] Add child breakdown response fields if n8n budget status display needs to move to Core API.
 - [x] Decide whether parent budget spending should include the parent category itself, child categories only, or both per production branch.
-  - Decision: parent budget total spending includes the selected parent category itself plus active child budget categories; `child_breakdown` contains active child categories only.
+  - Decision: when active children exist, parent budget totals aggregate active child budget amounts and child spending; `child_breakdown` contains active child categories only.
 - [x] Document the exact n8n HTTP Request payload for direct category and parent category lookup.
 - [x] Replace only budget lookup/status SQL after fixture comparison; keep Telegram trigger, intent routing, message rendering, and send nodes in n8n.
 
@@ -78,7 +78,7 @@ This checklist turns the parity audit into reviewable migration work. It reflect
   - Decision: Core API creates a missing exact-case parent budget as an active parent row with no amount when `parentCategory` is provided.
 - [x] Add tests for single-category create, single-category update, existing-parent child create, amount-only child update, and missing-parent behavior.
 - [x] Confirm case-sensitivity behavior against the production unique index and active workflow.
-  - Decision: budget upsert uses exact category matching and the existing `(user_id, category)` unique index behavior; it does not lower-case categories.
+  - Decision: budget upsert uses exact category matching; child rows follow the existing `(parent_budget_id, category)` unique constraint, and top-level rows are matched in code by user/category because `parent_budget_id` is nullable.
 - [x] Document n8n payloads for single budget and child budget creation.
 - [x] Replace only budget create/update DB logic for covered paths; keep parsing, Telegram messages, delete behavior, and orchestration in n8n.
 
