@@ -9,6 +9,7 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3000
+      - DATABASE_URL=postgresql://${VEYRA_DB_USER}:${VEYRA_DB_PASSWORD}@postgres:5432/veyra
     expose:
       - "3000"
     networks:
