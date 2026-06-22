@@ -24,6 +24,13 @@ import {
   TransactionSetCategoryRequestDto,
   TransactionSetCategoryResponseDto,
 } from './dto/category-callback.dto';
+import {
+  SavedTransactionDto,
+  SaveTransactionInputDto,
+  TransactionHandleRequestDto,
+  TransactionHandleResponseDto,
+  TransactionStatus,
+} from './dto/handle-transaction.dto';
 
 const TRANSACTION_CATEGORY_OPTIONS = [
   'Food',
@@ -158,6 +165,58 @@ export class TransactionService {
       }),
       warnings,
     };
+  }
+
+  async handleManualTransaction(
+    request: TransactionHandleRequestDto,
+  ): Promise<TransactionHandleResponseDto> {
+    const source = this.normalizeSource(request.source);
+
+    if (source !== 'manual') {
+      return {
+        status: 'unsupported_source',
+        transactionId: null,
+        message: `Transaction source ${source ?? 'unknown'} is not supported yet.`,
+      };
+    }
+
+    const llmResult = this.requireLlmResult(request.llmResult);
+    this.requireHandleMerchant(llmResult.merchant);
+    const confidence = this.normalizeConfidence(llmResult.confidence);
+    const normalized = await this.normalizeTransaction({
+      userId: String(request.userId ?? ''),
+      transactionType: llmResult.transaction_type ?? '',
+      amount: llmResult.amount ?? 0,
+      merchant: llmResult.merchant ?? '',
+      category: llmResult.category ?? undefined,
+      transactionDate: llmResult.transaction_date ?? undefined,
+      source,
+      notes: llmResult.notes ?? null,
+      rawPayload: llmResult,
+    });
+
+    if (!normalized.category) {
+      throw new BadRequestException('category is required');
+    }
+
+    const status = this.statusFromConfidence(confidence);
+    const savedTransaction = await this.saveTransaction({
+      normalized: {
+        ...normalized,
+        confidence,
+        category: normalized.category,
+      },
+      status,
+      confidence,
+      rawPayload: {
+        text: request.text ?? null,
+        source,
+        telegramUserId: request.telegramUserId ?? null,
+        llmResult,
+      },
+    });
+
+    return this.buildHandleResponse(savedTransaction);
   }
 
   buildConfirmationPayload(
@@ -574,6 +633,148 @@ export class TransactionService {
     }
 
     return Math.abs(normalized);
+  }
+
+  normalizeConfidence(value: number | undefined): number {
+    if (value === undefined || value === null) {
+      throw new BadRequestException('confidence is required');
+    }
+
+    const scaled = value >= 0 && value <= 1 ? value * 100 : value;
+    const normalized = Math.round(scaled);
+
+    if (!Number.isFinite(normalized) || normalized < 0 || normalized > 100) {
+      throw new BadRequestException('confidence must be between 0 and 100');
+    }
+
+    return normalized;
+  }
+
+  private requireLlmResult(
+    llmResult: TransactionHandleRequestDto['llmResult'],
+  ): NonNullable<TransactionHandleRequestDto['llmResult']> {
+    if (!llmResult) {
+      throw new BadRequestException('llmResult is required');
+    }
+
+    if ((llmResult.missing_fields ?? []).length > 0) {
+      throw new BadRequestException('llmResult is missing required fields');
+    }
+
+    return llmResult;
+  }
+
+  private requireHandleMerchant(merchant: string | undefined): void {
+    if (!this.cleanString(merchant)) {
+      throw new BadRequestException('merchant is required');
+    }
+  }
+
+  private statusFromConfidence(confidence: number): TransactionStatus {
+    return confidence >= 90 ? 'confirmed' : 'pending';
+  }
+
+  private async saveTransaction(
+    input: SaveTransactionInputDto,
+  ): Promise<SavedTransactionDto> {
+    if (!input.normalized.category) {
+      throw new BadRequestException('category is required');
+    }
+
+    const result = await this.database.query<InsertedTransactionRow>(
+      `
+        INSERT INTO transactions (
+          user_id,
+          transaction_type,
+          amount,
+          merchant,
+          merchant_normalized,
+          category,
+          transaction_date,
+          source,
+          notes,
+          status,
+          confidence,
+          raw_payload
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, 'manual', $8, $9, $10, $11)
+        RETURNING id
+      `,
+      [
+        input.normalized.userId,
+        input.normalized.transactionType,
+        input.normalized.amount,
+        input.normalized.merchant,
+        input.normalized.merchantNormalized,
+        input.normalized.category,
+        input.normalized.transactionDate,
+        input.normalized.notes,
+        input.status,
+        input.confidence,
+        input.rawPayload,
+      ],
+    );
+
+    const insertedId = result.rows[0]?.id;
+
+    if (insertedId === undefined) {
+      throw new BadRequestException('transaction insert failed');
+    }
+
+    return {
+      id: String(insertedId),
+      userId: input.normalized.userId,
+      transactionType: input.normalized.transactionType,
+      amount: input.normalized.amount,
+      merchant: input.normalized.merchant,
+      merchantNormalized: input.normalized.merchantNormalized,
+      category: input.normalized.category,
+      transactionDate: input.normalized.transactionDate,
+      source: 'manual',
+      notes: input.normalized.notes,
+      status: input.status,
+      confidence: input.confidence,
+    };
+  }
+
+  private buildHandleResponse(
+    transaction: SavedTransactionDto,
+  ): TransactionHandleResponseDto {
+    if (transaction.status === 'confirmed') {
+      return {
+        status: transaction.status,
+        transactionId: transaction.id,
+        message: `${String.fromCodePoint(0x2705)} Recorded: ${this.formatCurrency(
+          transaction.amount,
+        )} at ${this.titleCaseWords(
+          transaction.merchantNormalized,
+        )} under ${transaction.category}.`,
+      };
+    }
+
+    const confirmationPayload = this.buildConfirmationPayload({
+      transactionId: transaction.id,
+      userId: transaction.userId,
+      transactionType: transaction.transactionType,
+      amount: transaction.amount,
+      merchant: transaction.merchant,
+      merchantNormalized: transaction.merchantNormalized,
+      category: transaction.category,
+      notes: transaction.notes,
+      transactionDate: transaction.transactionDate,
+      source: transaction.source,
+      confidence: transaction.confidence,
+    });
+
+    return {
+      status: transaction.status,
+      transactionId: transaction.id,
+      message: 'Please confirm this transaction.',
+      confirmationPayload: {
+        text: confirmationPayload.text,
+        reply_markup: confirmationPayload.replyMarkup,
+      },
+    };
   }
 
   private normalizeAmountString(value: string): string {
@@ -1111,6 +1312,33 @@ export class TransactionService {
 
   private titleCase(value: string): string {
     return value.charAt(0).toUpperCase() + value.slice(1);
+  }
+
+  private titleCaseWords(value: string): string {
+    return value
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((word) => this.titleCase(word.toLowerCase()))
+      .join(' ');
+  }
+
+  private normalizeSource(value: string | undefined): string | undefined {
+    const source = this.cleanString(value)?.toLowerCase();
+
+    if (!source) {
+      throw new BadRequestException('source is required');
+    }
+
+    if (
+      source === 'telegram' ||
+      source === 'email' ||
+      source === 'manual' ||
+      source === 'import'
+    ) {
+      return source;
+    }
+
+    return source;
   }
 
   private async resolveMerchantNormalized(

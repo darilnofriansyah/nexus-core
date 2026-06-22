@@ -526,6 +526,101 @@ Example response:
 }
 ```
 
+### `POST /api/veyra/transactions/handle`
+
+Handles one structured manual transaction result from the existing LLM parser. This endpoint does not parse raw free text itself: n8n or the client should send the user text to the LLM first, then pass the structured `llmResult` here.
+
+The MVP supports `source: "manual"` only. `source: "email"` and other sources intentionally return `status: "unsupported_source"` for now; email transaction handling will be implemented later.
+
+Core API normalizes transaction type, amount, transaction date, merchant, merchant alias, category, and confidence, then inserts directly into the production `transactions` table. It does not write to `pending_transactions`, does not create merchant aliases or category rules, and does not send Telegram messages. If `llmResult.category` is provided, Core API accepts it even when it does not exist in `budgets`; if category is missing, Core API tries the existing `category_rules` lookup and rejects the request if no category can be resolved because `transactions.category` is required.
+
+Confidence may be sent as a decimal (`0.94`) or integer (`94`). Core API saves it as an integer from `0` to `100`; values `>= 90` are saved as `confirmed`, and lower values are saved as `pending`.
+
+Example request body:
+
+```json
+{
+  "telegramUserId": "976684739",
+  "userId": 1,
+  "source": "manual",
+  "text": "Spend 25k for kopi tuku",
+  "llmResult": {
+    "transaction_type": "expense",
+    "amount": 25000,
+    "merchant": "kopi tuku",
+    "category": "Coffee",
+    "confidence": 0.94,
+    "transaction_date": null,
+    "notes": null,
+    "missing_fields": []
+  }
+}
+```
+
+Example confirmed response:
+
+```json
+{
+  "ok": true,
+  "data": {
+    "status": "confirmed",
+    "transactionId": "123",
+    "message": "\u2705 Recorded: Rp25.000 at Kopi Tuku under Coffee."
+  }
+}
+```
+
+Example pending response:
+
+```json
+{
+  "ok": true,
+  "data": {
+    "status": "pending",
+    "transactionId": "123",
+    "message": "Please confirm this transaction.",
+    "confirmationPayload": {
+      "text": "Confirm transaction\n\nType: Expense\nAmount: Rp25.000\nMerchant: kopi tuku\nCategory: Coffee\nWallet: -\nNotes: -",
+      "reply_markup": {
+        "inline_keyboard": [
+          [
+            {
+              "text": "Approve",
+              "callback_data": "save_transaction:123"
+            },
+            {
+              "text": "Change Category",
+              "callback_data": "change_categories:123"
+            }
+          ],
+          [
+            {
+              "text": "Reject",
+              "callback_data": "cancel_transaction:123"
+            }
+          ]
+        ]
+      }
+    }
+  }
+}
+```
+
+Unsupported source response:
+
+```json
+{
+  "ok": true,
+  "data": {
+    "status": "unsupported_source",
+    "transactionId": null,
+    "message": "Transaction source email is not supported yet."
+  }
+}
+```
+
+Validation errors include missing `llmResult`, non-empty `llmResult.missing_fields`, missing required transaction fields, invalid amount, missing merchant, missing or unresolved category, unsupported transaction type, and confidence outside `0` to `100` after normalization.
+
 ### `POST /api/veyra/transactions/confirmation-payload`
 
 Builds Telegram-ready confirmation text and inline keyboard data for a pending transaction. Manual payloads return plain text. Email payloads default to Telegram HTML text and `parseMode: "HTML"`. This endpoint does not insert or update transactions, does not handle callbacks, and does not send Telegram messages.
@@ -1048,6 +1143,24 @@ Body:
 ```
 
 This replaces only the n8n transaction normalization Code node logic for already-parsed transaction candidates. Keep Gmail triggers, email fetch/parsing, n8n orchestration, LLM categorization fallback, Telegram confirmation/send, transaction insertion, pending transaction handling, merchant review queue upserts, and credentials in n8n for now.
+
+Recommended Veyra manual transaction handle node settings:
+
+```txt
+Method: POST
+URL: http://core-api:3001/api/veyra/transactions/handle
+Send Body: JSON
+Body:
+{
+  "telegramUserId": "={{$json.telegramUserId}}",
+  "userId": "={{$json.userId}}",
+  "source": "manual",
+  "text": "={{$json.text}}",
+  "llmResult": "={{$json.llmResult}}"
+}
+```
+
+Use this after the existing manual transaction LLM parser. For `data.status = "confirmed"`, send `data.message` to Telegram. For `data.status = "pending"`, send `data.confirmationPayload.text` with `data.confirmationPayload.reply_markup`; the buttons use the existing production callbacks `save_transaction:{transactionId}`, `cancel_transaction:{transactionId}`, and `change_categories:{transactionId}`. This replaces only the manual transaction normalize/insert/confirmation decision logic. Keep Telegram triggers, LLM parsing, Telegram sending, callback routing, email transaction handling, and credentials in n8n for now.
 
 Recommended Veyra transaction confirmation payload node settings:
 

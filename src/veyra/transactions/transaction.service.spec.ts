@@ -228,6 +228,293 @@ test('defaults optional fields', async () => {
   assert.ok(transactionTime <= after);
 });
 
+test('handles manual transaction with decimal confidence as confirmed', async () => {
+  const { calls, service } = createService([[], [{ id: 'tx-123' }]]);
+
+  const result = await service.handleManualTransaction({
+    telegramUserId: '976684739',
+    userId: 1,
+    source: 'manual',
+    text: 'Spend 25k for kopi tuku',
+    llmResult: {
+      transaction_type: 'expense',
+      amount: 25000,
+      merchant: 'kopi tuku',
+      category: 'Coffee',
+      confidence: 0.94,
+      transaction_date: null,
+      notes: null,
+      missing_fields: [],
+    },
+  });
+
+  assert.equal(result.status, 'confirmed');
+  assert.equal(result.transactionId, 'tx-123');
+  assert.match(result.message, /Recorded: Rp25\.000 at Kopi Tuku under Coffee\./);
+  assert.match(calls[1].text, /INSERT INTO transactions/);
+  assert.deepEqual(calls[1].values.slice(0, 11), [
+    '1',
+    'expense',
+    25000,
+    'kopi tuku',
+    'kopi tuku',
+    'Coffee',
+    calls[1].values[6],
+    null,
+    'confirmed',
+    94,
+    {
+      text: 'Spend 25k for kopi tuku',
+      source: 'manual',
+      telegramUserId: '976684739',
+      llmResult: {
+        transaction_type: 'expense',
+        amount: 25000,
+        merchant: 'kopi tuku',
+        category: 'Coffee',
+        confidence: 0.94,
+        transaction_date: null,
+        notes: null,
+        missing_fields: [],
+      },
+    },
+  ]);
+});
+
+test('handles manual transaction with integer confidence as confirmed', async () => {
+  const { calls, service } = createService([[], [{ id: 'tx-94' }]]);
+
+  const result = await service.handleManualTransaction({
+    userId: 1,
+    source: 'manual',
+    llmResult: {
+      transaction_type: 'expense',
+      amount: 25000,
+      merchant: 'kopi tuku',
+      category: 'Coffee',
+      confidence: 94,
+    },
+  });
+
+  assert.equal(result.status, 'confirmed');
+  assert.equal(calls[1].values[9], 94);
+  assert.equal(calls[1].values[8], 'confirmed');
+});
+
+test('handles manual transaction with low confidence as pending confirmation', async () => {
+  const { calls, service } = createService([[], [{ id: 'tx-pending' }]]);
+
+  const result = await service.handleManualTransaction({
+    userId: 1,
+    source: 'manual',
+    llmResult: {
+      transaction_type: 'expense',
+      amount: 25000,
+      merchant: 'kopi tuku',
+      category: 'Coffee',
+      confidence: 0.75,
+    },
+  });
+
+  assert.equal(result.status, 'pending');
+  assert.equal(calls[1].values[8], 'pending');
+  assert.equal(calls[1].values[9], 75);
+  assert.equal(result.message, 'Please confirm this transaction.');
+  assert.match(result.confirmationPayload?.text ?? '', /Confirm transaction/);
+  assert.deepEqual(result.confirmationPayload?.reply_markup.inline_keyboard, [
+    [
+      { text: 'Approve', callback_data: 'save_transaction:tx-pending' },
+      {
+        text: 'Change Category',
+        callback_data: 'change_categories:tx-pending',
+      },
+    ],
+    [{ text: 'Reject', callback_data: 'cancel_transaction:tx-pending' }],
+  ]);
+});
+
+test('accepts llm-provided category even when it is not in budgets', async () => {
+  const { calls, service } = createService([[], [{ id: 'tx-new-category' }]]);
+
+  const result = await service.handleManualTransaction({
+    userId: 1,
+    source: 'manual',
+    llmResult: {
+      transaction_type: 'expense',
+      amount: 25000,
+      merchant: 'kopi tuku',
+      category: 'Specialty Coffee',
+      confidence: 95,
+    },
+  });
+
+  assert.equal(result.status, 'confirmed');
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].values[5], 'Specialty Coffee');
+});
+
+test('rejects missing category when no category rule resolves it', async () => {
+  const { calls, service } = createService([[], []]);
+
+  await assert.rejects(
+    () =>
+      service.handleManualTransaction({
+        userId: 1,
+        source: 'manual',
+        llmResult: {
+          transaction_type: 'expense',
+          amount: 25000,
+          merchant: 'kopi tuku',
+          confidence: 95,
+        },
+      }),
+    BadRequestException,
+  );
+  assert.equal(calls.length, 2);
+});
+
+test('resolves missing category from category rule before saving', async () => {
+  const { calls, service } = createService([
+    [],
+    [{ category: 'Coffee' }],
+    [{ id: 'tx-rule' }],
+  ]);
+
+  const result = await service.handleManualTransaction({
+    userId: 1,
+    source: 'manual',
+    llmResult: {
+      transaction_type: 'expense',
+      amount: 25000,
+      merchant: 'kopi tuku',
+      confidence: 95,
+    },
+  });
+
+  assert.equal(result.status, 'confirmed');
+  assert.equal(calls[2].values[5], 'Coffee');
+  assert.match(calls[1].text, /FROM category_rules/);
+});
+
+test('returns unsupported source response without saving', async () => {
+  const { calls, service } = createService();
+
+  const result = await service.handleManualTransaction({
+    userId: 1,
+    source: 'email',
+    llmResult: {
+      transaction_type: 'expense',
+      amount: 25000,
+      merchant: 'kopi tuku',
+      category: 'Coffee',
+      confidence: 95,
+    },
+  });
+
+  assert.deepEqual(result, {
+    status: 'unsupported_source',
+    transactionId: null,
+    message: 'Transaction source email is not supported yet.',
+  });
+  assert.equal(calls.length, 0);
+});
+
+test('rejects missing llmResult without saving', async () => {
+  const { calls, service } = createService();
+
+  await assert.rejects(
+    () =>
+      service.handleManualTransaction({
+        userId: 1,
+        source: 'manual',
+      }),
+    BadRequestException,
+  );
+  assert.equal(calls.length, 0);
+});
+
+test('rejects non-empty llm missing_fields without saving', async () => {
+  const { calls, service } = createService();
+
+  await assert.rejects(
+    () =>
+      service.handleManualTransaction({
+        userId: 1,
+        source: 'manual',
+        llmResult: {
+          transaction_type: 'expense',
+          amount: 25000,
+          merchant: 'kopi tuku',
+          category: 'Coffee',
+          confidence: 95,
+          missing_fields: ['category'],
+        },
+      }),
+    BadRequestException,
+  );
+  assert.equal(calls.length, 0);
+});
+
+test('rejects missing required transaction fields without saving', async () => {
+  const { calls, service } = createService();
+
+  await assert.rejects(
+    () =>
+      service.handleManualTransaction({
+        userId: 1,
+        source: 'manual',
+        llmResult: {
+          amount: 25000,
+          merchant: 'kopi tuku',
+          category: 'Coffee',
+          confidence: 95,
+        },
+      }),
+    BadRequestException,
+  );
+  assert.equal(calls.length, 0);
+});
+
+test('confirms a pending transaction created by manual handle', async () => {
+  const { calls, service } = createService([
+    [],
+    [{ id: 'tx-created' }],
+    [
+      {
+        id: 'tx-created',
+        user_id: '1',
+        amount: '25000',
+        merchant: 'kopi tuku',
+        merchant_normalized: 'kopi tuku',
+        category: 'Coffee',
+        status: 'pending',
+      },
+    ],
+    [],
+  ]);
+
+  const handleResult = await service.handleManualTransaction({
+    userId: 1,
+    source: 'manual',
+    llmResult: {
+      transaction_type: 'expense',
+      amount: 25000,
+      merchant: 'kopi tuku',
+      category: 'Coffee',
+      confidence: 75,
+    },
+  });
+  const confirmResult = await service.confirmTransaction({
+    transactionId: handleResult.transactionId ?? '',
+    userId: '1',
+  });
+
+  assert.equal(handleResult.status, 'pending');
+  assert.equal(confirmResult.status, 'confirmed');
+  assert.deepEqual(calls[3].values, ['confirmed', 'tx-created', '1']);
+  assert.match(calls[3].text, /UPDATE transactions/);
+});
+
 test('builds confirmation payload for normal pending transaction', () => {
   const { service } = createService();
 

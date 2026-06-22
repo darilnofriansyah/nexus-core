@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Param, Post } from '@nestjs/common';
-import { ok } from '../common/dto/api-response.dto';
+import { ApiResponse, ok } from '../common/dto/api-response.dto';
 import {
   BudgetHandleRequestDto,
   BudgetHandleResponseDto,
@@ -49,6 +49,10 @@ import {
   NormalizeTransactionRequestDto,
   NormalizeTransactionResponseDto,
 } from './transactions/dto/normalize-transaction.dto';
+import {
+  TransactionHandleRequestDto,
+  TransactionHandleResponseDto,
+} from './transactions/dto/handle-transaction.dto';
 import { TransactionService } from './transactions/transaction.service';
 
 @Controller('veyra')
@@ -139,6 +143,13 @@ export class VeyraController {
     @Body() body: NormalizeTransactionRequestDto,
   ): Promise<NormalizeTransactionResponseDto> {
     return this.transactionService.normalizeTransaction(body);
+  }
+
+  @Post('transactions/handle')
+  async handleTransaction(
+    @Body() body: TransactionHandleRequestDto,
+  ): Promise<ApiResponse<TransactionHandleResponseDto>> {
+    return ok(await this.transactionService.handleManualTransaction(body));
   }
 
   @Post('transactions/confirmation-payload')
