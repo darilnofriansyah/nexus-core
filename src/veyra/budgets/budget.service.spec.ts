@@ -311,6 +311,79 @@ test('uses custom cycle day for budget status lookup', async () => {
   assert.equal(status.cycle_end, '2026-06-20');
 });
 
+test('lists active budget categories with parent category names', async () => {
+  const { calls, service } = createService([
+    [
+      {
+        id: 12,
+        category: 'Food',
+        parent_category: 'Monthly Allowance',
+      },
+      {
+        id: 13,
+        category: 'Transport',
+        parent_category: 'Monthly Allowance',
+      },
+      {
+        id: 18,
+        category: 'Netflix',
+        parent_category: 'Subscription',
+      },
+      {
+        id: 21,
+        category: 'Health',
+        parent_category: null,
+      },
+    ],
+  ]);
+
+  const result = await service.getBudgetCategories({ userId: 1 });
+
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].values, ['1']);
+  assert.match(calls[0].text, /FROM budgets b/);
+  assert.match(
+    calls[0].text,
+    /LEFT JOIN budgets parent ON parent\.id = b\.parent_budget_id/,
+  );
+  assert.match(calls[0].text, /COALESCE\(b\.is_active, true\) = true/);
+  assert.deepEqual(result, {
+    status: 'ok',
+    categories: [
+      {
+        id: 12,
+        category: 'Food',
+        parent_category: 'Monthly Allowance',
+      },
+      {
+        id: 13,
+        category: 'Transport',
+        parent_category: 'Monthly Allowance',
+      },
+      {
+        id: 18,
+        category: 'Netflix',
+        parent_category: 'Subscription',
+      },
+      {
+        id: 21,
+        category: 'Health',
+        parent_category: null,
+      },
+    ],
+  });
+});
+
+test('requires userId to list budget categories', async () => {
+  const { calls, service } = createService();
+
+  await assert.rejects(
+    service.getBudgetCategories({ userId: '' }),
+    BadRequestException,
+  );
+  assert.equal(calls.length, 0);
+});
+
 test('creates a budget without parent', async () => {
   const { calls, service } = createService([
     [

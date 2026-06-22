@@ -17,6 +17,11 @@ import {
   BudgetStatusResponseDto,
 } from './dto/budget-status.dto';
 import {
+  BudgetCategoriesRequestDto,
+  BudgetCategoriesResponseDto,
+  BudgetCategoryDto,
+} from './dto/budget-categories.dto';
+import {
   OverspendingAlertType,
   OverspendingCheckRequestDto,
   OverspendingCheckResponseDto,
@@ -60,6 +65,12 @@ interface BudgetOverviewRow extends QueryResultRow {
   amount: string | number | null;
   spent_amount: string | number | null;
   child_count: string | number;
+}
+
+interface BudgetCategoryRow extends QueryResultRow {
+  id: string | number;
+  category: string;
+  parent_category: string | null;
 }
 
 interface AlertExistsRow extends QueryResultRow {
@@ -260,6 +271,42 @@ export class BudgetService {
     }
 
     return this.mapBudgetStatusRow(row, cycle);
+  }
+
+  async getBudgetCategories(
+    request: BudgetCategoriesRequestDto,
+  ): Promise<BudgetCategoriesResponseDto> {
+    const userId = this.cleanString(String(request.userId ?? ''));
+
+    if (!userId) {
+      throw new BadRequestException('userId is required');
+    }
+
+    const result = await this.database.query<BudgetCategoryRow>(
+      `
+        WITH matched_user AS (
+          SELECT id
+          FROM telegram_users
+          WHERE id::text = $1
+          LIMIT 1
+        )
+        SELECT
+          b.id,
+          b.category,
+          parent.category AS parent_category
+        FROM budgets b
+        JOIN matched_user u ON u.id = b.user_id
+        LEFT JOIN budgets parent ON parent.id = b.parent_budget_id
+        WHERE COALESCE(b.is_active, true) = true
+        ORDER BY lower(COALESCE(parent.category, b.category)), lower(b.category)
+      `,
+      [userId],
+    );
+
+    return {
+      status: 'ok',
+      categories: result.rows.map((row) => this.mapBudgetCategoryRow(row)),
+    };
   }
 
   async upsertBudget(
@@ -641,6 +688,14 @@ export class BudgetService {
       child_breakdown: this.mapChildBreakdown(row.child_breakdown),
       cycle_start: cycle.cycle_start,
       cycle_end: cycle.cycle_end,
+    };
+  }
+
+  mapBudgetCategoryRow(row: BudgetCategoryRow): BudgetCategoryDto {
+    return {
+      id: row.id,
+      category: row.category,
+      parent_category: row.parent_category ?? null,
     };
   }
 

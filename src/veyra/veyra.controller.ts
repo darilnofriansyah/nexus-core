@@ -20,6 +20,10 @@ import {
   BudgetStatusResponseDto,
 } from './budgets/dto/budget-status.dto';
 import {
+  BudgetCategoriesRequestDto,
+  BudgetCategoriesResponseDto,
+} from './budgets/dto/budget-categories.dto';
+import {
   OverspendingCheckRequestDto,
   OverspendingCheckResponseDto,
 } from './budgets/dto/overspending-check.dto';
@@ -112,6 +116,13 @@ export class VeyraController {
     @Body() body: BudgetStatusRequestDto,
   ): Promise<BudgetStatusResponseDto> {
     return this.budgetService.getBudgetStatus(body);
+  }
+
+  @Post('budgets/categories')
+  getBudgetCategories(
+    @Body() body: BudgetCategoriesRequestDto,
+  ): Promise<BudgetCategoriesResponseDto> {
+    return this.budgetService.getBudgetCategories(body);
   }
 
   @Post('budgets/handle')

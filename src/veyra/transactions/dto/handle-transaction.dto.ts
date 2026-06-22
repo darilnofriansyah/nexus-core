@@ -6,6 +6,7 @@ import { TelegramReplyMarkupDto } from './confirmation-payload.dto';
 
 export type TransactionSource = 'telegram' | 'email' | 'manual' | 'import';
 export type TransactionStatus = 'pending' | 'confirmed' | 'rejected';
+export type TransactionHandleStateName = 'idle' | 'record_transaction_state';
 
 export interface ManualTransactionLlmResultDto {
   transaction_type?: string;
@@ -32,10 +33,18 @@ export interface TransactionHandleConfirmationPayloadDto {
 }
 
 export interface TransactionHandleResponseDto {
-  status: TransactionStatus | 'cancelled' | 'unsupported_source';
+  status:
+    | TransactionStatus
+    | 'awaiting_missing_field'
+    | 'cancelled'
+    | 'unsupported_source';
   transactionId: string | null;
   message: string;
   confirmationPayload?: TransactionHandleConfirmationPayloadDto;
+  state?: {
+    nextState: TransactionHandleStateName;
+    payload: ManualTransactionLlmResultDto | Record<string, never>;
+  };
 }
 
 export interface SaveTransactionInputDto {

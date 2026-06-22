@@ -259,6 +259,45 @@ Parent category responses include child details when active children exist:
 }
 ```
 
+### `POST /api/veyra/budgets/categories`
+
+Lists active budget categories for one user with each budget's parent category when it has one. This is intended for n8n branches that need budget IDs and category labels without re-running parent-budget SQL.
+
+Request body:
+
+```json
+{
+  "userId": "example-user-id"
+}
+```
+
+Example response:
+
+```json
+{
+  "status": "ok",
+  "categories": [
+    {
+      "id": 12,
+      "category": "Food",
+      "parent_category": "Monthly Allowance"
+    },
+    {
+      "id": 13,
+      "category": "Transport",
+      "parent_category": "Monthly Allowance"
+    },
+    {
+      "id": 18,
+      "category": "Netflix",
+      "parent_category": "Subscription"
+    }
+  ]
+}
+```
+
+This replaces only the active budget category lookup and parent-category join in n8n. Keep Telegram triggers, callback routing, Telegram sending, credentials, retries, and workflow orchestration in n8n.
+
 ### `POST /api/veyra/budgets/upsert`
 
 Creates or updates one budget using exact-case category matching for the same user. Child budgets are matched by `parent_budget_id` and `category`, matching the production `budgets_parent_budget_category_unique` constraint. Top-level budgets are matched in code by user and category because PostgreSQL unique constraints allow multiple `NULL` parent values. `periodType` defaults to `monthly`; other period types are rejected until the database behavior is reviewed.
@@ -536,7 +575,7 @@ Core API normalizes transaction type, amount, transaction date, merchant, mercha
 
 Confidence may be sent as a decimal (`0.94`) or integer (`94`). Core API saves it as an integer from `0` to `100`; values `>= 90` are saved as `confirmed`, and lower values are saved as `pending`.
 
-After a successful manual insert, Core API resets the user's conversation state to `idle`. If the insert fails, the state is preserved so the user can retry. Cancel text (`cancel`, `reset`, `stop`, `exit`, `batal`, or `keluar`) resets the state to `idle` and returns `status: "cancelled"` without inserting a transaction.
+If the LLM returns `missing_fields`, Core API stores the partial payload in `conversation_states` as `record_transaction_state` and returns a follow-up question instead of a validation error. After a successful manual insert, Core API resets the user's conversation state to `idle`. If the insert fails, the state is preserved so the user can retry. Cancel text (`cancel`, `reset`, `stop`, `exit`, `batal`, or `keluar`) resets the state to `idle` and returns `status: "cancelled"` without inserting a transaction.
 
 Example request body:
 
@@ -634,7 +673,31 @@ Cancel response:
 }
 ```
 
-Validation errors include missing `llmResult`, non-empty `llmResult.missing_fields`, missing required transaction fields, invalid amount, missing merchant, missing or unresolved category, unsupported transaction type, and confidence outside `0` to `100` after normalization.
+Missing-field follow-up response:
+
+```json
+{
+  "ok": true,
+  "data": {
+    "status": "awaiting_missing_field",
+    "transactionId": null,
+    "message": "Which category should I use?",
+    "state": {
+      "nextState": "record_transaction_state",
+      "payload": {
+        "transaction_type": "expense",
+        "amount": 25000,
+        "merchant": "kopi tuku",
+        "confidence": 95,
+        "missing_fields": ["category"],
+        "pending": true
+      }
+    }
+  }
+}
+```
+
+Validation errors include missing `llmResult`, missing required transaction fields not reported through `llmResult.missing_fields`, invalid amount, missing merchant, missing or unresolved category, unsupported transaction type, and confidence outside `0` to `100` after normalization.
 
 ### `POST /api/veyra/transactions/confirmation-payload`
 
@@ -1065,6 +1128,20 @@ Cycle end = {{$json.cycle_end}}
 
 This replaces only the n8n budget lookup/status SQL and calculation logic after fixture comparison. Keep Telegram triggers, intent routing, callback routing, message rendering, message sending, budget create/update/delete behavior, and workflow orchestration in n8n for now.
 
+Recommended Veyra budget categories node settings:
+
+```txt
+Method: POST
+URL: http://core-api:3001/api/veyra/budgets/categories
+Send Body: JSON
+Body:
+{
+  "userId": "={{$json.user_id}}"
+}
+```
+
+Use `categories` as the active budget list with parent category labels already attached. This replaces only the n8n budget category list SQL; keep Telegram triggers, callback routing, Telegram sending, credentials, retries, and workflow orchestration in n8n.
+
 Recommended Veyra budget upsert node settings:
 
 ```txt
@@ -1175,7 +1252,7 @@ Body:
 }
 ```
 
-Use this after the existing manual transaction LLM parser. If the user sends cancel/reset text while in transaction state, n8n can call this same endpoint with `source: "manual"` and `text`; Core API returns `data.status = "cancelled"` and clears the conversation state without inserting. For `data.status = "confirmed"`, send `data.message` to Telegram. For `data.status = "pending"`, send `data.confirmationPayload.text` with `data.confirmationPayload.reply_markup`; the buttons use the existing production callbacks `save_transaction:{transactionId}`, `cancel_transaction:{transactionId}`, and `change_categories:{transactionId}`. This replaces only the manual transaction normalize/insert/confirmation decision logic. Keep Telegram triggers, LLM parsing, Telegram sending, callback routing, email transaction handling, and credentials in n8n for now.
+Use this after the existing manual transaction LLM parser. If the parser returns `missing_fields`, Core API persists `record_transaction_state`; n8n should send `data.message` to Telegram as the follow-up question and route the next message back through the record flow. If the user sends cancel/reset text while in transaction state, n8n can call this same endpoint with `source: "manual"` and `text`; Core API returns `data.status = "cancelled"` and clears the conversation state without inserting. For `data.status = "confirmed"`, send `data.message` to Telegram. For `data.status = "pending"`, send `data.confirmationPayload.text` with `data.confirmationPayload.reply_markup`; the buttons use the existing production callbacks `save_transaction:{transactionId}`, `cancel_transaction:{transactionId}`, and `change_categories:{transactionId}`. This replaces only the manual transaction normalize/insert/confirmation decision logic. Keep Telegram triggers, LLM parsing, Telegram sending, callback routing, email transaction handling, and credentials in n8n for now.
 
 Recommended Veyra transaction confirmation payload node settings:
 

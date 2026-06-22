@@ -29,6 +29,7 @@ import {
   SaveTransactionInputDto,
   TransactionHandleRequestDto,
   TransactionHandleResponseDto,
+  TransactionHandleStateName,
   TransactionStatus,
 } from './dto/handle-transaction.dto';
 
@@ -99,6 +100,12 @@ interface CategoryOption {
 }
 
 interface TransactionHandleStateStore {
+  upsertState?(request: {
+    userId: string | number;
+    stateName: TransactionHandleStateName;
+    stateData?: unknown;
+    expiresAt?: string | null;
+  }): Promise<unknown>;
   resetState(request: { userId: string | number }): Promise<unknown>;
 }
 
@@ -195,6 +202,30 @@ export class TransactionService {
     }
 
     const llmResult = this.requireLlmResult(request.llmResult);
+    const missingField = this.firstMissingLlmField(llmResult);
+
+    if (missingField) {
+      const pendingPayload = this.buildPendingTransactionPayload(
+        llmResult,
+        missingField,
+      );
+      await stateStore?.upsertState?.({
+        userId: request.userId,
+        stateName: 'record_transaction_state',
+        stateData: pendingPayload,
+      });
+
+      return {
+        status: 'awaiting_missing_field',
+        transactionId: null,
+        message: this.buildTransactionFollowUpQuestion(missingField),
+        state: {
+          nextState: 'record_transaction_state',
+          payload: pendingPayload,
+        },
+      };
+    }
+
     this.requireHandleMerchant(llmResult.merchant);
     const confidence = this.normalizeConfidence(llmResult.confidence);
     const normalized = await this.normalizeTransaction({
@@ -672,11 +703,64 @@ export class TransactionService {
       throw new BadRequestException('llmResult is required');
     }
 
-    if ((llmResult.missing_fields ?? []).length > 0) {
-      throw new BadRequestException('llmResult is missing required fields');
+    return llmResult;
+  }
+
+  private firstMissingLlmField(
+    llmResult: NonNullable<TransactionHandleRequestDto['llmResult']>,
+  ): string | null {
+    return this.cleanString(llmResult.missing_fields?.[0]) ?? null;
+  }
+
+  private buildPendingTransactionPayload(
+    llmResult: NonNullable<TransactionHandleRequestDto['llmResult']>,
+    missingField: string,
+  ): NonNullable<TransactionHandleRequestDto['llmResult']> & {
+    pending: true;
+  } {
+    return this.withoutUndefinedTransactionFields({
+      transaction_type: llmResult.transaction_type,
+      amount: llmResult.amount,
+      merchant: llmResult.merchant,
+      category: llmResult.category,
+      confidence: llmResult.confidence,
+      transaction_date: llmResult.transaction_date,
+      notes: llmResult.notes,
+      missing_fields: [missingField],
+      pending: true as const,
+    });
+  }
+
+  private buildTransactionFollowUpQuestion(missingField: string): string {
+    if (missingField === 'amount') {
+      return 'How much was the transaction?';
     }
 
-    return llmResult;
+    if (missingField === 'merchant') {
+      return 'Where was the transaction?';
+    }
+
+    if (missingField === 'category') {
+      return 'Which category should I use?';
+    }
+
+    if (missingField === 'transaction_type') {
+      return 'Was this an expense, income, transfer, or reversal?';
+    }
+
+    if (missingField === 'transaction_date') {
+      return 'When did this transaction happen?';
+    }
+
+    return `Please provide ${missingField}.`;
+  }
+
+  private withoutUndefinedTransactionFields<T extends Record<string, unknown>>(
+    value: T,
+  ): T {
+    return Object.fromEntries(
+      Object.entries(value).filter(([, fieldValue]) => fieldValue !== undefined),
+    ) as T;
   }
 
   private requireHandleMerchant(merchant: string | undefined): void {

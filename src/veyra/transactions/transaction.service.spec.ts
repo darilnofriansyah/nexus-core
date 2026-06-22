@@ -25,6 +25,10 @@ function createStateStore() {
   return {
     calls,
     store: {
+      upsertState: async (request: unknown) => {
+        calls.push({ method: 'upsertState', request });
+        return {};
+      },
       resetState: async (request: unknown) => {
         calls.push({ method: 'resetState', request });
         return {};
@@ -557,25 +561,51 @@ test('rejects missing llmResult without saving', async () => {
   assert.equal(calls.length, 0);
 });
 
-test('rejects non-empty llm missing_fields without saving', async () => {
+test('manual transaction missing field saves pending state and asks follow-up', async () => {
   const { calls, service } = createService();
+  const state = createStateStore();
 
-  await assert.rejects(
-    () =>
-      service.handleManualTransaction({
-        userId: 1,
-        source: 'manual',
-        llmResult: {
-          transaction_type: 'expense',
-          amount: 25000,
-          merchant: 'kopi tuku',
-          category: 'Coffee',
-          confidence: 95,
-          missing_fields: ['category'],
-        },
-      }),
-    BadRequestException,
+  const result = await service.handleManualTransaction(
+    {
+      userId: 1,
+      source: 'manual',
+      llmResult: {
+        transaction_type: 'expense',
+        amount: 25000,
+        merchant: 'kopi tuku',
+        confidence: 95,
+        missing_fields: ['category'],
+      },
+    },
+    state.store,
   );
+
+  assert.deepEqual(result, {
+    status: 'awaiting_missing_field',
+    transactionId: null,
+    message: 'Which category should I use?',
+    state: {
+      nextState: 'record_transaction_state',
+      payload: {
+        transaction_type: 'expense',
+        amount: 25000,
+        merchant: 'kopi tuku',
+        confidence: 95,
+        missing_fields: ['category'],
+        pending: true,
+      },
+    },
+  });
+  assert.deepEqual(state.calls, [
+    {
+      method: 'upsertState',
+      request: {
+        userId: 1,
+        stateName: 'record_transaction_state',
+        stateData: result.state?.payload,
+      },
+    },
+  ]);
   assert.equal(calls.length, 0);
 });
 
