@@ -149,7 +149,12 @@ export class VeyraController {
   async handleTransaction(
     @Body() body: TransactionHandleRequestDto,
   ): Promise<ApiResponse<TransactionHandleResponseDto>> {
-    return ok(await this.transactionService.handleManualTransaction(body));
+    return ok(
+      await this.transactionService.handleManualTransaction(
+        body,
+        this.conversationStateService,
+      ),
+    );
   }
 
   @Post('transactions/confirmation-payload')

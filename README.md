@@ -536,6 +536,8 @@ Core API normalizes transaction type, amount, transaction date, merchant, mercha
 
 Confidence may be sent as a decimal (`0.94`) or integer (`94`). Core API saves it as an integer from `0` to `100`; values `>= 90` are saved as `confirmed`, and lower values are saved as `pending`.
 
+After a successful manual insert, Core API resets the user's conversation state to `idle`. If the insert fails, the state is preserved so the user can retry. Cancel text (`cancel`, `reset`, `stop`, `exit`, `batal`, or `keluar`) resets the state to `idle` and returns `status: "cancelled"` without inserting a transaction.
+
 Example request body:
 
 ```json
@@ -615,6 +617,19 @@ Unsupported source response:
     "status": "unsupported_source",
     "transactionId": null,
     "message": "Transaction source email is not supported yet."
+  }
+}
+```
+
+Cancel response:
+
+```json
+{
+  "ok": true,
+  "data": {
+    "status": "cancelled",
+    "transactionId": null,
+    "message": "Transaction recording cancelled."
   }
 }
 ```
@@ -1160,7 +1175,7 @@ Body:
 }
 ```
 
-Use this after the existing manual transaction LLM parser. For `data.status = "confirmed"`, send `data.message` to Telegram. For `data.status = "pending"`, send `data.confirmationPayload.text` with `data.confirmationPayload.reply_markup`; the buttons use the existing production callbacks `save_transaction:{transactionId}`, `cancel_transaction:{transactionId}`, and `change_categories:{transactionId}`. This replaces only the manual transaction normalize/insert/confirmation decision logic. Keep Telegram triggers, LLM parsing, Telegram sending, callback routing, email transaction handling, and credentials in n8n for now.
+Use this after the existing manual transaction LLM parser. If the user sends cancel/reset text while in transaction state, n8n can call this same endpoint with `source: "manual"` and `text`; Core API returns `data.status = "cancelled"` and clears the conversation state without inserting. For `data.status = "confirmed"`, send `data.message` to Telegram. For `data.status = "pending"`, send `data.confirmationPayload.text` with `data.confirmationPayload.reply_markup`; the buttons use the existing production callbacks `save_transaction:{transactionId}`, `cancel_transaction:{transactionId}`, and `change_categories:{transactionId}`. This replaces only the manual transaction normalize/insert/confirmation decision logic. Keep Telegram triggers, LLM parsing, Telegram sending, callback routing, email transaction handling, and credentials in n8n for now.
 
 Recommended Veyra transaction confirmation payload node settings:
 

@@ -19,6 +19,20 @@ function createService(rowsByCall: unknown[][] = []) {
   };
 }
 
+function createStateStore() {
+  const calls: Array<{ method: string; request: unknown }> = [];
+
+  return {
+    calls,
+    store: {
+      resetState: async (request: unknown) => {
+        calls.push({ method: 'resetState', request });
+        return {};
+      },
+    },
+  };
+}
+
 const pendingTransaction = {
   id: 'pending-1',
   user_id: 'user-1',
@@ -131,10 +145,11 @@ test('uses merchant alias lookup when available', async () => {
   });
 
   assert.equal(calls.length, 2);
-  assert.deepEqual(calls[0].values, ['user-1', 'gopay']);
+  assert.deepEqual(calls[0].values, ['gopay']);
   assert.match(calls[0].text, /canonical_name/);
   assert.match(calls[0].text, /alias_name/);
   assert.match(calls[0].text, /LIKE/);
+  assert.doesNotMatch(calls[0].text, /user_id/);
   assert.equal(result.merchantNormalized, 'GoPay');
   assert.equal(result.confidence, 85);
 });
@@ -170,9 +185,10 @@ test('uses category rule lookup when available', async () => {
   });
 
   assert.equal(calls.length, 2);
-  assert.deepEqual(calls[1].values, ['user-1', 'GoPay', 'gopay']);
+  assert.deepEqual(calls[1].values, ['GoPay', 'gopay']);
   assert.match(calls[1].text, /merchant_pattern/);
   assert.doesNotMatch(calls[1].text, /merchant_normalized/);
+  assert.doesNotMatch(calls[1].text, /user_id/);
   assert.match(calls[1].text, /priority DESC NULLS LAST/);
   assert.equal(result.category, 'Transport');
   assert.equal(result.confidence, 95);
@@ -281,6 +297,32 @@ test('handles manual transaction with decimal confidence as confirmed', async ()
   ]);
 });
 
+test('confirmed manual transaction resets state after insert', async () => {
+  const { calls, service } = createService([[], [{ id: 'tx-confirmed' }]]);
+  const state = createStateStore();
+
+  const result = await service.handleManualTransaction(
+    {
+      userId: 1,
+      source: 'manual',
+      llmResult: {
+        transaction_type: 'expense',
+        amount: 25000,
+        merchant: 'kopi tuku',
+        category: 'Coffee',
+        confidence: 95,
+      },
+    },
+    state.store,
+  );
+
+  assert.equal(result.status, 'confirmed');
+  assert.match(calls[1].text, /INSERT INTO transactions/);
+  assert.deepEqual(state.calls, [
+    { method: 'resetState', request: { userId: 1 } },
+  ]);
+});
+
 test('handles manual transaction with integer confidence as confirmed', async () => {
   const { calls, service } = createService([[], [{ id: 'tx-94' }]]);
 
@@ -331,6 +373,88 @@ test('handles manual transaction with low confidence as pending confirmation', a
     ],
     [{ text: 'Reject', callback_data: 'cancel_transaction:tx-pending' }],
   ]);
+});
+
+test('pending manual transaction resets state after insert', async () => {
+  const { calls, service } = createService([[], [{ id: 'tx-pending' }]]);
+  const state = createStateStore();
+
+  const result = await service.handleManualTransaction(
+    {
+      userId: 1,
+      source: 'manual',
+      llmResult: {
+        transaction_type: 'expense',
+        amount: 25000,
+        merchant: 'kopi tuku',
+        category: 'Coffee',
+        confidence: 75,
+      },
+    },
+    state.store,
+  );
+
+  assert.equal(result.status, 'pending');
+  assert.match(calls[1].text, /INSERT INTO transactions/);
+  assert.deepEqual(state.calls, [
+    { method: 'resetState', request: { userId: 1 } },
+  ]);
+});
+
+test('cancel text resets state without inserting transaction', async () => {
+  const { calls, service } = createService();
+  const state = createStateStore();
+
+  const result = await service.handleManualTransaction(
+    {
+      userId: 1,
+      source: 'manual',
+      text: 'batal',
+      llmResult: {
+        transaction_type: 'expense',
+        amount: 25000,
+        merchant: 'kopi tuku',
+        category: 'Coffee',
+        confidence: 95,
+      },
+    },
+    state.store,
+  );
+
+  assert.deepEqual(result, {
+    status: 'cancelled',
+    transactionId: null,
+    message: 'Transaction recording cancelled.',
+  });
+  assert.equal(calls.length, 0);
+  assert.deepEqual(state.calls, [
+    { method: 'resetState', request: { userId: 1 } },
+  ]);
+});
+
+test('failed manual transaction insert does not reset state', async () => {
+  const { service } = createService([[], []]);
+  const state = createStateStore();
+
+  await assert.rejects(
+    () =>
+      service.handleManualTransaction(
+        {
+          userId: 1,
+          source: 'manual',
+          llmResult: {
+            transaction_type: 'expense',
+            amount: 25000,
+            merchant: 'kopi tuku',
+            category: 'Coffee',
+            confidence: 95,
+          },
+        },
+        state.store,
+      ),
+    BadRequestException,
+  );
+  assert.deepEqual(state.calls, []);
 });
 
 test('accepts llm-provided category even when it is not in budgets', async () => {

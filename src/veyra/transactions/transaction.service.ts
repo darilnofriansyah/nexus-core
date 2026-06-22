@@ -98,6 +98,10 @@ interface CategoryOption {
   category: string;
 }
 
+interface TransactionHandleStateStore {
+  resetState(request: { userId: string | number }): Promise<unknown>;
+}
+
 @Injectable()
 export class TransactionService {
   constructor(private readonly database: DatabaseService) {}
@@ -139,12 +143,12 @@ export class TransactionService {
     }
 
     const merchantNormalized = merchant
-      ? await this.resolveMerchantNormalized(userId, merchant)
+      ? await this.resolveMerchantNormalized(merchant)
       : merchant ?? '';
     const category =
       providedCategory ??
       (merchant
-        ? await this.resolveCategory(userId, merchantNormalized, merchant)
+        ? await this.resolveCategory(merchantNormalized, merchant)
         : null);
 
     return {
@@ -169,6 +173,7 @@ export class TransactionService {
 
   async handleManualTransaction(
     request: TransactionHandleRequestDto,
+    stateStore?: TransactionHandleStateStore,
   ): Promise<TransactionHandleResponseDto> {
     const source = this.normalizeSource(request.source);
 
@@ -177,6 +182,15 @@ export class TransactionService {
         status: 'unsupported_source',
         transactionId: null,
         message: `Transaction source ${source ?? 'unknown'} is not supported yet.`,
+      };
+    }
+
+    if (this.isResetText(request.text)) {
+      await this.resetConversationState(request.userId, stateStore);
+      return {
+        status: 'cancelled',
+        transactionId: null,
+        message: 'Transaction recording cancelled.',
       };
     }
 
@@ -215,6 +229,7 @@ export class TransactionService {
         llmResult,
       },
     });
+    await this.resetConversationState(request.userId, stateStore);
 
     return this.buildHandleResponse(savedTransaction);
   }
@@ -806,6 +821,24 @@ export class TransactionService {
     return cleaned;
   }
 
+  private async resetConversationState(
+    userId: string | number,
+    stateStore: TransactionHandleStateStore | undefined,
+  ): Promise<void> {
+    if (!stateStore) {
+      return;
+    }
+
+    await stateStore.resetState({ userId });
+  }
+
+  private isResetText(value: string | undefined): boolean {
+    const text = value?.trim().toLowerCase();
+    return Boolean(
+      text && ['reset', 'cancel', 'exit', 'stop', 'batal', 'keluar'].includes(text),
+    );
+  }
+
   private pendingTransactionSummary(
     pendingTransaction: PendingTransactionRow,
   ): {
@@ -1341,27 +1374,22 @@ export class TransactionService {
     return source;
   }
 
-  private async resolveMerchantNormalized(
-    userId: string,
-    merchant: string,
-  ): Promise<string> {
+  private async resolveMerchantNormalized(merchant: string): Promise<string> {
     const result = await this.database.query<MerchantAliasRow>(
       `
         SELECT canonical_name
         FROM merchant_aliases
-        WHERE user_id::text = $1
-          AND lower($2) LIKE '%' || lower(alias_name) || '%'
+        WHERE lower($1) LIKE '%' || lower(alias_name) || '%'
         ORDER BY length(alias_name) DESC
         LIMIT 1
       `,
-      [userId, merchant],
+      [merchant],
     );
 
     return result.rows[0]?.canonical_name ?? merchant;
   }
 
   private async resolveCategory(
-    userId: string,
     merchantNormalized: string,
     merchant: string,
   ): Promise<string | null> {
@@ -1369,15 +1397,12 @@ export class TransactionService {
       `
         SELECT category
         FROM category_rules
-        WHERE user_id::text = $1
-          AND (
-            lower(merchant_pattern) = lower($2)
-            OR lower(merchant_pattern) = lower($3)
-          )
+        WHERE lower(merchant_pattern) = lower($1)
+          OR lower(merchant_pattern) = lower($2)
         ORDER BY priority DESC NULLS LAST
         LIMIT 1
       `,
-      [userId, merchantNormalized, merchant],
+      [merchantNormalized, merchant],
     );
 
     return result.rows[0]?.category ?? null;

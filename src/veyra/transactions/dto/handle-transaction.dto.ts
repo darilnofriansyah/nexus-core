@@ -32,7 +32,7 @@ export interface TransactionHandleConfirmationPayloadDto {
 }
 
 export interface TransactionHandleResponseDto {
-  status: TransactionStatus | 'unsupported_source';
+  status: TransactionStatus | 'cancelled' | 'unsupported_source';
   transactionId: string | null;
   message: string;
   confirmationPayload?: TransactionHandleConfirmationPayloadDto;
