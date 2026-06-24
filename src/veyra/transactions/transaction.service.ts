@@ -17,13 +17,21 @@ import {
   ConfirmTransactionResponseDto,
   ConfirmTransactionEditMessageDto,
   ConfirmTransactionSummaryDto,
+  ConfirmTransactionStatus,
 } from './dto/confirm-transaction.dto';
 import {
+  TransactionCategoryOptionStatus,
   TransactionCategoryOptionsRequestDto,
   TransactionCategoryOptionsResponseDto,
+  TransactionSetCategoryStatus,
   TransactionSetCategoryRequestDto,
   TransactionSetCategoryResponseDto,
 } from './dto/category-callback.dto';
+import {
+  TransactionCallbackHandleAction,
+  TransactionCallbackHandleRequestDto,
+  TransactionCallbackHandleResponseDto,
+} from './dto/transaction-callback-handle.dto';
 import {
   SavedTransactionDto,
   SaveTransactionInputDto,
@@ -32,6 +40,18 @@ import {
   TransactionHandleStateName,
   TransactionStatus,
 } from './dto/handle-transaction.dto';
+import {
+  EmailTransactionHandleRequestDto,
+  EmailTransactionHandleResponseDto,
+  EmailTransactionHandleStatus,
+  ParsedEmailTransactionDto,
+} from './dto/email-transaction.dto';
+import {
+  EmailParserInput,
+  EmailTransactionParser,
+  buildEmailParserRegistry,
+  normalizeEmailWhitespace,
+} from './email-parsers';
 
 const TRANSACTION_CATEGORY_OPTIONS = [
   'Food',
@@ -57,6 +77,12 @@ interface CategoryRuleRow extends QueryResultRow {
   category: string;
 }
 
+interface ExistingImportRow extends QueryResultRow {
+  id: string | number;
+  transaction_id: string | number | null;
+  status: string;
+}
+
 interface PendingTransactionRow extends QueryResultRow {
   id: string | number;
   user_id: string | number;
@@ -74,6 +100,10 @@ interface PendingTransactionRow extends QueryResultRow {
 }
 
 interface InsertedTransactionRow extends QueryResultRow {
+  id: string | number;
+}
+
+interface InsertedImportRow extends QueryResultRow {
   id: string | number;
 }
 
@@ -99,6 +129,10 @@ interface CategoryOption {
   category: string;
 }
 
+interface ExistingCategoryRow extends QueryResultRow {
+  category: string;
+}
+
 interface TransactionHandleStateStore {
   upsertState?(request: {
     userId: string | number;
@@ -109,14 +143,25 @@ interface TransactionHandleStateStore {
   resetState(request: { userId: string | number }): Promise<unknown>;
 }
 
+interface ParsedTransactionCallback {
+  action: TransactionCallbackHandleAction;
+  transactionId?: number;
+  budgetId?: number;
+  error?: string;
+}
+
 @Injectable()
 export class TransactionService {
+  private readonly emailParsers: EmailTransactionParser[] =
+    buildEmailParserRegistry();
+
   constructor(private readonly database: DatabaseService) {}
 
   placeholderStatus() {
     return {
       implemented: false,
-      nextStep: 'Move transaction parsing and validation here before Telegram trigger removal.',
+      nextStep:
+        'Move transaction parsing and validation here before Telegram trigger removal.',
     };
   }
 
@@ -135,7 +180,9 @@ export class TransactionService {
     const providedCategory = this.cleanString(request.category);
     const source = this.cleanString(request.source) ?? 'manual';
     const notes = this.cleanString(request.notes ?? undefined) ?? null;
-    const transactionDate = this.normalizeTransactionDate(request.transactionDate);
+    const transactionDate = this.normalizeTransactionDate(
+      request.transactionDate,
+    );
 
     if (!userId) {
       throw new BadRequestException('userId is required');
@@ -145,13 +192,18 @@ export class TransactionService {
       throw new BadRequestException('amount must be positive');
     }
 
-    if ((transactionType === 'expense' || transactionType === 'income') && !merchant) {
-      throw new BadRequestException('merchant is required for expense and income');
+    if (
+      (transactionType === 'expense' || transactionType === 'income') &&
+      !merchant
+    ) {
+      throw new BadRequestException(
+        'merchant is required for expense and income',
+      );
     }
 
     const merchantNormalized = merchant
       ? await this.resolveMerchantNormalized(merchant)
-      : merchant ?? '';
+      : (merchant ?? '');
     const category =
       providedCategory ??
       (merchant
@@ -265,6 +317,737 @@ export class TransactionService {
     return this.buildHandleResponse(savedTransaction);
   }
 
+  async handleEmailTransaction(
+    request: EmailTransactionHandleRequestDto,
+  ): Promise<EmailTransactionHandleResponseDto> {
+    const validated = this.validateEmailTransactionRequest(request);
+    const existingImport = await this.findTransactionImport(
+      validated.userId,
+      validated.email.messageId,
+    );
+
+    if (existingImport) {
+      return this.buildEmailResponse({
+        status: 'duplicate',
+        provider: null,
+        templateKey: null,
+        reason: 'email message already imported',
+      });
+    }
+
+    const parserInput = this.buildEmailParserInput(validated);
+    const parser = this.findEmailParser(parserInput);
+    const provider = parser?.provider ?? this.detectEmailProvider(parserInput);
+
+    if (!provider) {
+      return this.recordUnconfirmedEmailAttempt({
+        request: validated,
+        status: 'unsupported_provider',
+        provider: null,
+        templateKey: null,
+        reason: 'email sender or body is not a supported provider',
+        parsed: undefined,
+      });
+    }
+
+    if (!parser) {
+      return this.recordUnconfirmedEmailAttempt({
+        request: validated,
+        status: 'unsupported_template',
+        provider,
+        templateKey: null,
+        reason: `${provider} email template is not supported`,
+        parsed: undefined,
+      });
+    }
+
+    let parsed: ParsedEmailTransactionDto;
+
+    try {
+      parsed = parser.parse(parserInput);
+    } catch (error) {
+      return this.recordUnconfirmedEmailAttempt({
+        request: validated,
+        status: 'parse_failed',
+        provider: parser.provider,
+        templateKey: parser.templateKey,
+        reason: error instanceof Error ? error.message : 'email parse failed',
+        parsed: undefined,
+      });
+    }
+
+    const parsedValidationReason = this.emailParsedValidationReason(parsed);
+
+    if (parsedValidationReason) {
+      return this.recordUnconfirmedEmailAttempt({
+        request: validated,
+        status:
+          parsedValidationReason === 'email is not a transaction'
+            ? 'ignored_non_transaction'
+            : 'parse_failed',
+        provider: parsed.provider,
+        templateKey: parsed.templateKey,
+        reason: parsedValidationReason,
+        parsed,
+      });
+    }
+
+    const merchant = this.cleanString(parsed.merchant ?? undefined);
+
+    if (!merchant || this.isUnknownMerchant(merchant)) {
+      return this.recordUnconfirmedEmailAttempt({
+        request: validated,
+        status: 'needs_review',
+        provider: parsed.provider,
+        templateKey: parsed.templateKey,
+        reason: 'merchant could not be resolved',
+        parsed,
+      });
+    }
+
+    const merchantNormalized = await this.resolveMerchantNormalized(merchant);
+    const category = await this.resolveEmailCategory({
+      userId: validated.userId,
+      merchant,
+      merchantNormalized,
+      templateKey: parsed.templateKey,
+    });
+
+    if (!category) {
+      return this.recordUnconfirmedEmailAttempt({
+        request: validated,
+        status: 'needs_review',
+        provider: parsed.provider,
+        templateKey: parsed.templateKey,
+        reason: 'category could not be resolved',
+        parsed,
+      });
+    }
+
+    const rawPayload = this.buildEmailRawPayload(validated, parsed);
+    const transactionDate = this.normalizeTransactionDate(
+      parsed.transactionDate ?? validated.email.date,
+    );
+    const transaction = await this.saveConfirmedEmailTransaction({
+      request: validated,
+      parsed,
+      merchant,
+      merchantNormalized,
+      category,
+      transactionDate,
+      rawPayload,
+    });
+
+    if (!transaction) {
+      return this.buildEmailResponse({
+        status: 'duplicate',
+        provider: parsed.provider,
+        templateKey: parsed.templateKey,
+        reason: 'email message already imported',
+        parsed,
+      });
+    }
+
+    return this.buildEmailResponse({
+      status: 'confirmed',
+      provider: parsed.provider,
+      templateKey: parsed.templateKey,
+      reason: null,
+      parsed,
+      transaction,
+    });
+  }
+
+  private validateEmailTransactionRequest(
+    request: EmailTransactionHandleRequestDto,
+  ): EmailTransactionHandleRequestDto & {
+    userId: string;
+    source: 'email';
+  } {
+    const telegramUserId = this.cleanString(request.telegramUserId);
+    const userId = this.cleanString(String(request.userId ?? ''));
+    const source = this.cleanString(request.source)?.toLowerCase();
+    const email = request.email;
+
+    if (!telegramUserId) {
+      throw new BadRequestException('telegramUserId is required');
+    }
+
+    if (!userId) {
+      throw new BadRequestException('userId is required');
+    }
+
+    if (source !== 'email') {
+      throw new BadRequestException('source must be email');
+    }
+
+    if (!email || typeof email !== 'object') {
+      throw new BadRequestException('email is required');
+    }
+
+    const messageId = this.cleanString(email.messageId);
+    const from = this.cleanString(email.from);
+    const subject = this.cleanString(email.subject);
+    const emailText = this.cleanString(email.emailText);
+
+    if (!messageId) {
+      throw new BadRequestException('email.messageId is required');
+    }
+
+    if (!from) {
+      throw new BadRequestException('email.from is required');
+    }
+
+    if (!subject) {
+      throw new BadRequestException('email.subject is required');
+    }
+
+    if (!emailText) {
+      throw new BadRequestException('email.emailText is required');
+    }
+
+    if (email.date && Number.isNaN(new Date(email.date).getTime())) {
+      throw new BadRequestException('email.date must be a valid date');
+    }
+
+    return {
+      telegramUserId,
+      userId,
+      source: 'email',
+      email: {
+        messageId,
+        threadId: this.cleanString(email.threadId),
+        from,
+        subject,
+        date: this.cleanString(email.date),
+        emailText,
+        emailHtml: this.cleanString(email.emailHtml),
+      },
+    };
+  }
+
+  private buildEmailParserInput(
+    request: EmailTransactionHandleRequestDto,
+  ): EmailParserInput {
+    const text = request.email.emailText;
+
+    return {
+      email: request.email,
+      text,
+      normalizedText: normalizeEmailWhitespace(text),
+    };
+  }
+
+  private findEmailParser(
+    input: EmailParserInput,
+  ): EmailTransactionParser | undefined {
+    return this.emailParsers.find((parser) => parser.canParse(input));
+  }
+
+  private detectEmailProvider(input: EmailParserInput): string | null {
+    const combined = `${input.email.from} ${input.email.subject} ${input.normalizedText}`;
+
+    if (/\bbca\b|klikbca|bank central asia/i.test(combined)) {
+      return 'BCA';
+    }
+
+    if (/\bmandiri\b/i.test(combined)) {
+      return 'Mandiri';
+    }
+
+    if (/\bkrom\b/i.test(combined)) {
+      return 'Krom';
+    }
+
+    return null;
+  }
+
+  private emailParsedValidationReason(
+    parsed: ParsedEmailTransactionDto,
+  ): string | null {
+    if (!parsed.isTransaction) {
+      return 'email is not a transaction';
+    }
+
+    if (!parsed.emailId) {
+      return 'email id is required';
+    }
+
+    if (!parsed.amount || parsed.amount <= 0) {
+      return 'amount must exist and be positive';
+    }
+
+    if (
+      parsed.type !== 'expense' &&
+      parsed.type !== 'income' &&
+      parsed.type !== 'transfer' &&
+      parsed.type !== 'reversal'
+    ) {
+      return 'transaction type is unsupported';
+    }
+
+    if (
+      !Number.isInteger(parsed.confidence) ||
+      parsed.confidence < 0 ||
+      parsed.confidence > 100
+    ) {
+      return 'confidence must be an integer from 0 to 100';
+    }
+
+    return null;
+  }
+
+  private isUnknownMerchant(merchant: string): boolean {
+    const normalized = merchant.trim().toLowerCase();
+
+    return normalized === 'unknown';
+  }
+
+  private async recordUnconfirmedEmailAttempt(input: {
+    request: EmailTransactionHandleRequestDto & {
+      userId: string;
+      source: 'email';
+    };
+    status: Exclude<EmailTransactionHandleStatus, 'confirmed' | 'duplicate'>;
+    provider: string | null;
+    templateKey: string | null;
+    reason: string;
+    parsed: ParsedEmailTransactionDto | undefined;
+  }): Promise<EmailTransactionHandleResponseDto> {
+    const inserted = await this.createTransactionImport({
+      userId: input.request.userId,
+      sourceReference: input.request.email.messageId,
+      status: input.status,
+      rawPayload: this.buildEmailRawPayload(input.request, input.parsed),
+    });
+
+    if (!inserted) {
+      return this.buildEmailResponse({
+        status: 'duplicate',
+        provider: input.provider,
+        templateKey: input.templateKey,
+        reason: 'email message already imported',
+        parsed: input.parsed,
+      });
+    }
+
+    await this.logEmailParseAttempt({
+      request: input.request,
+      status: input.status,
+      provider: input.provider,
+      templateKey: input.templateKey,
+      parsed: input.parsed,
+      errorReason: input.reason,
+    });
+
+    return this.buildEmailResponse({
+      status: input.status,
+      provider: input.provider,
+      templateKey: input.templateKey,
+      reason: input.reason,
+      parsed: input.parsed,
+    });
+  }
+
+  private async findTransactionImport(
+    userId: string,
+    sourceReference: string,
+  ): Promise<ExistingImportRow | undefined> {
+    const result = await this.database.query<ExistingImportRow>(
+      `
+        SELECT id, transaction_id, status
+        FROM transaction_imports
+        WHERE user_id::text = $1
+          AND source = 'email'
+          AND source_reference = $2
+        LIMIT 1
+      `,
+      [userId, sourceReference],
+    );
+
+    return result.rows[0];
+  }
+
+  private async createTransactionImport(input: {
+    userId: string;
+    sourceReference: string;
+    status: EmailTransactionHandleStatus | 'processing';
+    rawPayload: unknown;
+  }): Promise<string | null> {
+    const result = await this.database.query<InsertedImportRow>(
+      `
+        INSERT INTO transaction_imports (
+          user_id,
+          source,
+          source_reference,
+          status,
+          raw_payload
+        )
+        VALUES ($1, 'email', $2, $3, $4)
+        ON CONFLICT (user_id, source, source_reference) DO NOTHING
+        RETURNING id
+      `,
+      [input.userId, input.sourceReference, input.status, input.rawPayload],
+    );
+    const id = result.rows[0]?.id;
+
+    return id === undefined ? null : String(id);
+  }
+
+  private async logEmailParseAttempt(input: {
+    request: EmailTransactionHandleRequestDto & {
+      userId: string;
+      source: 'email';
+    };
+    status: Exclude<EmailTransactionHandleStatus, 'duplicate'>;
+    provider: string | null;
+    templateKey: string | null;
+    parsed: ParsedEmailTransactionDto | undefined;
+    errorReason: string | null;
+  }): Promise<void> {
+    await this.database.query(
+      `
+        INSERT INTO email_parse_attempts (
+          user_id,
+          source_reference,
+          provider,
+          template_key,
+          status,
+          sender,
+          subject,
+          email_date,
+          parsed_payload,
+          error_reason,
+          body_sample
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8::timestamptz, $9, $10, $11)
+        ON CONFLICT (user_id, source_reference) DO UPDATE SET
+          provider = EXCLUDED.provider,
+          template_key = EXCLUDED.template_key,
+          status = EXCLUDED.status,
+          sender = EXCLUDED.sender,
+          subject = EXCLUDED.subject,
+          email_date = EXCLUDED.email_date,
+          parsed_payload = EXCLUDED.parsed_payload,
+          error_reason = EXCLUDED.error_reason,
+          body_sample = EXCLUDED.body_sample
+      `,
+      [
+        input.request.userId,
+        input.request.email.messageId,
+        input.provider,
+        input.templateKey,
+        input.status,
+        input.request.email.from,
+        input.request.email.subject,
+        input.request.email.date ?? null,
+        input.parsed ?? null,
+        input.errorReason,
+        this.safeEmailBodySample(input.request.email.emailText),
+      ],
+    );
+  }
+
+  private safeEmailBodySample(value: string): string {
+    return normalizeEmailWhitespace(value).slice(0, 1000);
+  }
+
+  private buildEmailRawPayload(
+    request: EmailTransactionHandleRequestDto,
+    parsed: ParsedEmailTransactionDto | undefined,
+  ): Record<string, unknown> {
+    return {
+      email: {
+        messageId: request.email.messageId,
+        threadId: request.email.threadId ?? null,
+        from: request.email.from,
+        subject: request.email.subject,
+        date: request.email.date ?? null,
+      },
+      parser: parsed
+        ? {
+            provider: parsed.provider,
+            templateKey: parsed.templateKey,
+            confidence: parsed.confidence,
+          }
+        : null,
+      parsed: parsed ?? null,
+    };
+  }
+
+  private async resolveEmailCategory(input: {
+    userId: string;
+    merchant: string;
+    merchantNormalized: string;
+    templateKey: string;
+  }): Promise<string | null> {
+    const result = await this.database.query<CategoryRuleRow>(
+      `
+        SELECT category
+        FROM category_rules
+        WHERE user_id::text = $1
+          AND (
+            lower($2) LIKE '%' || lower(merchant_pattern) || '%'
+            OR lower($3) LIKE '%' || lower(merchant_pattern) || '%'
+            OR lower(merchant_pattern) = lower($2)
+            OR lower(merchant_pattern) = lower($3)
+          )
+        ORDER BY priority DESC NULLS LAST
+        LIMIT 1
+      `,
+      [input.userId, input.merchantNormalized, input.merchant],
+    );
+    const ruleCategory = result.rows[0]?.category;
+
+    if (ruleCategory) {
+      return ruleCategory;
+    }
+
+    const fallbackCategory = this.emailFallbackCategory(input.templateKey);
+
+    if (!fallbackCategory) {
+      return null;
+    }
+
+    return this.findExistingBudgetCategory(input.userId, fallbackCategory);
+  }
+
+  private emailFallbackCategory(templateKey: string): string | null {
+    if (templateKey === 'mandiri-emoney-topup') {
+      return 'E-Money';
+    }
+
+    if (templateKey === 'krom-incoming-transfer') {
+      return 'Income';
+    }
+
+    if (templateKey === 'krom-outgoing-transfer') {
+      return 'Transfer';
+    }
+
+    return null;
+  }
+
+  private async findExistingBudgetCategory(
+    userId: string,
+    category: string,
+  ): Promise<string | null> {
+    const result = await this.database.query<ExistingCategoryRow>(
+      `
+        SELECT category
+        FROM budgets
+        WHERE user_id::text = $1
+          AND lower(category) = lower($2)
+          AND COALESCE(is_active, true) = true
+        LIMIT 1
+      `,
+      [userId, category],
+    );
+
+    return result.rows[0]?.category ?? null;
+  }
+
+  private async saveConfirmedEmailTransaction(input: {
+    request: EmailTransactionHandleRequestDto & {
+      userId: string;
+      source: 'email';
+    };
+    parsed: ParsedEmailTransactionDto;
+    merchant: string;
+    merchantNormalized: string;
+    category: string;
+    transactionDate: string;
+    rawPayload: Record<string, unknown>;
+  }): Promise<EmailTransactionHandleResponseDto['transaction'] | null> {
+    return this.database.withTransaction(async (client) => {
+      const importResult = await client.query<InsertedImportRow>(
+        `
+          INSERT INTO transaction_imports (
+            user_id,
+            source,
+            source_reference,
+            status,
+            raw_payload
+          )
+          VALUES ($1, 'email', $2, 'processing', $3)
+          ON CONFLICT (user_id, source, source_reference) DO NOTHING
+          RETURNING id
+        `,
+        [input.request.userId, input.request.email.messageId, input.rawPayload],
+      );
+      const importId = importResult.rows[0]?.id;
+
+      if (importId === undefined) {
+        return null;
+      }
+
+      const transactionResult = await client.query<InsertedTransactionRow>(
+        `
+          INSERT INTO transactions (
+            user_id,
+            transaction_type,
+            amount,
+            merchant,
+            merchant_normalized,
+            category,
+            transaction_date,
+            source,
+            status,
+            confidence,
+            raw_payload
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7, 'email', 'confirmed', $8, $9)
+          RETURNING id
+        `,
+        [
+          input.request.userId,
+          input.parsed.type,
+          input.parsed.amount,
+          input.merchant,
+          input.merchantNormalized,
+          input.category,
+          input.transactionDate,
+          input.parsed.confidence,
+          input.rawPayload,
+        ],
+      );
+      const transactionId = transactionResult.rows[0]?.id;
+
+      if (transactionId === undefined) {
+        throw new BadRequestException('transaction insert failed');
+      }
+
+      await client.query(
+        `
+          UPDATE transaction_imports
+          SET transaction_id = $1,
+              status = 'confirmed',
+              raw_payload = $2
+          WHERE id::text = $3
+        `,
+        [transactionId, input.rawPayload, String(importId)],
+      );
+
+      await client.query(
+        `
+          INSERT INTO email_parse_attempts (
+            user_id,
+            source_reference,
+            provider,
+            template_key,
+            status,
+            sender,
+            subject,
+            email_date,
+            parsed_payload,
+            error_reason,
+            body_sample
+          )
+          VALUES ($1, $2, $3, $4, 'confirmed', $5, $6, $7::timestamptz, $8, NULL, $9)
+          ON CONFLICT (user_id, source_reference) DO UPDATE SET
+            provider = EXCLUDED.provider,
+            template_key = EXCLUDED.template_key,
+            status = EXCLUDED.status,
+            sender = EXCLUDED.sender,
+            subject = EXCLUDED.subject,
+            email_date = EXCLUDED.email_date,
+            parsed_payload = EXCLUDED.parsed_payload,
+            error_reason = EXCLUDED.error_reason,
+            body_sample = EXCLUDED.body_sample
+        `,
+        [
+          input.request.userId,
+          input.request.email.messageId,
+          input.parsed.provider,
+          input.parsed.templateKey,
+          input.request.email.from,
+          input.request.email.subject,
+          input.request.email.date ?? null,
+          input.parsed,
+          this.safeEmailBodySample(input.request.email.emailText),
+        ],
+      );
+
+      return {
+        id: String(transactionId),
+        userId: input.request.userId,
+        transactionType: input.parsed.type,
+        amount: input.parsed.amount ?? 0,
+        merchant: input.merchant,
+        merchantNormalized: input.merchantNormalized,
+        category: input.category,
+        transactionDate: input.transactionDate,
+        source: 'email',
+        status: 'confirmed',
+        confidence: input.parsed.confidence,
+      };
+    });
+  }
+
+  private buildEmailResponse(input: {
+    status: EmailTransactionHandleStatus;
+    provider: string | null;
+    templateKey: string | null;
+    reason: string | null;
+    parsed?: ParsedEmailTransactionDto;
+    transaction?: EmailTransactionHandleResponseDto['transaction'];
+  }): EmailTransactionHandleResponseDto {
+    return {
+      status: input.status,
+      provider: input.provider,
+      templateKey: input.templateKey,
+      reason: input.reason,
+      transaction: input.transaction,
+      parsed: input.parsed,
+      telegram: {
+        text: this.buildEmailTelegramText(input),
+        parseMode: 'HTML',
+      },
+    };
+  }
+
+  private buildEmailTelegramText(input: {
+    status: EmailTransactionHandleStatus;
+    provider: string | null;
+    templateKey: string | null;
+    reason: string | null;
+    parsed?: ParsedEmailTransactionDto;
+    transaction?: EmailTransactionHandleResponseDto['transaction'];
+  }): string {
+    if (input.status === 'confirmed' && input.transaction) {
+      return this.formatConfirmationHtml([
+        'Transaction recorded',
+        '',
+        `Amount: ${this.formatCurrency(input.transaction.amount)}`,
+        `Merchant: ${input.transaction.merchantNormalized}`,
+        `Category: ${input.transaction.category}`,
+        `Source: ${input.provider ?? 'Email'}`,
+      ]);
+    }
+
+    const lines = [
+      'Email transaction needs attention',
+      '',
+      `Status: ${input.status}`,
+      `Provider: ${input.provider ?? '-'}`,
+      `Template: ${input.templateKey ?? '-'}`,
+    ];
+
+    if (input.parsed?.amount) {
+      lines.push(`Amount: ${this.formatCurrency(input.parsed.amount)}`);
+    }
+
+    if (input.parsed?.merchant) {
+      lines.push(`Merchant: ${input.parsed.merchant}`);
+    }
+
+    if (input.reason) {
+      lines.push(`Reason: ${input.reason}`);
+    }
+
+    return this.formatConfirmationHtml(lines);
+  }
+
   buildConfirmationPayload(
     request: TransactionConfirmationPayloadRequestDto,
   ): TransactionConfirmationPayloadResponseDto {
@@ -283,7 +1066,8 @@ export class TransactionService {
       'Unknown';
     const category = this.cleanString(request.category) ?? 'Uncategorized';
     const wallet = this.cleanString(request.wallet) ?? EMPTY_CONFIRMATION_FIELD;
-    const notes = this.cleanString(request.notes ?? undefined) ?? EMPTY_CONFIRMATION_FIELD;
+    const notes =
+      this.cleanString(request.notes ?? undefined) ?? EMPTY_CONFIRMATION_FIELD;
     const amount = this.normalizeAmount(request.amount);
     const transactionType = request.transactionType;
     const source = this.cleanString(request.source) ?? 'manual';
@@ -346,12 +1130,161 @@ export class TransactionService {
     return this.updateTransactionStatus(request, 'rejected');
   }
 
-  async confirmPendingTransactionExperimental(
-    request: {
-      pendingTransactionId: string;
-      userId: string;
-    },
-  ): Promise<{
+  async handleTransactionCallback(
+    request: TransactionCallbackHandleRequestDto,
+  ): Promise<TransactionCallbackHandleResponseDto> {
+    const userId = this.normalizePositiveInteger(request.userId);
+    const telegramUserId = this.cleanString(request.telegramUserId);
+    const parsed = this.parseTransactionCallbackData(request.callbackData);
+
+    if (!telegramUserId) {
+      return this.transactionCallbackError({
+        action: parsed.action,
+        text: 'Invalid callback request.',
+        request,
+        transactionId: parsed.transactionId,
+      });
+    }
+
+    if (!userId) {
+      return this.transactionCallbackError({
+        action: parsed.action,
+        text: 'Invalid callback user.',
+        request,
+        transactionId: parsed.transactionId,
+      });
+    }
+
+    if (parsed.error) {
+      return this.transactionCallbackError({
+        action: parsed.action,
+        text: parsed.error,
+        request,
+        transactionId: parsed.transactionId,
+      });
+    }
+
+    if (parsed.action === 'save_transaction' && parsed.transactionId) {
+      const result = await this.confirmTransaction({
+        transactionId: String(parsed.transactionId),
+        userId: String(userId),
+      });
+
+      if (
+        result.status === 'confirmed' ||
+        result.status === 'already_confirmed'
+      ) {
+        return this.transactionCallbackOk({
+          action: parsed.action,
+          text:
+            result.editMessage?.text ??
+            'This transaction was already confirmed.',
+          request,
+          transactionId: parsed.transactionId,
+          replyMarkup: null,
+        });
+      }
+
+      return this.transactionCallbackError({
+        action: parsed.action,
+        text: this.confirmTransactionStatusText(result.status),
+        request,
+        transactionId: parsed.transactionId,
+      });
+    }
+
+    if (parsed.action === 'cancel_transaction' && parsed.transactionId) {
+      const result = await this.cancelTransaction({
+        transactionId: String(parsed.transactionId),
+        userId: String(userId),
+      });
+
+      if (
+        result.status === 'rejected' ||
+        result.status === 'already_rejected'
+      ) {
+        return this.transactionCallbackOk({
+          action: parsed.action,
+          text:
+            result.editMessage?.text ??
+            'This transaction was already cancelled.',
+          request,
+          transactionId: parsed.transactionId,
+          replyMarkup: null,
+        });
+      }
+
+      return this.transactionCallbackError({
+        action: parsed.action,
+        text: this.confirmTransactionStatusText(result.status),
+        request,
+        transactionId: parsed.transactionId,
+      });
+    }
+
+    if (parsed.action === 'change_categories' && parsed.transactionId) {
+      const result = await this.buildCategoryOptions({
+        transactionId: String(parsed.transactionId),
+        userId: String(userId),
+      });
+
+      if (result.status === 'ok') {
+        return this.transactionCallbackOk({
+          action: parsed.action,
+          text: result.text ?? 'Choose transaction category',
+          request,
+          transactionId: parsed.transactionId,
+          replyMarkup: result.replyMarkup,
+        });
+      }
+
+      return this.transactionCallbackError({
+        action: parsed.action,
+        text: this.categoryOptionsStatusText(result.status),
+        request,
+        transactionId: parsed.transactionId,
+      });
+    }
+
+    if (parsed.action === 'catid' && parsed.transactionId && parsed.budgetId) {
+      const result = await this.setPendingTransactionCategory({
+        transactionId: String(parsed.transactionId),
+        budgetId: String(parsed.budgetId),
+        userId: String(userId),
+      });
+
+      if (result.status === 'updated') {
+        return this.transactionCallbackOk({
+          action: parsed.action,
+          text:
+            result.editMessage?.text ??
+            'Transaction category updated and confirmed.',
+          request,
+          transactionId: parsed.transactionId,
+          replyMarkup: null,
+        });
+      }
+
+      return this.transactionCallbackError({
+        action: parsed.action,
+        text: this.setCategoryStatusText(result.status),
+        request,
+        transactionId: parsed.transactionId,
+      });
+    }
+
+    return this.transactionCallbackError({
+      action: parsed.action,
+      text: 'Unsupported transaction callback.',
+      request,
+      transactionId: parsed.transactionId,
+    });
+  }
+
+  async confirmPendingTransactionExperimental(request: {
+    pendingTransactionId: string;
+    userId: string;
+  }): Promise<{
     status: 'confirmed' | 'not_found' | 'already_resolved';
     transactionId: string | null;
     pendingTransactionId: string;
@@ -460,7 +1393,8 @@ export class TransactionService {
 
       return {
         status: 'confirmed',
-        transactionId: transactionId === undefined ? null : String(transactionId),
+        transactionId:
+          transactionId === undefined ? null : String(transactionId),
         pendingTransactionId: String(pendingTransaction.id),
         summary: this.pendingTransactionSummary(pendingTransaction),
       };
@@ -523,9 +1457,7 @@ export class TransactionService {
         'Choose transaction category',
         '',
         `Merchant: ${
-          source?.merchant_normalized ??
-          source?.merchant ??
-          'Unknown'
+          source?.merchant_normalized ?? source?.merchant ?? 'Unknown'
         }`,
         `Amount: ${this.formatCurrency(
           this.normalizeAmount(source?.amount ?? 0),
@@ -603,7 +1535,11 @@ export class TransactionService {
         WHERE id::text = $2
           AND user_id::text = $3
       `,
-      [category, String(pendingTransaction.id), String(pendingTransaction.user_id)],
+      [
+        category,
+        String(pendingTransaction.id),
+        String(pendingTransaction.user_id),
+      ],
     );
 
     return {
@@ -643,7 +1579,9 @@ export class TransactionService {
 
     if (/\b(reversal|void|chargeback)\b/.test(combined)) {
       if (normalized && normalized !== 'reversal') {
-        warnings.push('transactionType mapped to reversal from reversal-like input');
+        warnings.push(
+          'transactionType mapped to reversal from reversal-like input',
+        );
       }
 
       return 'reversal';
@@ -759,7 +1697,9 @@ export class TransactionService {
     value: T,
   ): T {
     return Object.fromEntries(
-      Object.entries(value).filter(([, fieldValue]) => fieldValue !== undefined),
+      Object.entries(value).filter(
+        ([, fieldValue]) => fieldValue !== undefined,
+      ),
     ) as T;
   }
 
@@ -919,7 +1859,8 @@ export class TransactionService {
   private isResetText(value: string | undefined): boolean {
     const text = value?.trim().toLowerCase();
     return Boolean(
-      text && ['reset', 'cancel', 'exit', 'stop', 'batal', 'keluar'].includes(text),
+      text &&
+      ['reset', 'cancel', 'exit', 'stop', 'batal', 'keluar'].includes(text),
     );
   }
 
@@ -1158,6 +2099,208 @@ export class TransactionService {
       .replace(/>/g, '&gt;');
   }
 
+  private parseTransactionCallbackData(
+    callbackData: string | undefined,
+  ): ParsedTransactionCallback {
+    const value = this.cleanString(callbackData);
+
+    if (!value) {
+      return {
+        action: 'invalid_callback',
+        error: 'Invalid transaction callback.',
+      };
+    }
+
+    const parts = value.split(':');
+    const action = parts[0];
+
+    if (
+      action === 'save_transaction' ||
+      action === 'cancel_transaction' ||
+      action === 'change_categories'
+    ) {
+      if (parts.length !== 2) {
+        return {
+          action,
+          error: 'Invalid transaction callback.',
+        };
+      }
+
+      const transactionId = this.normalizeCallbackId(parts[1]);
+
+      if (!transactionId) {
+        return {
+          action,
+          error: 'Invalid transaction callback.',
+        };
+      }
+
+      return { action, transactionId };
+    }
+
+    if (action === 'catid') {
+      if (parts.length !== 3) {
+        return {
+          action,
+          error: 'Invalid transaction callback.',
+        };
+      }
+
+      const budgetId = this.normalizeCallbackId(parts[1]);
+      const transactionId = this.normalizeCallbackId(parts[2]);
+
+      if (!budgetId || !transactionId) {
+        return {
+          action,
+          transactionId,
+          budgetId,
+          error: 'Invalid transaction callback.',
+        };
+      }
+
+      return {
+        action,
+        budgetId,
+        transactionId,
+      };
+    }
+
+    return {
+      action: 'unknown_callback',
+      error: 'Unsupported transaction callback.',
+    };
+  }
+
+  private normalizeCallbackId(value: string | undefined): number | undefined {
+    const cleaned = this.cleanString(value);
+
+    if (!cleaned || !/^\d+$/.test(cleaned)) {
+      return undefined;
+    }
+
+    return this.normalizePositiveInteger(Number(cleaned));
+  }
+
+  private normalizePositiveInteger(value: unknown): number | undefined {
+    if (
+      typeof value !== 'number' ||
+      !Number.isSafeInteger(value) ||
+      value <= 0
+    ) {
+      return undefined;
+    }
+
+    return value;
+  }
+
+  private transactionCallbackOk(input: {
+    action: TransactionCallbackHandleAction;
+    text: string;
+    request: TransactionCallbackHandleRequestDto;
+    transactionId: number;
+    replyMarkup: object | null;
+  }): TransactionCallbackHandleResponseDto {
+    return {
+      status: 'ok',
+      action: input.action,
+      transactionId: input.transactionId,
+      telegram: this.buildCallbackTelegramPayload({
+        request: input.request,
+        text: input.text,
+        replyMarkup: input.replyMarkup,
+      }),
+    };
+  }
+
+  private transactionCallbackError(input: {
+    action: TransactionCallbackHandleAction;
+    text: string;
+    request: TransactionCallbackHandleRequestDto;
+    transactionId?: number;
+  }): TransactionCallbackHandleResponseDto {
+    return {
+      status: 'error',
+      action: input.action,
+      transactionId: input.transactionId,
+      telegram: this.buildCallbackTelegramPayload({
+        request: input.request,
+        text: input.text,
+        replyMarkup: null,
+      }),
+    };
+  }
+
+  private buildCallbackTelegramPayload(input: {
+    request: TransactionCallbackHandleRequestDto;
+    text: string;
+    replyMarkup: object | null;
+  }): TransactionCallbackHandleResponseDto['telegram'] {
+    const telegram: TransactionCallbackHandleResponseDto['telegram'] = {
+      method: 'editMessageText',
+      text: this.escapeTelegramHtml(input.text),
+      parse_mode: 'HTML',
+      reply_markup: input.replyMarkup,
+    };
+
+    if (input.request.chatId !== undefined) {
+      telegram.chat_id = input.request.chatId;
+    }
+
+    if (input.request.messageId !== undefined) {
+      telegram.message_id = input.request.messageId;
+    }
+
+    return telegram;
+  }
+
+  private confirmTransactionStatusText(
+    status: ConfirmTransactionStatus,
+  ): string {
+    if (status === 'not_found') {
+      return 'Transaction was not found.';
+    }
+
+    if (status === 'already_confirmed') {
+      return 'This transaction was already confirmed.';
+    }
+
+    if (status === 'already_rejected') {
+      return 'This transaction was already cancelled.';
+    }
+
+    return 'Transaction callback could not be completed.';
+  }
+
+  private categoryOptionsStatusText(
+    status: TransactionCategoryOptionStatus,
+  ): string {
+    if (status === 'not_found') {
+      return 'Transaction was not found.';
+    }
+
+    if (status === 'already_resolved') {
+      return 'This transaction was already handled.';
+    }
+
+    return 'Category options could not be loaded.';
+  }
+
+  private setCategoryStatusText(status: TransactionSetCategoryStatus): string {
+    if (status === 'not_found') {
+      return 'Transaction was not found.';
+    }
+
+    if (status === 'already_resolved') {
+      return 'This transaction was already handled.';
+    }
+
+    if (status === 'unauthorized_budget') {
+      return 'Selected category was not found.';
+    }
+
+    return 'Transaction category could not be updated.';
+  }
+
   private buildCategoryOptionsReplyMarkup(
     pendingTransactionId: string,
     callbackMode: TransactionCallbackMode,
@@ -1228,7 +2371,9 @@ export class TransactionService {
     return category.toLowerCase().replace(/&/g, 'and').replace(/\s+/g, '_');
   }
 
-  private normalizeCategoryOption(category: string | undefined): string | undefined {
+  private normalizeCategoryOption(
+    category: string | undefined,
+  ): string | undefined {
     const cleanedCategory = this.cleanString(category);
 
     if (!cleanedCategory) {
@@ -1359,7 +2504,11 @@ export class TransactionService {
         WHERE id::text = $2
           AND user_id::text = $3
       `,
-      [budgetCategory.category, String(transaction.id), String(transaction.user_id)],
+      [
+        budgetCategory.category,
+        String(transaction.id),
+        String(transaction.user_id),
+      ],
     );
 
     const summary = this.transactionSummary({

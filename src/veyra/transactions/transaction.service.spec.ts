@@ -6,11 +6,15 @@ import { TransactionService } from './transaction.service';
 
 function createService(rowsByCall: unknown[][] = []) {
   const calls: Array<{ text: string; values: unknown[] }> = [];
+  const query = async (text: string, values: unknown[] = []) => {
+    calls.push({ text, values });
+    return { rows: rowsByCall.shift() ?? [] };
+  };
   const database = {
-    query: async (text: string, values: unknown[] = []) => {
-      calls.push({ text, values });
-      return { rows: rowsByCall.shift() ?? [] };
-    },
+    query,
+    withTransaction: async (
+      callback: (client: { query: typeof query }) => unknown,
+    ) => callback({ query }),
   } as unknown as DatabaseService;
 
   return {
@@ -70,7 +74,11 @@ const budgetCategoryRows = [
   { id: 'budget-bills', category: 'Bills', parent_category: null },
   { id: 'budget-health', category: 'Health & Beauty', parent_category: null },
   { id: 'budget-shopping', category: 'Shopping', parent_category: null },
-  { id: 'budget-entertainment', category: 'Entertainment', parent_category: null },
+  {
+    id: 'budget-entertainment',
+    category: 'Entertainment',
+    parent_category: null,
+  },
   { id: 'budget-transfer', category: 'Transfer', parent_category: null },
   { id: 'budget-other', category: 'Other', parent_category: null },
 ];
@@ -128,7 +136,9 @@ test('maps refund cashback and reversal cases safely', async () => {
   });
 
   assert.equal(cashback.transactionType, 'income');
-  assert.deepEqual(cashback.warnings, ['refund/cashback input mapped to income']);
+  assert.deepEqual(cashback.warnings, [
+    'refund/cashback input mapped to income',
+  ]);
   assert.equal(reversal.transactionType, 'reversal');
   assert.deepEqual(reversal.warnings, [
     'transactionType mapped to reversal from reversal-like input',
@@ -136,10 +146,7 @@ test('maps refund cashback and reversal cases safely', async () => {
 });
 
 test('uses merchant alias lookup when available', async () => {
-  const { calls, service } = createService([
-    [{ canonical_name: 'GoPay' }],
-    [],
-  ]);
+  const { calls, service } = createService([[{ canonical_name: 'GoPay' }], []]);
 
   const result = await service.normalizeTransaction({
     userId: 'user-1',
@@ -270,7 +277,10 @@ test('handles manual transaction with decimal confidence as confirmed', async ()
 
   assert.equal(result.status, 'confirmed');
   assert.equal(result.transactionId, 'tx-123');
-  assert.match(result.message, /Recorded: Rp25\.000 at Kopi Tuku under Coffee\./);
+  assert.match(
+    result.message,
+    /Recorded: Rp25\.000 at Kopi Tuku under Coffee\./,
+  );
   assert.match(calls[1].text, /INSERT INTO transactions/);
   assert.deepEqual(calls[1].values.slice(0, 11), [
     '1',
@@ -1068,7 +1078,11 @@ test('returns not_found for transaction owned by a different user', async () => 
 });
 
 test('builds category options for pending transaction', async () => {
-  const { service } = createService([[transaction], [pendingTransaction], budgetCategoryRows]);
+  const { service } = createService([
+    [transaction],
+    [pendingTransaction],
+    budgetCategoryRows,
+  ]);
 
   const result = await service.buildCategoryOptions({
     pendingTransactionId: 'pending-1',
@@ -1099,7 +1113,9 @@ test('returns not_found for missing category options pending transaction', async
 });
 
 test('returns already_resolved for category options resolved transaction', async () => {
-  const { service } = createService([[{ ...pendingTransaction, resolved: true }]]);
+  const { service } = createService([
+    [{ ...pendingTransaction, resolved: true }],
+  ]);
 
   const result = await service.buildCategoryOptions({
     pendingTransactionId: 'pending-1',
@@ -1146,7 +1162,11 @@ test('sets pending transaction category and returns confirmation payload', async
 });
 
 test('formats production category callback data with budget and transaction ids', async () => {
-  const { service } = createService([[transaction], [pendingTransaction], budgetCategoryRows]);
+  const { service } = createService([
+    [transaction],
+    [pendingTransaction],
+    budgetCategoryRows,
+  ]);
 
   const result = await service.buildCategoryOptions({
     pendingTransactionId: 'pending-1',
@@ -1266,10 +1286,141 @@ test('sets transaction category and confirms on production category selection', 
   assert.equal(result.status, 'updated');
   assert.equal(result.transactionId, 'tx-1');
   assert.equal(result.summary?.category, 'Food');
-  assert.equal(result.editMessage?.text, 'Transaction tx-1 confirmed: GoPay 50000');
+  assert.equal(
+    result.editMessage?.text,
+    'Transaction tx-1 confirmed: GoPay 50000',
+  );
   assert.deepEqual(calls[2].values, ['Food', 'tx-1', 'user-1']);
   assert.match(calls[2].text, /UPDATE transactions/);
   assert.match(calls[2].text, /status = 'confirmed'/);
+});
+
+test('handles save_transaction callback with Telegram edit payload', async () => {
+  const { calls, service } = createService([
+    [{ ...transaction, id: '123', user_id: '1' }],
+    [],
+  ]);
+
+  const result = await service.handleTransactionCallback({
+    telegramUserId: '976684739',
+    userId: 1,
+    callbackData: 'save_transaction:123',
+    chatId: 'chat-1',
+    messageId: 42,
+  });
+
+  assert.equal(result.status, 'ok');
+  assert.equal(result.action, 'save_transaction');
+  assert.equal(result.transactionId, 123);
+  assert.deepEqual(result.telegram, {
+    method: 'editMessageText',
+    chat_id: 'chat-1',
+    message_id: 42,
+    text: 'Transaction 123 confirmed: GoPay 50000',
+    parse_mode: 'HTML',
+    reply_markup: null,
+  });
+  assert.deepEqual(calls[0].values, ['123', '1']);
+  assert.deepEqual(calls[1].values, ['confirmed', '123', '1']);
+});
+
+test('handles cancel_transaction callback with Telegram edit payload', async () => {
+  const { calls, service } = createService([
+    [{ ...transaction, id: '123', user_id: '1' }],
+    [],
+  ]);
+
+  const result = await service.handleTransactionCallback({
+    telegramUserId: '976684739',
+    userId: 1,
+    callbackData: 'cancel_transaction:123',
+  });
+
+  assert.equal(result.status, 'ok');
+  assert.equal(result.action, 'cancel_transaction');
+  assert.equal(result.transactionId, 123);
+  assert.deepEqual(result.telegram, {
+    method: 'editMessageText',
+    text: 'Transaction 123 cancelled.',
+    parse_mode: 'HTML',
+    reply_markup: null,
+  });
+  assert.deepEqual(calls[1].values, ['rejected', '123', '1']);
+});
+
+test('handles change_categories callback with category buttons', async () => {
+  const { service } = createService([
+    [{ ...transaction, id: '123', user_id: '1' }],
+    [
+      { id: '10', category: 'Food', parent_category: null },
+      { id: '11', category: 'Transport', parent_category: null },
+    ],
+  ]);
+
+  const result = await service.handleTransactionCallback({
+    telegramUserId: '976684739',
+    userId: 1,
+    callbackData: 'change_categories:123',
+  });
+
+  assert.equal(result.status, 'ok');
+  assert.equal(result.action, 'change_categories');
+  assert.equal(result.transactionId, 123);
+  assert.match(result.telegram.text, /Choose transaction category/);
+  assert.deepEqual(result.telegram.reply_markup, {
+    inline_keyboard: [
+      [{ text: 'Food', callback_data: 'catid:10:123' }],
+      [{ text: 'Transport', callback_data: 'catid:11:123' }],
+    ],
+  });
+});
+
+test('handles catid callback by setting category and confirming transaction', async () => {
+  const { calls, service } = createService([
+    [{ ...transaction, id: '123', user_id: '1' }],
+    [{ id: '10', category: 'Food', parent_category: null }],
+    [],
+  ]);
+
+  const result = await service.handleTransactionCallback({
+    telegramUserId: '976684739',
+    userId: 1,
+    callbackData: 'catid:10:123',
+  });
+
+  assert.equal(result.status, 'ok');
+  assert.equal(result.action, 'catid');
+  assert.equal(result.transactionId, 123);
+  assert.equal(result.telegram.text, 'Transaction 123 confirmed: GoPay 50000');
+  assert.equal(result.telegram.reply_markup, null);
+  assert.deepEqual(calls[2].values, ['Food', '123', '1']);
+});
+
+test('returns safe error payload for invalid transaction callback data', async () => {
+  const { calls, service } = createService();
+
+  const result = await service.handleTransactionCallback({
+    telegramUserId: '976684739',
+    userId: 1,
+    callbackData: 'save_transaction:not-a-number',
+    chatId: 1001,
+    messageId: 7,
+  });
+
+  assert.deepEqual(result, {
+    status: 'error',
+    action: 'save_transaction',
+    transactionId: undefined,
+    telegram: {
+      method: 'editMessageText',
+      chat_id: 1001,
+      message_id: 7,
+      text: 'Invalid transaction callback.',
+      parse_mode: 'HTML',
+      reply_markup: null,
+    },
+  });
+  assert.equal(calls.length, 0);
 });
 
 test('formats experimental set category callback data only in experimental mode', async () => {
@@ -1297,4 +1448,165 @@ test('formats experimental set category callback data only in experimental mode'
       'tx_set_category:pending-1:other',
     ],
   );
+});
+
+test('handles confirmed Krom QRIS email with category rule', async () => {
+  const { calls, service } = createService([
+    [],
+    [],
+    [{ category: 'Food' }],
+    [{ id: 'import-1' }],
+    [{ id: 'tx-email' }],
+    [],
+    [],
+  ]);
+
+  const result = await service.handleEmailTransaction({
+    telegramUserId: '976684739',
+    userId: 1,
+    source: 'email',
+    email: {
+      messageId: 'gmail-qris',
+      threadId: 'thread-qris',
+      from: 'no-reply@krom.id',
+      subject: 'Transaksi QRIS berhasil',
+      date: '2026-06-22T10:00:00+07:00',
+      emailText:
+        'Transaksi QRIS berhasil. Merchant: Kopi Tuku Jumlah: Rp25.000',
+    },
+  });
+
+  assert.equal(result.status, 'confirmed');
+  assert.equal(result.provider, 'Krom');
+  assert.equal(result.templateKey, 'krom-qris-payment');
+  assert.equal(result.transaction?.id, 'tx-email');
+  assert.equal(result.transaction?.category, 'Food');
+  assert.equal(result.transaction?.merchantNormalized, 'Kopi Tuku');
+  assert.equal(calls.length, 7);
+  assert.match(calls[2].text, /FROM category_rules/);
+  assert.deepEqual(calls[2].values, ['1', 'Kopi Tuku', 'Kopi Tuku']);
+  assert.match(calls[4].text, /INSERT INTO transactions/);
+  assert.deepEqual(calls[4].values.slice(0, 8), [
+    '1',
+    'expense',
+    25000,
+    'Kopi Tuku',
+    'Kopi Tuku',
+    'Food',
+    '2026-06-22T03:00:00.000Z',
+    97,
+  ]);
+});
+
+test('returns needs_review for BCA known template without category', async () => {
+  const { calls, service } = createService([
+    [],
+    [],
+    [],
+    [{ id: 'import-review' }],
+    [],
+  ]);
+
+  const result = await service.handleEmailTransaction({
+    telegramUserId: '976684739',
+    userId: 1,
+    source: 'email',
+    email: {
+      messageId: 'gmail-bca',
+      from: 'card@bca.co.id',
+      subject: 'Notifikasi Transaksi',
+      date: '2026-06-22T10:00:00+07:00',
+      emailText:
+        'Notifikasi Transaksi Merchant/ATM TOKO BUKU Jenis Transaksi Pembelian Sejumlah Rp123.456',
+    },
+  });
+
+  assert.equal(result.status, 'needs_review');
+  assert.equal(result.provider, 'BCA');
+  assert.equal(result.reason, 'category could not be resolved');
+  assert.equal(result.transaction, undefined);
+  assert.match(calls[3].text, /INSERT INTO transaction_imports/);
+  assert.match(calls[4].text, /INSERT INTO email_parse_attempts/);
+});
+
+test('returns unsupported_template for Mandiri non e-money email', async () => {
+  const { calls, service } = createService([
+    [],
+    [{ id: 'import-mandiri' }],
+    [],
+  ]);
+
+  const result = await service.handleEmailTransaction({
+    telegramUserId: '976684739',
+    userId: 1,
+    source: 'email',
+    email: {
+      messageId: 'gmail-mandiri',
+      from: 'bankmandiri@bankmandiri.co.id',
+      subject: 'Mandiri Transaction',
+      date: '2026-06-22T10:00:00+07:00',
+      emailText: 'Mandiri Transaction berhasil sebesar Rp50.000',
+    },
+  });
+
+  assert.equal(result.status, 'unsupported_template');
+  assert.equal(result.provider, 'Mandiri');
+  assert.equal(result.templateKey, null);
+  assert.equal(calls.length, 3);
+});
+
+test('returns duplicate for existing Gmail message import', async () => {
+  const { calls, service } = createService([
+    [
+      {
+        id: 'import-existing',
+        transaction_id: 'tx-existing',
+        status: 'confirmed',
+      },
+    ],
+  ]);
+
+  const result = await service.handleEmailTransaction({
+    telegramUserId: '976684739',
+    userId: 1,
+    source: 'email',
+    email: {
+      messageId: 'gmail-existing',
+      from: 'no-reply@krom.id',
+      subject: 'Transaksi QRIS berhasil',
+      date: '2026-06-22T10:00:00+07:00',
+      emailText:
+        'Transaksi QRIS berhasil. Merchant: Kopi Tuku Jumlah: Rp25.000',
+    },
+  });
+
+  assert.equal(result.status, 'duplicate');
+  assert.equal(result.transaction, undefined);
+  assert.equal(calls.length, 1);
+});
+
+test('missing amount in known email returns parse_failed instead of confirmed', async () => {
+  const { calls, service } = createService([
+    [],
+    [{ id: 'import-parse-failed' }],
+    [],
+  ]);
+
+  const result = await service.handleEmailTransaction({
+    telegramUserId: '976684739',
+    userId: 1,
+    source: 'email',
+    email: {
+      messageId: 'gmail-missing-amount',
+      from: 'no-reply@krom.id',
+      subject: 'Transaksi QRIS berhasil',
+      date: '2026-06-22T10:00:00+07:00',
+      emailText: 'Transaksi QRIS berhasil. Merchant: Kopi Tuku Jumlah:',
+    },
+  });
+
+  assert.equal(result.status, 'parse_failed');
+  assert.equal(result.reason, 'amount must exist and be positive');
+  assert.equal(result.transaction, undefined);
+  assert.equal(calls.length, 3);
 });

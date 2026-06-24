@@ -101,7 +101,9 @@ This checklist turns the parity audit into reviewable migration work. It reflect
 - [x] Add production-compatible category rule lookup using the active schema and priority behavior.
 - [x] Decide confidence scale parity: current `0-95` number versus workflow values such as `0.95`, `0.98`, and LLM `0-100`.
   - Decision: keep the existing Core API `0-95` helper scale while this endpoint remains normalization-only and does not own LLM categorization.
-- [ ] Add bank email parser endpoint only if explicitly migrating email parsing.
+- [x] Add bank email parser endpoint only if explicitly migrating email parsing.
+  - Phase 1 endpoint: `POST /api/veyra/transactions/email/handle` for deterministic BCA credit-card, Mandiri e-money, and Krom transfer/QRIS templates.
+  - Still excludes LLM fallback, DB-driven parser execution, and auto-saving unknown BCA/Mandiri/Krom templates.
 - [ ] Add LLM categorizer fallback only if explicitly migrating categorization.
 - [ ] Add `merchant_review_queue` upsert only if replacing the normalizer/categorizer side effects.
 - [x] Add tests for dirty amount strings, reversal/refund mapping, alias hit, alias miss, category rule hit, and missing merchant validation.

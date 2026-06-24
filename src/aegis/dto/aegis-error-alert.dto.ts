@@ -9,9 +9,16 @@ export interface N8nExecutionReferenceDto {
   id?: string;
   url?: string;
   mode?: string;
+  lastNodeExecuted?: string;
+  executionContext?: {
+    triggerNode?: {
+      name?: string;
+    };
+  };
   retryOf?: string | number;
   startedAt?: string;
   stoppedAt?: string;
+  error?: N8nErrorReferenceDto;
 }
 
 export interface N8nErrorReferenceDto {
@@ -20,6 +27,20 @@ export interface N8nErrorReferenceDto {
   description?: string;
   stack?: string;
   node?: string | { name?: string; type?: string };
+  errorResponse?: N8nErrorResponseReferenceDto;
+}
+
+export interface N8nErrorResponseReferenceDto {
+  httpCode?: string | number;
+  messages?: string | string[];
+  executionId?: string | number;
+  context?: {
+    request?: {
+      method?: string;
+      uri?: string;
+      body?: unknown;
+    };
+  };
 }
 
 export interface AegisN8nErrorPayloadDto {

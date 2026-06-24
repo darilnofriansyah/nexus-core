@@ -58,26 +58,57 @@ Returns a basic health payload.
 
 ### `POST /api/aegis/n8n-error`
 
-Formats a raw n8n Error Trigger payload into the production-compatible reliable sender payload. n8n should still own the Error Trigger, routing, credentials, Telegram send, and retry behavior.
+Formats a raw n8n Error Trigger payload into the production-compatible Telegram reliable sender payload. The endpoint also accepts the existing flattened mapped payload shape and a one-item array from n8n. n8n should still own the Error Trigger, routing, credentials, Telegram send, and retry behavior.
 
 Example request body:
 
 ```json
 {
   "workflow": {
-    "id": "example-workflow-id",
-    "name": "Error Watchdog"
+    "id": "z4ZSHXh84SMSt8MR",
+    "name": "Veyra Message Router - Nexus Core API"
   },
   "execution": {
-    "id": "example-execution-id",
-    "url": "https://n8n.example.com/execution/example-execution-id",
-    "mode": "error",
-    "stoppedAt": "2026-06-17T10:00:00.000Z"
-  },
-  "error": {
-    "message": "Request timed out",
-    "node": {
-      "name": "HTTP Request"
+    "id": "2212",
+    "url": "https://n8n.example.com/workflow/z4ZSHXh84SMSt8MR/executions/2212",
+    "mode": "webhook",
+    "lastNodeExecuted": "Call Veyra Record Sub-Workflow",
+    "executionContext": {
+      "triggerNode": {
+        "name": "Telegram Trigger"
+      }
+    },
+    "error": {
+      "message": "Bad request - please check your parameters",
+      "name": "NodeApiError",
+      "node": {
+        "name": "POST Core API Transaction Handle"
+      },
+      "errorResponse": {
+        "httpCode": 400,
+        "messages": "400 - \"{\\\"message\\\":\\\"llmResult is missing required fields\\\",\\\"error\\\":\\\"Bad Request\\\",\\\"statusCode\\\":400}\"",
+        "context": {
+          "request": {
+            "method": "POST",
+            "uri": "http://core-api:3001/api/veyra/transactions/handle",
+            "body": {
+              "telegramUserId": "976684739",
+              "userId": 1,
+              "source": "manual",
+              "text": "Bought TUKU 25rb",
+              "llmResult": {
+                "intent": "record_transaction",
+                "transaction_type": "expense",
+                "amount": 25000,
+                "merchant": "TUKU",
+                "category": "Others",
+                "missing_fields": ["wallet"],
+                "confidence": 0.6
+              }
+            }
+          }
+        }
+      }
     }
   }
 }
@@ -87,18 +118,20 @@ Example response:
 
 ```json
 {
-  "chatText": "<b>AEGIS INCIDENT</b>\n------------------------------\n<b>Severity:</b> ERROR\n<b>Service:</b> Veyra\n<b>Workflow:</b> Error Watchdog\n<b>Node:</b> HTTP Request\n<b>Execution:</b> example-execution-id\n<b>Mode:</b> error\n------------------------------\n<b>Error:</b> Request timed out\n<b>Execution URL:</b> https://n8n.example.com/execution/example-execution-id",
+  "chatText": "🚨 <b>Aegis Incident</b>\n\n<b>Workflow:</b> Veyra Message Router - Nexus Core API\n<b>Execution:</b> <a href=\"https://n8n.example.com/workflow/z4ZSHXh84SMSt8MR/executions/2212\">2212</a>\n<b>Mode:</b> webhook\n<b>Trigger:</b> Telegram Trigger\n\n<b>Failed Node:</b> POST Core API Transaction Handle\n<b>Last Node:</b> Call Veyra Record Sub-Workflow\n<b>Error:</b> Bad request - please check your parameters\n\n<b>HTTP FAILURE</b>\n<b>Status:</b> 400\n<b>Endpoint:</b> POST /api/veyra/transactions/handle\n<b>Response:</b> llmResult is missing required fields | Bad Request | statusCode=400\n\n<b>Request Summary</b>\n<b>User:</b> 976684739 / 1\n<b>Source:</b> manual\n<b>Text:</b> Bought TUKU 25rb\n<b>LLM:</b> record_transaction, expense, 25000, TUKU, Others\n<b>Missing:</b> wallet\n<b>Confidence:</b> 0.6",
   "chat_id": "<ADMIN_TELEGRAM_ID>",
-  "text": "<b>AEGIS INCIDENT</b>\n------------------------------\n<b>Severity:</b> ERROR\n<b>Service:</b> Veyra\n<b>Workflow:</b> Error Watchdog\n<b>Node:</b> HTTP Request\n<b>Execution:</b> example-execution-id\n<b>Mode:</b> error\n------------------------------\n<b>Error:</b> Request timed out\n<b>Execution URL:</b> https://n8n.example.com/execution/example-execution-id",
+  "text": "🚨 <b>Aegis Incident</b>\n\n<b>Workflow:</b> Veyra Message Router - Nexus Core API\n<b>Execution:</b> <a href=\"https://n8n.example.com/workflow/z4ZSHXh84SMSt8MR/executions/2212\">2212</a>\n<b>Mode:</b> webhook\n<b>Trigger:</b> Telegram Trigger\n\n<b>Failed Node:</b> POST Core API Transaction Handle\n<b>Last Node:</b> Call Veyra Record Sub-Workflow\n<b>Error:</b> Bad request - please check your parameters\n\n<b>HTTP FAILURE</b>\n<b>Status:</b> 400\n<b>Endpoint:</b> POST /api/veyra/transactions/handle\n<b>Response:</b> llmResult is missing required fields | Bad Request | statusCode=400\n\n<b>Request Summary</b>\n<b>User:</b> 976684739 / 1\n<b>Source:</b> manual\n<b>Text:</b> Bought TUKU 25rb\n<b>LLM:</b> record_transaction, expense, 25000, TUKU, Others\n<b>Missing:</b> wallet\n<b>Confidence:</b> 0.6",
   "parse_mode": "HTML",
   "disable_web_page_preview": true,
   "bot_token_env": "AEGIS_TOKEN",
   "severity": "ERROR",
-  "workflowId": "example-workflow-id",
-  "executionId": "example-execution-id",
-  "executionUrl": "https://n8n.example.com/execution/example-execution-id"
+  "workflowId": "z4ZSHXh84SMSt8MR",
+  "executionId": "2212",
+  "executionUrl": "https://n8n.example.com/workflow/z4ZSHXh84SMSt8MR/executions/2212"
 }
 ```
+
+The formatter reads nested HTTP Request failures from `execution.error.errorResponse` when n8n provides them, including status code, response messages, request method, request URI, and a safe request-body summary. Embedded JSON inside `errorResponse.messages` is summarized when possible. Sensitive keys such as tokens, authorization headers, cookies, passwords, API keys, and secrets are redacted; stack traces, headers, full raw payloads, and full request bodies are not included in Telegram text.
 
 ### `POST /api/veyra/telegram/messages`
 
@@ -699,6 +732,79 @@ Missing-field follow-up response:
 
 Validation errors include missing `llmResult`, missing required transaction fields not reported through `llmResult.missing_fields`, invalid amount, missing merchant, missing or unresolved category, unsupported transaction type, and confidence outside `0` to `100` after normalization.
 
+### `POST /api/veyra/transactions/email/handle`
+
+Handles one Gmail-sourced transaction notification with deterministic bank email parsers. This endpoint parses only the supported Phase 1 templates: BCA credit-card transaction notifications, Mandiri e-money top-ups, Krom incoming transfers, Krom QRIS payments, and Krom outgoing transfers. It does not call an LLM, does not execute DB-driven parser templates, and does not auto-save unknown BCA, Mandiri, or Krom templates.
+
+The handler deduplicates Gmail messages through `transaction_imports` using `source = "email"` and `source_reference = email.messageId`. Parse outcomes are logged to `email_parse_attempts` with a trimmed `body_sample`, not the full email body. The table definitions are in `docs/migration/2026-06-23-email-transaction-imports.sql` and should be applied separately.
+
+Confirmed saves insert into `transactions` with `source = "email"` and `status = "confirmed"` only when the parser returns a valid transaction, amount is positive, merchant is known or an allowed fallback, and category resolves from `category_rules` or an allowed existing fallback budget category. If category cannot be resolved, Core API returns `needs_review` instead of inserting a confirmed transaction.
+
+Example n8n HTTP Request body:
+
+```json
+{
+  "telegramUserId": "976684739",
+  "userId": 1,
+  "source": "email",
+  "email": {
+    "messageId": "gmail-message-id",
+    "threadId": "gmail-thread-id",
+    "from": "sender@email.com",
+    "subject": "Email subject",
+    "date": "2026-06-22T10:00:00+07:00",
+    "emailText": "plain text body",
+    "emailHtml": "optional"
+  }
+}
+```
+
+Example confirmed response:
+
+```json
+{
+  "status": "confirmed",
+  "provider": "Krom",
+  "templateKey": "krom-qris-payment",
+  "reason": null,
+  "transaction": {
+    "id": "123",
+    "userId": "1",
+    "transactionType": "expense",
+    "amount": 25000,
+    "merchant": "Kopi Tuku",
+    "merchantNormalized": "Kopi Tuku",
+    "category": "Food",
+    "transactionDate": "2026-06-22T03:00:00.000Z",
+    "source": "email",
+    "status": "confirmed",
+    "confidence": 97
+  },
+  "parsed": {
+    "provider": "Krom",
+    "templateKey": "krom-qris-payment",
+    "emailId": "gmail-message-id",
+    "merchant": "Kopi Tuku",
+    "amount": 25000,
+    "transactionDate": "2026-06-22T10:00:00+07:00",
+    "bank": "Krom",
+    "paymentType": "QRIS",
+    "type": "expense",
+    "confidence": 97,
+    "isTransaction": true,
+    "raw": {}
+  },
+  "telegram": {
+    "text": "<b>Transaction recorded</b>\n\nAmount: Rp25.000\nMerchant: Kopi Tuku\nCategory: Food\nSource: Krom",
+    "parseMode": "HTML"
+  }
+}
+```
+
+Possible statuses are `confirmed`, `needs_review`, `duplicate`, `ignored_non_transaction`, `unsupported_provider`, `unsupported_template`, and `parse_failed`. The `telegram.text` field is HTML-safe and suitable for n8n Telegram routing with `parseMode: "HTML"`.
+
+This endpoint can replace deterministic email parser Code nodes and the high-confidence direct insert branch for supported templates. Gmail triggers, email fetching, HTML/plain-text extraction, Telegram sends, retries, unsupported-template review routing, category review callbacks, and any LLM fallback stay in n8n.
+
 ### `POST /api/veyra/transactions/confirmation-payload`
 
 Builds Telegram-ready confirmation text and inline keyboard data for a pending transaction. Manual payloads return plain text. Email payloads default to Telegram HTML text and `parseMode: "HTML"`. This endpoint does not insert or update transactions, does not handle callbacks, and does not send Telegram messages.
@@ -834,6 +940,77 @@ Example rejected response:
 ```
 
 If the transaction row is missing, `status` is `not_found`. If it is already confirmed, `status` is `already_confirmed`. If it is already rejected, `status` is `already_rejected`.
+
+### `POST /api/veyra/transactions/callback/handle`
+
+Routes one Telegram transaction callback through Core API and returns a Telegram `editMessageText` payload for n8n to send. Core API parses only the production callback names, validates numeric transaction and budget ids, checks ownership with `userId`, and reuses the existing confirm, cancel, category-options, and set-category logic.
+
+Supported callback data:
+
+```txt
+save_transaction:{transactionId}
+cancel_transaction:{transactionId}
+change_categories:{transactionId}
+catid:{budgetId}:{transactionId}
+```
+
+Example request body:
+
+```json
+{
+  "telegramUserId": "976684739",
+  "userId": 1,
+  "callbackData": "catid:10:123",
+  "chatId": "123456789",
+  "messageId": 42
+}
+```
+
+Example response:
+
+```json
+{
+  "status": "ok",
+  "action": "catid",
+  "transactionId": 123,
+  "telegram": {
+    "method": "editMessageText",
+    "chat_id": "123456789",
+    "message_id": 42,
+    "text": "Transaction 123 confirmed: GoPay 50000",
+    "parse_mode": "HTML",
+    "reply_markup": null
+  }
+}
+```
+
+For `change_categories:{transactionId}`, `telegram.reply_markup` contains `inline_keyboard` buttons using `catid:{budgetId}:{transactionId}`. Unknown or invalid callback data returns `status: "error"` and safe user-facing `telegram.text`.
+
+Recommended n8n callback flow:
+
+```txt
+Telegram Callback Query Trigger
+  -> HTTP Request
+     Method: POST
+     URL: http://core-api:3001/api/veyra/transactions/callback/handle
+     Body:
+     {
+       "telegramUserId": "={{$json.callback_query.from.id}}",
+       "userId": "={{$json.user_id}}",
+       "callbackData": "={{$json.callback_query.data}}",
+       "chatId": "={{$json.callback_query.message.chat.id}}",
+       "messageId": "={{$json.callback_query.message.message_id}}"
+     }
+  -> Telegram Edit Message Text
+     Method = {{$json.telegram.method}}
+     Chat ID = {{$json.telegram.chat_id}}
+     Message ID = {{$json.telegram.message_id}}
+     Text = {{$json.telegram.text}}
+     Parse Mode = {{$json.telegram.parse_mode}}
+     Reply Markup = {{$json.telegram.reply_markup}}
+```
+
+This replaces only the transaction callback parsing/routing and per-branch HTTP Request mapping in n8n. Keep Telegram Callback Query triggers, Telegram edit/send execution, callback answer nodes, overspend orchestration, and credentials in n8n.
 
 ### `GET /api/veyra/conversation-states/:userId`
 
@@ -1070,6 +1247,8 @@ URL: http://core-api:3001/api/aegis/n8n-error
 Send Body: JSON
 Body: pass the raw n8n Error Trigger payload, or map workflow, execution, and error fields from the trigger item
 ```
+
+The body may be the raw trigger object, the current flattened mapped object, or a one-item array containing the raw trigger object. If an HTTP Request node failed, Core API reads `execution.error.errorResponse` and returns a compact Telegram-safe incident summary. n8n should send the returned payload as-is through the existing Telegram sender.
 
 If `CORE_API_KEY` is set in the Core API environment, add this HTTP header in n8n:
 

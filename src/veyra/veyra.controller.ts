@@ -57,6 +57,14 @@ import {
   TransactionHandleRequestDto,
   TransactionHandleResponseDto,
 } from './transactions/dto/handle-transaction.dto';
+import {
+  EmailTransactionHandleRequestDto,
+  EmailTransactionHandleResponseDto,
+} from './transactions/dto/email-transaction.dto';
+import {
+  TransactionCallbackHandleRequestDto,
+  TransactionCallbackHandleResponseDto,
+} from './transactions/dto/transaction-callback-handle.dto';
 import { TransactionService } from './transactions/transaction.service';
 
 @Controller('veyra')
@@ -78,7 +86,9 @@ export class VeyraController {
       intent,
       budget: this.budgetService.placeholderStatus(),
       transaction: this.transactionService.placeholderStatus(),
-      telegramText: this.telegramFormatter.formatPlaceholderReply(intent.intent),
+      telegramText: this.telegramFormatter.formatPlaceholderReply(
+        intent.intent,
+      ),
       sendTelegramInN8n: true,
     });
   }
@@ -168,6 +178,13 @@ export class VeyraController {
     );
   }
 
+  @Post('transactions/email/handle')
+  handleEmailTransaction(
+    @Body() body: EmailTransactionHandleRequestDto,
+  ): Promise<EmailTransactionHandleResponseDto> {
+    return this.transactionService.handleEmailTransaction(body);
+  }
+
   @Post('transactions/confirmation-payload')
   buildTransactionConfirmationPayload(
     @Body() body: TransactionConfirmationPayloadRequestDto,
@@ -187,6 +204,13 @@ export class VeyraController {
     @Body() body: ConfirmTransactionRequestDto,
   ): Promise<ConfirmTransactionResponseDto> {
     return this.transactionService.cancelTransaction(body);
+  }
+
+  @Post('transactions/callback/handle')
+  handleTransactionCallback(
+    @Body() body: TransactionCallbackHandleRequestDto,
+  ): Promise<TransactionCallbackHandleResponseDto> {
+    return this.transactionService.handleTransactionCallback(body);
   }
 
   @Post('transactions/category-options')
