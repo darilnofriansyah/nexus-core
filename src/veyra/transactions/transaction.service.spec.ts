@@ -1450,10 +1450,258 @@ test('formats experimental set category callback data only in experimental mode'
   );
 });
 
+test('resolves high confidence email review as confirmed with canonical category', async () => {
+  const { calls, service } = createService([
+    [{ id: '1', telegram_id: '976684739' }],
+    [{ category: 'Food' }],
+    [{ id: 'tx-review' }],
+    [],
+    [],
+    [],
+    [],
+  ]);
+
+  const result = await service.resolveEmailTransactionReview({
+    telegramUserId: '976684739',
+    reviewToken: 'review-1',
+    transactionCandidate: {
+      source: 'email',
+      bank: 'bca',
+      transactionType: 'expense',
+      amount: 25000,
+      merchant: 'TUKU',
+      merchantNormalized: 'tuku',
+      transactionDate: '2026-06-25T00:00:00+07:00',
+      description: 'BCA Credit Card transaction',
+      rawPayload: { emailId: 'email-1' },
+    },
+    resolution: {
+      category: 'food',
+      confidence: 0.86,
+      resolver: 'llm',
+    },
+  });
+
+  assert.equal(result.status, 'confirmed');
+  assert.equal(result.transaction?.status, 'confirmed');
+  assert.equal(result.transaction?.category, 'Food');
+  assert.equal(result.transaction?.confidence, 86);
+  assert.match(result.telegramText ?? '', /Transaction recorded/);
+  assert.match(calls[1].text, /FROM budgets/);
+  assert.match(calls[1].text, /lower\(category\) = lower\(\$2\)/);
+  assert.deepEqual(calls[1].values, ['1', 'food']);
+  assert.match(calls[2].text, /INSERT INTO transactions/);
+  assert.deepEqual(calls[2].values, [
+    '1',
+    'expense',
+    25000,
+    'TUKU',
+    'tuku',
+    'Food',
+    '2026-06-24T17:00:00.000Z',
+    'BCA Credit Card transaction',
+    'confirmed',
+    86,
+    { emailId: 'email-1' },
+  ]);
+  assert.match(calls[3].text, /FROM merchant_aliases/);
+  assert.match(calls[4].text, /INSERT INTO merchant_aliases/);
+  assert.deepEqual(calls[4].values, ['1', 'TUKU', 'tuku']);
+  assert.match(calls[5].text, /FROM category_rules/);
+  assert.match(calls[6].text, /INSERT INTO category_rules/);
+  assert.deepEqual(calls[6].values, ['1', 'tuku', 'Food']);
+});
+
+test('resolves medium confidence email review as pending with production actions', async () => {
+  const { calls, service } = createService([
+    [{ id: '1', telegram_id: '976684739' }],
+    [{ category: 'Food' }],
+    [{ id: '123' }],
+  ]);
+
+  const result = await service.resolveEmailTransactionReview({
+    telegramUserId: '976684739',
+    transactionCandidate: {
+      source: 'email',
+      bank: 'bca',
+      transactionType: 'expense',
+      amount: 25000,
+      merchant: 'TUKU',
+      merchantNormalized: 'tuku',
+      transactionDate: '2026-06-25T00:00:00+07:00',
+      rawPayload: {},
+    },
+    resolution: {
+      category: 'Food',
+      confidence: 84,
+      resolver: 'llm',
+    },
+  });
+
+  assert.equal(result.status, 'pending');
+  assert.equal(result.transaction?.status, 'pending');
+  assert.equal(result.actions?.confirm.action, 'save_transaction');
+  assert.equal(result.actions?.confirm.transactionId, '123');
+  assert.equal(result.actions?.cancel.action, 'cancel_transaction');
+  assert.equal(result.actions?.changeCategory.action, 'change_categories');
+  assert.equal(calls[2].values[8], 'pending');
+  assert.equal(calls[2].values[9], 84);
+  assert.equal(
+    calls.some((call) => /merchant_aliases|category_rules/.test(call.text)),
+    false,
+  );
+});
+
+test('returns needs_review for low confidence email review without saving', async () => {
+  const { calls, service } = createService([
+    [{ id: '1', telegram_id: '976684739' }],
+    [{ category: 'Food' }],
+  ]);
+
+  const result = await service.resolveEmailTransactionReview({
+    telegramUserId: '976684739',
+    transactionCandidate: {
+      source: 'email',
+      transactionType: 'expense',
+      amount: 25000,
+      merchant: 'TUKU',
+      merchantNormalized: 'tuku',
+      rawPayload: {},
+    },
+    resolution: {
+      category: 'Food',
+      confidence: 0.74,
+      resolver: 'llm',
+    },
+  });
+
+  assert.equal(result.status, 'needs_review');
+  assert.equal(result.reason, 'low_confidence');
+  assert.equal(result.transaction, undefined);
+  assert.match(result.telegramText ?? '', /low confidence/);
+  assert.equal(calls.length, 2);
+});
+
+test('returns needs_review when email review category is not in budgets', async () => {
+  const { calls, service } = createService([
+    [{ id: '1', telegram_id: '976684739' }],
+    [],
+  ]);
+
+  const result = await service.resolveEmailTransactionReview({
+    telegramUserId: '976684739',
+    transactionCandidate: {
+      source: 'email',
+      transactionType: 'expense',
+      amount: 25000,
+      merchant: 'TUKU',
+      merchantNormalized: 'tuku',
+      rawPayload: {},
+    },
+    resolution: {
+      category: 'LLM Made Category',
+      confidence: 95,
+      resolver: 'llm',
+    },
+  });
+
+  assert.deepEqual(result, {
+    status: 'needs_review',
+    reason: 'category_not_found',
+    message: 'Category was not found in user budgets.',
+    transactionCandidate: {
+      source: 'email',
+      transactionType: 'expense',
+      amount: 25000,
+      merchant: 'TUKU',
+      merchantNormalized: 'tuku',
+      rawPayload: {},
+    },
+    resolution: {
+      category: 'LLM Made Category',
+      confidence: 95,
+      resolver: 'llm',
+    },
+  });
+  assert.match(calls[1].text, /FROM budgets/);
+  assert.equal(calls.length, 2);
+});
+
+test('returns safe email review response when telegram user is not found', async () => {
+  const { calls, service } = createService([[]]);
+
+  const result = await service.resolveEmailTransactionReview({
+    telegramUserId: '976684739',
+    transactionCandidate: {
+      source: 'email',
+      transactionType: 'expense',
+      amount: 25000,
+      merchant: 'TUKU',
+      rawPayload: {},
+    },
+    resolution: {
+      category: 'Food',
+      confidence: 95,
+    },
+  });
+
+  assert.equal(result.status, 'needs_review');
+  assert.equal(result.reason, 'user_not_found');
+  assert.equal(result.message, 'Telegram user was not found.');
+  assert.match(calls[0].text, /FROM telegram_users/);
+  assert.equal(calls.length, 1);
+});
+
+test('rejects invalid email review source', async () => {
+  const { service } = createService([[{ id: '1', telegram_id: '976684739' }]]);
+
+  await assert.rejects(
+    () =>
+      service.resolveEmailTransactionReview({
+        telegramUserId: '976684739',
+        transactionCandidate: {
+          source: 'manual',
+          transactionType: 'expense',
+          amount: 25000,
+          merchant: 'TUKU',
+          rawPayload: {},
+        },
+        resolution: {
+          category: 'Food',
+          confidence: 95,
+        },
+      }),
+    BadRequestException,
+  );
+});
+
+test('rejects invalid email review amount', async () => {
+  const { service } = createService([[{ id: '1', telegram_id: '976684739' }]]);
+
+  await assert.rejects(
+    () =>
+      service.resolveEmailTransactionReview({
+        telegramUserId: '976684739',
+        transactionCandidate: {
+          source: 'email',
+          transactionType: 'expense',
+          amount: 0,
+          merchant: 'TUKU',
+          rawPayload: {},
+        },
+        resolution: {
+          category: 'Food',
+          confidence: 95,
+        },
+      }),
+    BadRequestException,
+  );
+});
+
 test('handles confirmed Krom QRIS email with category rule', async () => {
   const { calls, service } = createService([
     [],
-    [],
+    [{ canonical_name: 'Kopi Tuku Canonical' }],
     [{ category: 'Food' }],
     [{ id: 'import-1' }],
     [{ id: 'tx-email' }],
@@ -1481,17 +1729,19 @@ test('handles confirmed Krom QRIS email with category rule', async () => {
   assert.equal(result.templateKey, 'krom-qris-payment');
   assert.equal(result.transaction?.id, 'tx-email');
   assert.equal(result.transaction?.category, 'Food');
-  assert.equal(result.transaction?.merchantNormalized, 'Kopi Tuku');
+  assert.equal(result.transaction?.merchant, 'Kopi Tuku');
+  assert.equal(result.transaction?.merchantNormalized, 'Kopi Tuku Canonical');
+  assert.match(result.telegram.text, /Merchant: Kopi Tuku Canonical/);
   assert.equal(calls.length, 7);
   assert.match(calls[2].text, /FROM category_rules/);
-  assert.deepEqual(calls[2].values, ['1', 'Kopi Tuku', 'Kopi Tuku']);
+  assert.deepEqual(calls[2].values, ['1', 'Kopi Tuku Canonical', 'Kopi Tuku']);
   assert.match(calls[4].text, /INSERT INTO transactions/);
   assert.deepEqual(calls[4].values.slice(0, 8), [
     '1',
     'expense',
     25000,
     'Kopi Tuku',
-    'Kopi Tuku',
+    'Kopi Tuku Canonical',
     'Food',
     '2026-06-22T03:00:00.000Z',
     97,
@@ -1501,7 +1751,7 @@ test('handles confirmed Krom QRIS email with category rule', async () => {
 test('returns needs_review for BCA known template without category', async () => {
   const { calls, service } = createService([
     [],
-    [],
+    [{ canonical_name: 'Toko Buku' }],
     [],
     [{ id: 'import-review' }],
     [],
@@ -1527,6 +1777,41 @@ test('returns needs_review for BCA known template without category', async () =>
   assert.equal(result.transaction, undefined);
   assert.match(calls[3].text, /INSERT INTO transaction_imports/);
   assert.match(calls[4].text, /INSERT INTO email_parse_attempts/);
+});
+
+test('returns needs_review for known email when merchant alias is missing', async () => {
+  const { calls, service } = createService([
+    [],
+    [],
+    [{ id: 'import-alias-review' }],
+    [],
+  ]);
+
+  const result = await service.handleEmailTransaction({
+    telegramUserId: '976684739',
+    userId: 1,
+    source: 'email',
+    email: {
+      messageId: 'gmail-bca-missing-alias',
+      from: 'card@bca.co.id',
+      subject: 'Notifikasi Transaksi',
+      date: '2026-06-25T00:05:42+07:00',
+      emailText:
+        'Notifikasi Transaksi Merchant / ATM SHOPEE.CO.ID Jenis Transaksi E-COMMERCE Sejumlah : Rp243.000,00',
+    },
+  });
+
+  assert.equal(result.status, 'needs_review');
+  assert.equal(result.provider, 'BCA');
+  assert.equal(result.reason, 'merchant alias could not be resolved');
+  assert.equal(result.transaction, undefined);
+  assert.equal(result.parsed?.merchant, 'SHOPEE.CO.ID');
+  assert.match(result.telegram.text, /Merchant: SHOPEE\.CO\.ID/);
+  assert.equal(calls.length, 4);
+  assert.match(calls[1].text, /FROM merchant_aliases/);
+  assert.doesNotMatch(calls[2].text, /FROM category_rules/);
+  assert.match(calls[2].text, /INSERT INTO transaction_imports/);
+  assert.match(calls[3].text, /INSERT INTO email_parse_attempts/);
 });
 
 test('returns unsupported_template for Mandiri non e-money email', async () => {

@@ -31,6 +31,7 @@ function input(emailText: string, overrides: Partial<EmailTransactionMessageDto>
 test('cleanAmount handles rupiah and separator variants', () => {
   assert.equal(cleanAmount('Rp50.000'), 50000);
   assert.equal(cleanAmount('IDR 50,000.00'), 50000);
+  assert.equal(cleanAmount('Rp243.000,00'), 243000);
   assert.equal(cleanAmount('1.250.500'), 1250500);
   assert.equal(cleanAmount(undefined), null);
 });
@@ -65,6 +66,17 @@ test('parses BCA credit card notification', () => {
         'Notifikasi Transaksi Merchant / ATM TOKO BUKU <ABC> Jenis Transaksi Pembelian Sejumlah Rp123.456',
     },
   });
+});
+
+test('parses BCA credit card notification with colon amount label', () => {
+  const parser = new BcaCreditCardTransactionParser();
+  const parserInput = input(
+    'T - Notifikasi Transaksi Kartu Kredit - Berhasil (Apr 25) Yth. Pemegang Kartu Kredit BCA, Terima kasih telah bertransaksi menggunakan Kartu Kredit BCA: Nomor Customer : 0000000019303946 Nomor Kartu : 455633XXXX1715 Merchant / ATM : SHOPEE.CO.ID Jenis Transaksi : E-COMMERCE Otentikasi : TRANSAKSI DENGAN OTP Pada Tanggal : 25-06-2026 00:05:42 WIB Sejumlah : Rp243.000,00',
+  );
+
+  assert.equal(parser.canParse(parserInput), true);
+  assert.equal(parser.parse(parserInput).merchant, 'SHOPEE.CO.ID');
+  assert.equal(parser.parse(parserInput).amount, 243000);
 });
 
 test('parses Mandiri e-money top-up only', () => {

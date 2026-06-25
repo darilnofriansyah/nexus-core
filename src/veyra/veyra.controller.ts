@@ -60,6 +60,8 @@ import {
 import {
   EmailTransactionHandleRequestDto,
   EmailTransactionHandleResponseDto,
+  EmailTransactionResolveReviewRequestDto,
+  EmailTransactionResolveReviewResponseDto,
 } from './transactions/dto/email-transaction.dto';
 import {
   TransactionCallbackHandleRequestDto,
@@ -183,6 +185,13 @@ export class VeyraController {
     @Body() body: EmailTransactionHandleRequestDto,
   ): Promise<EmailTransactionHandleResponseDto> {
     return this.transactionService.handleEmailTransaction(body);
+  }
+
+  @Post('transactions/email/resolve-review')
+  resolveEmailTransactionReview(
+    @Body() body: EmailTransactionResolveReviewRequestDto,
+  ): Promise<EmailTransactionResolveReviewResponseDto> {
+    return this.transactionService.resolveEmailTransactionReview(body);
   }
 
   @Post('transactions/confirmation-payload')

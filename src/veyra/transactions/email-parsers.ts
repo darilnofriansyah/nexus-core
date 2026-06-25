@@ -116,7 +116,7 @@ export class BcaCreditCardTransactionParser implements EmailTransactionParser {
       /Merchant\s*\/?\s*ATM/i,
       /Jenis Transaksi/i,
     );
-    const amount = amountAfter(text, /Sejumlah\s*(?:Rp\.?\s*)?([\d.,]+)/i);
+    const amount = amountAfter(text, /Sejumlah\s*:?\s*(?:Rp\.?\s*)?([\d.,]+)/i);
     const type = /\b(reversal|void)\b/i.test(text) ? 'reversal' : 'expense';
 
     return baseParsed(input, this, {

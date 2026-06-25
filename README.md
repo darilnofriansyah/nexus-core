@@ -805,6 +805,87 @@ Possible statuses are `confirmed`, `needs_review`, `duplicate`, `ignored_non_tra
 
 This endpoint can replace deterministic email parser Code nodes and the high-confidence direct insert branch for supported templates. Gmail triggers, email fetching, HTML/plain-text extraction, Telegram sends, retries, unsupported-template review routing, category review callbacks, and any LLM fallback stay in n8n.
 
+### `POST /api/veyra/transactions/email/resolve-review`
+
+Resolves an email transaction candidate that previously returned `status: "needs_review"` from the email ingestion flow. n8n may use an LLM to suggest a category from the user's existing budget names, but Core API validates the category against active `budgets.category` for the resolved `telegram_users` row before inserting anything.
+
+The endpoint accepts confidence as `0..1` or `0..100`. Confidence `>= 85` inserts a confirmed email transaction and best-effort learns the merchant alias/category rule without duplicating existing user-scoped rows. Confidence `75..84` inserts a pending email transaction and returns production callback actions for n8n. Confidence `< 75` returns `needs_review` without saving. It does not create budgets and does not send Telegram messages.
+
+Example n8n HTTP Request body:
+
+```json
+{
+  "telegramUserId": "976684739",
+  "reviewToken": "optional-correlation-id",
+  "transactionCandidate": {
+    "source": "email",
+    "bank": "bca",
+    "transactionType": "expense",
+    "amount": 25000,
+    "merchant": "TUKU",
+    "merchantNormalized": "tuku",
+    "transactionDate": "2026-06-25T00:00:00+07:00",
+    "description": "BCA Credit Card transaction",
+    "rawPayload": {}
+  },
+  "resolution": {
+    "category": "Food",
+    "confidence": 0.86,
+    "resolver": "llm"
+  }
+}
+```
+
+Example pending response:
+
+```json
+{
+  "status": "pending",
+  "transaction": {
+    "id": "123",
+    "userId": "1",
+    "transactionType": "expense",
+    "amount": 25000,
+    "merchant": "TUKU",
+    "merchantNormalized": "tuku",
+    "category": "Food",
+    "transactionDate": "2026-06-24T17:00:00.000Z",
+    "source": "email",
+    "status": "pending",
+    "confidence": 84
+  },
+  "telegramText": "<b>Confirm transaction</b>\n\nAmount: Rp25.000\nMerchant: tuku\nCategory: Food",
+  "actions": {
+    "confirm": {
+      "action": "save_transaction",
+      "transactionId": "123"
+    },
+    "cancel": {
+      "action": "cancel_transaction",
+      "transactionId": "123"
+    },
+    "changeCategory": {
+      "action": "change_categories",
+      "transactionId": "123"
+    }
+  }
+}
+```
+
+If the category does not exist in active budgets, Core API returns:
+
+```json
+{
+  "status": "needs_review",
+  "reason": "category_not_found",
+  "message": "Category was not found in user budgets.",
+  "transactionCandidate": {},
+  "resolution": {}
+}
+```
+
+This endpoint can replace the n8n review-resolution validation and insert branch after LLM categorization. Gmail triggers, email fetching/parsing, LLM category suggestion, Telegram sends, retries, and callback routing stay in n8n.
+
 ### `POST /api/veyra/transactions/confirmation-payload`
 
 Builds Telegram-ready confirmation text and inline keyboard data for a pending transaction. Manual payloads return plain text. Email payloads default to Telegram HTML text and `parseMode: "HTML"`. This endpoint does not insert or update transactions, does not handle callbacks, and does not send Telegram messages.

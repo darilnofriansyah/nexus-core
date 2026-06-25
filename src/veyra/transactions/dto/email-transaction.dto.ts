@@ -26,6 +26,31 @@ export interface EmailTransactionHandleRequestDto {
   email: EmailTransactionMessageDto;
 }
 
+export interface EmailReviewTransactionCandidateDto {
+  source: 'email' | string;
+  bank?: string;
+  transactionType: NormalizedTransactionType | string;
+  amount: number | string;
+  merchant?: string;
+  merchantNormalized?: string;
+  transactionDate?: string;
+  description?: string;
+  rawPayload?: Record<string, unknown>;
+}
+
+export interface EmailReviewResolutionDto {
+  category?: string;
+  confidence?: number;
+  resolver?: string;
+}
+
+export interface EmailTransactionResolveReviewRequestDto {
+  telegramUserId: string;
+  reviewToken?: string;
+  transactionCandidate: EmailReviewTransactionCandidateDto;
+  resolution: EmailReviewResolutionDto;
+}
+
 export interface ParsedEmailTransactionDto {
   provider: string;
   templateKey: string;
@@ -51,7 +76,7 @@ export interface EmailTransactionResponseTransactionDto {
   category: string;
   transactionDate: string;
   source: 'email';
-  status: 'confirmed';
+  status: 'confirmed' | 'pending';
   confidence: number;
 }
 
@@ -65,5 +90,32 @@ export interface EmailTransactionHandleResponseDto {
   telegram: {
     text: string;
     parseMode: 'HTML';
+  };
+}
+
+export type EmailTransactionResolveReviewStatus =
+  | 'confirmed'
+  | 'pending'
+  | 'needs_review';
+
+export interface EmailReviewActionDto {
+  action?: 'save_transaction' | 'cancel_transaction' | 'change_categories';
+  transactionId?: string;
+}
+
+export interface EmailTransactionResolveReviewResponseDto {
+  status: EmailTransactionResolveReviewStatus;
+  reason?: 'user_not_found' | 'category_not_found' | 'low_confidence';
+  message?: string;
+  transaction?: EmailTransactionResponseTransactionDto & {
+    status: 'confirmed' | 'pending';
+  };
+  transactionCandidate?: EmailReviewTransactionCandidateDto;
+  resolution?: EmailReviewResolutionDto;
+  telegramText?: string;
+  actions?: {
+    confirm: EmailReviewActionDto;
+    cancel: EmailReviewActionDto;
+    changeCategory: EmailReviewActionDto;
   };
 }

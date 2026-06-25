@@ -41,9 +41,13 @@ import {
   TransactionStatus,
 } from './dto/handle-transaction.dto';
 import {
+  EmailReviewResolutionDto,
+  EmailReviewTransactionCandidateDto,
   EmailTransactionHandleRequestDto,
   EmailTransactionHandleResponseDto,
   EmailTransactionHandleStatus,
+  EmailTransactionResolveReviewRequestDto,
+  EmailTransactionResolveReviewResponseDto,
   ParsedEmailTransactionDto,
 } from './dto/email-transaction.dto';
 import {
@@ -70,11 +74,18 @@ const EXPERIMENTAL_CALLBACK_MODE: TransactionCallbackMode = 'experimental';
 const EMPTY_CONFIRMATION_FIELD = '-';
 
 interface MerchantAliasRow extends QueryResultRow {
+  id?: string | number;
   canonical_name: string;
 }
 
 interface CategoryRuleRow extends QueryResultRow {
+  id?: string | number;
   category: string;
+}
+
+interface TelegramUserRow extends QueryResultRow {
+  id: string | number;
+  telegram_id: string | number | null;
 }
 
 interface ExistingImportRow extends QueryResultRow {
@@ -131,6 +142,23 @@ interface CategoryOption {
 
 interface ExistingCategoryRow extends QueryResultRow {
   category: string;
+}
+
+interface ValidatedEmailReview {
+  userId: string;
+  candidate: EmailReviewTransactionCandidateDto & {
+    source: 'email';
+    transactionType: NormalizedTransactionType;
+    amount: number;
+    merchant: string;
+    merchantNormalized: string;
+    transactionDate: string;
+    rawPayload: Record<string, unknown>;
+  };
+  resolution: EmailReviewResolutionDto & {
+    category: string;
+    confidence: number;
+  };
 }
 
 interface TransactionHandleStateStore {
@@ -405,7 +433,20 @@ export class TransactionService {
       });
     }
 
-    const merchantNormalized = await this.resolveMerchantNormalized(merchant);
+    const merchantAlias = await this.findMerchantAliasCanonicalName(merchant);
+
+    if (!merchantAlias) {
+      return this.recordUnconfirmedEmailAttempt({
+        request: validated,
+        status: 'needs_review',
+        provider: parsed.provider,
+        templateKey: parsed.templateKey,
+        reason: 'merchant alias could not be resolved',
+        parsed,
+      });
+    }
+
+    const merchantNormalized = merchantAlias;
     const category = await this.resolveEmailCategory({
       userId: validated.userId,
       merchant,
@@ -456,6 +497,417 @@ export class TransactionService {
       parsed,
       transaction,
     });
+  }
+
+  async resolveEmailTransactionReview(
+    request: EmailTransactionResolveReviewRequestDto,
+  ): Promise<EmailTransactionResolveReviewResponseDto> {
+    const telegramUserId = this.cleanString(request.telegramUserId);
+
+    if (!telegramUserId) {
+      throw new BadRequestException('telegramUserId is required');
+    }
+
+    const user = await this.findTelegramUserByTelegramId(telegramUserId);
+
+    if (!user) {
+      return {
+        status: 'needs_review',
+        reason: 'user_not_found',
+        message: 'Telegram user was not found.',
+        transactionCandidate: request.transactionCandidate,
+        resolution: request.resolution,
+      };
+    }
+
+    const validated = this.validateEmailReviewRequest(request, String(user.id));
+    const category = await this.findExistingBudgetCategory(
+      validated.userId,
+      validated.resolution.category,
+    );
+
+    if (!category) {
+      return {
+        status: 'needs_review',
+        reason: 'category_not_found',
+        message: 'Category was not found in user budgets.',
+        transactionCandidate: request.transactionCandidate,
+        resolution: request.resolution,
+      };
+    }
+
+    if (validated.resolution.confidence < 75) {
+      return {
+        status: 'needs_review',
+        reason: 'low_confidence',
+        transactionCandidate: request.transactionCandidate,
+        resolution: {
+          ...request.resolution,
+          confidence: validated.resolution.confidence,
+        },
+        telegramText: this.buildEmailReviewTelegramText({
+          status: 'needs_review',
+          amount: validated.candidate.amount,
+          merchant: validated.candidate.merchantNormalized,
+          category,
+          reason: 'low confidence',
+        }),
+      };
+    }
+
+    const transactionStatus =
+      validated.resolution.confidence >= 85 ? 'confirmed' : 'pending';
+    const transaction = await this.saveEmailReviewTransaction({
+      userId: validated.userId,
+      candidate: {
+        ...validated.candidate,
+        category,
+      },
+      status: transactionStatus,
+      confidence: validated.resolution.confidence,
+    });
+
+    if (transactionStatus === 'confirmed') {
+      try {
+        await this.upsertHighConfidenceEmailReviewLearning({
+          userId: validated.userId,
+          merchant: validated.candidate.merchant,
+          merchantNormalized: validated.candidate.merchantNormalized,
+          category,
+        });
+      } catch {
+        // Alias/rule learning is intentionally best-effort for this endpoint.
+      }
+    }
+
+    const telegramText = this.buildEmailReviewTelegramText({
+      status: transactionStatus,
+      amount: transaction.amount,
+      merchant: transaction.merchantNormalized,
+      category: transaction.category,
+    });
+
+    if (transactionStatus === 'confirmed') {
+      return {
+        status: 'confirmed',
+        transaction,
+        telegramText,
+      };
+    }
+
+    return {
+      status: 'pending',
+      transaction,
+      telegramText,
+      actions: this.buildEmailReviewActions(transaction.id),
+    };
+  }
+
+  private async findTelegramUserByTelegramId(
+    telegramUserId: string,
+  ): Promise<TelegramUserRow | undefined> {
+    const result = await this.database.query<TelegramUserRow>(
+      `
+        SELECT id, telegram_id
+        FROM telegram_users
+        WHERE telegram_id::text = $1
+        LIMIT 1
+      `,
+      [telegramUserId],
+    );
+
+    return result.rows[0];
+  }
+
+  private validateEmailReviewRequest(
+    request: EmailTransactionResolveReviewRequestDto,
+    userId: string,
+  ): ValidatedEmailReview {
+    const candidate = request.transactionCandidate;
+    const resolution = request.resolution;
+
+    if (!candidate || typeof candidate !== 'object') {
+      throw new BadRequestException('transactionCandidate is required');
+    }
+
+    if (!resolution || typeof resolution !== 'object') {
+      throw new BadRequestException('resolution is required');
+    }
+
+    const source = this.cleanString(candidate.source)?.toLowerCase();
+
+    if (source !== 'email') {
+      throw new BadRequestException('transactionCandidate.source must be email');
+    }
+
+    const amount = this.normalizeAmount(candidate.amount);
+
+    if (amount <= 0) {
+      throw new BadRequestException('amount must be positive');
+    }
+
+    const warnings: string[] = [];
+    const transactionType = this.normalizeTransactionType(
+      candidate.transactionType,
+      candidate.rawPayload,
+      warnings,
+    );
+    const merchant =
+      this.cleanString(candidate.merchant) ??
+      this.cleanString(candidate.merchantNormalized) ??
+      'Unknown';
+    const merchantNormalized =
+      this.cleanString(candidate.merchantNormalized) ?? merchant;
+    const category = this.cleanString(resolution.category);
+
+    if (!category) {
+      throw new BadRequestException('resolution.category is required');
+    }
+
+    return {
+      userId,
+      candidate: {
+        ...candidate,
+        source: 'email',
+        transactionType,
+        amount,
+        merchant,
+        merchantNormalized,
+        transactionDate: this.normalizeTransactionDate(
+          candidate.transactionDate,
+        ),
+        rawPayload: candidate.rawPayload ?? {},
+      },
+      resolution: {
+        ...resolution,
+        category,
+        confidence: this.normalizeConfidence(resolution.confidence),
+      },
+    };
+  }
+
+  private async saveEmailReviewTransaction(input: {
+    userId: string;
+    candidate: ValidatedEmailReview['candidate'] & { category: string };
+    status: 'confirmed' | 'pending';
+    confidence: number;
+  }): Promise<
+    NonNullable<EmailTransactionResolveReviewResponseDto['transaction']>
+  > {
+    const result = await this.database.query<InsertedTransactionRow>(
+      `
+        INSERT INTO transactions (
+          user_id,
+          transaction_type,
+          amount,
+          merchant,
+          merchant_normalized,
+          category,
+          transaction_date,
+          source,
+          notes,
+          status,
+          confidence,
+          raw_payload
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, 'email', $8, $9, $10, $11)
+        RETURNING id
+      `,
+      [
+        input.userId,
+        input.candidate.transactionType,
+        input.candidate.amount,
+        input.candidate.merchant,
+        input.candidate.merchantNormalized,
+        input.candidate.category,
+        input.candidate.transactionDate,
+        this.cleanString(input.candidate.description) ?? null,
+        input.status,
+        input.confidence,
+        input.candidate.rawPayload,
+      ],
+    );
+    const insertedId = result.rows[0]?.id;
+
+    if (insertedId === undefined) {
+      throw new BadRequestException('transaction insert failed');
+    }
+
+    return {
+      id: String(insertedId),
+      userId: input.userId,
+      transactionType: input.candidate.transactionType,
+      amount: input.candidate.amount,
+      merchant: input.candidate.merchant,
+      merchantNormalized: input.candidate.merchantNormalized,
+      category: input.candidate.category,
+      transactionDate: input.candidate.transactionDate,
+      source: 'email',
+      status: input.status,
+      confidence: input.confidence,
+    };
+  }
+
+  private async upsertHighConfidenceEmailReviewLearning(input: {
+    userId: string;
+    merchant: string;
+    merchantNormalized: string;
+    category: string;
+  }): Promise<void> {
+    await this.upsertMerchantAlias({
+      userId: input.userId,
+      aliasName: input.merchant,
+      canonicalName: input.merchantNormalized,
+    });
+    await this.upsertCategoryRule({
+      userId: input.userId,
+      merchantPattern: input.merchantNormalized,
+      category: input.category,
+    });
+  }
+
+  private async upsertMerchantAlias(input: {
+    userId: string;
+    aliasName: string;
+    canonicalName: string;
+  }): Promise<void> {
+    if (!input.aliasName || !input.canonicalName) {
+      return;
+    }
+
+    const existing = await this.database.query<MerchantAliasRow>(
+      `
+        SELECT id, canonical_name
+        FROM merchant_aliases
+        WHERE user_id::text = $1
+          AND lower(alias_name) = lower($2)
+        LIMIT 1
+      `,
+      [input.userId, input.aliasName],
+    );
+    const row = existing.rows[0];
+
+    if (row) {
+      if (row.canonical_name !== input.canonicalName) {
+        await this.database.query(
+          `
+            UPDATE merchant_aliases
+            SET canonical_name = $1
+            WHERE id::text = $2
+          `,
+          [input.canonicalName, String(row.id)],
+        );
+      }
+
+      return;
+    }
+
+    await this.database.query(
+      `
+        INSERT INTO merchant_aliases (user_id, alias_name, canonical_name)
+        VALUES ($1, $2, $3)
+      `,
+      [input.userId, input.aliasName, input.canonicalName],
+    );
+  }
+
+  private async upsertCategoryRule(input: {
+    userId: string;
+    merchantPattern: string;
+    category: string;
+  }): Promise<void> {
+    if (!input.merchantPattern || !input.category) {
+      return;
+    }
+
+    const existing = await this.database.query<CategoryRuleRow>(
+      `
+        SELECT id, category
+        FROM category_rules
+        WHERE user_id::text = $1
+          AND lower(merchant_pattern) = lower($2)
+        LIMIT 1
+      `,
+      [input.userId, input.merchantPattern],
+    );
+    const row = existing.rows[0];
+
+    if (row) {
+      if (row.category !== input.category) {
+        await this.database.query(
+          `
+            UPDATE category_rules
+            SET category = $1
+            WHERE id::text = $2
+          `,
+          [input.category, String(row.id)],
+        );
+      }
+
+      return;
+    }
+
+    await this.database.query(
+      `
+        INSERT INTO category_rules (user_id, merchant_pattern, category)
+        VALUES ($1, $2, $3)
+      `,
+      [input.userId, input.merchantPattern, input.category],
+    );
+  }
+
+  private buildEmailReviewTelegramText(input: {
+    status: 'confirmed' | 'pending' | 'needs_review';
+    amount: number;
+    merchant: string;
+    category: string;
+    reason?: string;
+  }): string {
+    if (input.status === 'confirmed') {
+      return this.formatConfirmationHtml([
+        'Transaction recorded',
+        '',
+        `Amount: ${this.formatCurrency(input.amount)}`,
+        `Merchant: ${input.merchant}`,
+        `Category: ${input.category}`,
+        'Source: Email',
+      ]);
+    }
+
+    const lines = [
+      input.status === 'pending'
+        ? 'Confirm transaction'
+        : 'Email transaction needs attention',
+      '',
+      `Amount: ${this.formatCurrency(input.amount)}`,
+      `Merchant: ${input.merchant}`,
+      `Category: ${input.category}`,
+    ];
+
+    if (input.reason) {
+      lines.push(`Reason: ${input.reason}`);
+    }
+
+    return this.formatConfirmationHtml(lines);
+  }
+
+  private buildEmailReviewActions(transactionId: string): NonNullable<
+    EmailTransactionResolveReviewResponseDto['actions']
+  > {
+    return {
+      confirm: {
+        action: 'save_transaction',
+        transactionId,
+      },
+      cancel: {
+        action: 'cancel_transaction',
+        transactionId,
+      },
+      changeCategory: {
+        action: 'change_categories',
+        transactionId,
+      },
+    };
   }
 
   private validateEmailTransactionRequest(
@@ -2608,6 +3060,12 @@ export class TransactionService {
   }
 
   private async resolveMerchantNormalized(merchant: string): Promise<string> {
+    return (await this.findMerchantAliasCanonicalName(merchant)) ?? merchant;
+  }
+
+  private async findMerchantAliasCanonicalName(
+    merchant: string,
+  ): Promise<string | null> {
     const result = await this.database.query<MerchantAliasRow>(
       `
         SELECT canonical_name
@@ -2619,7 +3077,7 @@ export class TransactionService {
       [merchant],
     );
 
-    return result.rows[0]?.canonical_name ?? merchant;
+    return result.rows[0]?.canonical_name ?? null;
   }
 
   private async resolveCategory(
