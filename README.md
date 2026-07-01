@@ -831,6 +831,148 @@ Missing-field follow-up response:
 
 Validation errors include missing `llmResult`, missing required transaction fields not reported through `llmResult.missing_fields`, invalid amount, missing merchant, missing or unresolved category, unsupported transaction type, and confidence outside `0` to `100` after normalization.
 
+### `POST /api/veyra/transactions/manage/handle`
+
+Moves transaction edit/delete conversation handling into Core API. n8n sends the Telegram user id, raw initial text, the LLM parsed initial command, or Telegram callback data as `text`; Core API owns user resolution, `conversation_states`, lookup, selection, confirmation, edit, soft delete, message text, and `reply_markup`.
+
+Initial edit example:
+
+```json
+{
+  "telegramUserId": "123456789",
+  "text": "edit kopi tuku to Food",
+  "statePayload": {},
+  "llmResult": {
+    "intent": "edit_transaction",
+    "target": {
+      "id": null,
+      "merchant": "kopi tuku",
+      "category": null,
+      "amount": null,
+      "period": "recent"
+    },
+    "changes": {
+      "amount": null,
+      "merchant": null,
+      "merchant_normalized": null,
+      "category": "Food",
+      "transaction_date": null,
+      "transaction_type": null,
+      "notes": null
+    },
+    "selection": null,
+    "confidence": 0.86
+  }
+}
+```
+
+Callback example:
+
+```json
+{
+  "telegramUserId": "123456789",
+  "text": "veyra_tx_manage:select:1",
+  "statePayload": {},
+  "llmResult": null
+}
+```
+
+Response shape:
+
+```json
+{
+  "ok": true,
+  "status": "needs_selection",
+  "message": "I found several transactions. Pick one:",
+  "reply_markup": {
+    "inline_keyboard": []
+  },
+  "state": {
+    "state_name": "select_transaction",
+    "state_data": {}
+  },
+  "data": {}
+}
+```
+
+Statuses are `needs_selection`, `needs_confirmation`, `completed`, `cancelled`, `not_found`, and `invalid`. Supported intents are `edit_transaction`, `delete_transaction`, and `cancel_action`. Supported callback data is only `veyra_tx_manage:select:{index}`, `veyra_tx_manage:confirm`, and `veyra_tx_manage:cancel`.
+
+State flow:
+
+```txt
+initial edit/delete + llmResult
+  -> select_transaction when multiple matches
+  -> confirm_action when one match or after select callback
+  -> completed after confirm callback
+  -> idle after completed, cancelled, not_found, invalid expired state
+```
+
+Core API resolves `telegramUserId` through `telegram_users.telegram_id` and uses internal `telegram_users.id` for ownership checks. It does not trust `statePayload`; multi-step selection and confirmation read `conversation_states.state_data`. Manage states expire after 15 minutes.
+
+Selection `reply_markup`:
+
+```json
+{
+  "inline_keyboard": [
+    [
+      {
+        "text": "1. Kopi Tuku — Rp25.000",
+        "callback_data": "veyra_tx_manage:select:1"
+      }
+    ],
+    [
+      {
+        "text": "Cancel",
+        "callback_data": "veyra_tx_manage:cancel"
+      }
+    ]
+  ]
+}
+```
+
+Confirmation `reply_markup`:
+
+```json
+{
+  "inline_keyboard": [
+    [
+      {
+        "text": "Confirm",
+        "callback_data": "veyra_tx_manage:confirm"
+      },
+      {
+        "text": "Cancel",
+        "callback_data": "veyra_tx_manage:cancel"
+      }
+    ]
+  ]
+}
+```
+
+Edit confirmation example:
+
+```text
+Confirm edit?
+
+Before:
+Kopi Tuku — Others — Rp25.000
+
+After:
+Kopi Tuku — Food — Rp25.000
+```
+
+Delete confirmation example:
+
+```text
+Confirm delete?
+
+Kopi Tuku — Food — Rp25.000
+
+This will mark it as rejected.
+```
+
+Delete is a soft delete: Core API updates `transactions.status = 'rejected'` and `updated_at = now()`. n8n should pass `reply_markup` directly to the Telegram sender/editor and keep Telegram triggers, callback answering, message sending/editing, and credentials in n8n.
+
 ### `POST /api/veyra/transactions/email/handle`
 
 Handles one Gmail-sourced transaction notification with deterministic bank email parsers. This endpoint parses only the supported Phase 1 templates: BCA credit-card transaction notifications, Mandiri e-money top-ups, Krom incoming transfers, Krom QRIS payments, and Krom outgoing transfers. It does not call an LLM, does not execute DB-driven parser templates, and does not auto-save unknown BCA, Mandiri, or Krom templates.

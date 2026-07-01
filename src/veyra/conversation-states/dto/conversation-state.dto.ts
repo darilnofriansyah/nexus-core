@@ -1,7 +1,9 @@
 export type ConversationStateName =
   | 'idle'
   | 'record_transaction_state'
-  | 'budget_conversation_state';
+  | 'budget_conversation_state'
+  | 'select_transaction'
+  | 'confirm_action';
 
 export type ConversationStateInput =
   | ConversationStateName

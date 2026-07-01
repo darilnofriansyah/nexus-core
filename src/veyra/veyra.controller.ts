@@ -71,6 +71,10 @@ import {
   TransactionCallbackHandleRequestDto,
   TransactionCallbackHandleResponseDto,
 } from './transactions/dto/transaction-callback-handle.dto';
+import {
+  TransactionManageHandleRequestDto,
+  TransactionManageHandleResponseDto,
+} from './transactions/dto/transaction-manage.dto';
 import { TransactionService } from './transactions/transaction.service';
 
 @Controller('veyra')
@@ -210,6 +214,16 @@ export class VeyraController {
     @Body() body: EmailTransactionResolveReviewRequestDto,
   ): Promise<EmailTransactionResolveReviewResponseDto> {
     return this.transactionService.resolveEmailTransactionReview(body);
+  }
+
+  @Post('transactions/manage/handle')
+  handleManagedTransaction(
+    @Body() body: TransactionManageHandleRequestDto,
+  ): Promise<TransactionManageHandleResponseDto> {
+    return this.transactionService.handleManagedTransaction(
+      body,
+      this.conversationStateService,
+    );
   }
 
   @Post('transactions/confirmation-payload')

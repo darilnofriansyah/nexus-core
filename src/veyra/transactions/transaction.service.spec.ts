@@ -41,6 +41,54 @@ function createStateStore() {
   };
 }
 
+function createManageStateStore(initialState?: {
+  stateName: string;
+  stateData: unknown;
+  expiresAt?: string | null;
+}) {
+  const calls: Array<{ method: string; request: unknown }> = [];
+  let state: {
+    stateName: string;
+    stateData: unknown;
+    expiresAt: string | null;
+  } = {
+    stateName: initialState?.stateName ?? 'idle',
+    stateData: initialState?.stateData ?? {},
+    expiresAt: initialState?.expiresAt ?? null,
+  };
+
+  return {
+    calls,
+    get state() {
+      return state;
+    },
+    store: {
+      getState: async (userId: string | number) => {
+        calls.push({ method: 'getState', request: userId });
+        return state;
+      },
+      upsertState: async (request: {
+        stateName: string;
+        stateData?: unknown;
+        expiresAt?: string | null;
+      }) => {
+        calls.push({ method: 'upsertState', request });
+        state = {
+          stateName: request.stateName,
+          stateData: request.stateData ?? {},
+          expiresAt: request.expiresAt ?? null,
+        };
+        return {};
+      },
+      resetState: async (request: unknown) => {
+        calls.push({ method: 'resetState', request });
+        state = { stateName: 'idle', stateData: {}, expiresAt: null };
+        return {};
+      },
+    },
+  };
+}
+
 const pendingTransaction = {
   id: 'pending-1',
   user_id: 'user-1',
@@ -65,6 +113,27 @@ const transaction = {
   merchant_normalized: 'GoPay',
   category: 'Transport',
   status: 'pending',
+};
+
+const manageTransaction = {
+  id: '101',
+  user_id: '1',
+  transaction_type: 'expense',
+  amount: '25000',
+  merchant: 'Kopi Tuku',
+  merchant_normalized: 'Kopi Tuku',
+  category: 'Others',
+  transaction_date: '2026-06-25T03:00:00.000Z',
+  notes: null,
+  status: 'confirmed',
+  created_at: '2026-06-25T03:01:00.000Z',
+};
+
+const manageTransaction2 = {
+  ...manageTransaction,
+  id: '102',
+  amount: '27000',
+  transaction_date: '2026-06-24T03:00:00.000Z',
 };
 
 const budgetCategoryRows = [
@@ -1421,6 +1490,526 @@ test('returns safe error payload for invalid transaction callback data', async (
     },
   });
   assert.equal(calls.length, 0);
+});
+
+test('manage returns invalid when telegram user is not found', async () => {
+  const { calls, service } = createService([[]]);
+  const state = createManageStateStore();
+
+  const result = await service.handleManagedTransaction(
+    {
+      telegramUserId: '976684739',
+      text: 'edit kopi tuku to Food',
+      statePayload: {
+        state_name: 'confirm_action',
+        state_data: { transaction_id: 101 },
+      },
+      llmResult: {
+        intent: 'edit_transaction',
+        target: { merchant: 'kopi tuku', period: 'recent' },
+        changes: { category: 'Food' },
+      },
+    },
+    state.store,
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 'invalid');
+  assert.equal(state.calls.length, 0);
+  assert.equal(calls.length, 1);
+});
+
+test('manage callback cancel resets DB state', async () => {
+  const { service } = createService([[{ id: '1', telegram_id: '976684739' }]]);
+  const state = createManageStateStore({
+    stateName: 'select_transaction',
+    stateData: { action: 'delete', candidates: [manageTransaction] },
+  });
+
+  const result = await service.handleManagedTransaction(
+    {
+      telegramUserId: '976684739',
+      text: 'veyra_tx_manage:cancel',
+      llmResult: null,
+    },
+    state.store,
+  );
+
+  assert.equal(result.status, 'cancelled');
+  assert.equal(result.reply_markup, null);
+  assert.equal(state.state.stateName, 'idle');
+  assert.deepEqual(state.calls.at(-1), {
+    method: 'resetState',
+    request: { userId: '1' },
+  });
+});
+
+test('manage edit no match resets state and returns not_found', async () => {
+  const { calls, service } = createService([
+    [{ id: '1', telegram_id: '976684739' }],
+    [],
+  ]);
+  const state = createManageStateStore();
+
+  const result = await service.handleManagedTransaction(
+    {
+      telegramUserId: '976684739',
+      text: 'edit kopi tuku to Food',
+      llmResult: {
+        intent: 'edit_transaction',
+        target: { merchant: 'kopi tuku' },
+        changes: { category: 'Food' },
+      },
+    },
+    state.store,
+  );
+
+  assert.equal(result.status, 'not_found');
+  assert.equal(result.reply_markup, null);
+  assert.match(calls[1].text, /FROM transactions/);
+  assert.deepEqual(state.calls.at(-1), {
+    method: 'resetState',
+    request: { userId: '1' },
+  });
+});
+
+test('manage edit one match creates confirm_action with confirm keyboard', async () => {
+  const { service } = createService([
+    [{ id: '1', telegram_id: '976684739' }],
+    [manageTransaction],
+  ]);
+  const state = createManageStateStore();
+
+  const result = await service.handleManagedTransaction(
+    {
+      telegramUserId: '976684739',
+      text: 'edit kopi tuku to Food',
+      llmResult: {
+        intent: 'edit_transaction',
+        target: { merchant: 'kopi tuku' },
+        changes: { category: 'Food' },
+      },
+    },
+    state.store,
+  );
+
+  assert.equal(result.status, 'needs_confirmation');
+  assert.equal(state.state.stateName, 'confirm_action');
+  assert.equal((state.state.stateData as { action: string }).action, 'edit');
+  assert.deepEqual(result.reply_markup?.inline_keyboard, [
+    [
+      { text: 'Confirm', callback_data: 'veyra_tx_manage:confirm' },
+      { text: 'Cancel', callback_data: 'veyra_tx_manage:cancel' },
+    ],
+  ]);
+  assert.match(result.message, /Before:\nKopi Tuku — Others — Rp25\.000/);
+  assert.match(result.message, /After:\nKopi Tuku — Food — Rp25\.000/);
+});
+
+test('manage edit multiple matches creates select_transaction with candidate keyboard', async () => {
+  const { service } = createService([
+    [{ id: '1', telegram_id: '976684739' }],
+    [manageTransaction, manageTransaction2],
+  ]);
+  const state = createManageStateStore();
+
+  const result = await service.handleManagedTransaction(
+    {
+      telegramUserId: '976684739',
+      text: 'edit kopi tuku to Food',
+      llmResult: {
+        intent: 'edit_transaction',
+        target: { merchant: 'kopi tuku' },
+        changes: { category: 'Food' },
+      },
+    },
+    state.store,
+  );
+
+  assert.equal(result.status, 'needs_selection');
+  assert.equal(state.state.stateName, 'select_transaction');
+  assert.equal(result.reply_markup?.inline_keyboard.length, 3);
+  assert.deepEqual(result.reply_markup?.inline_keyboard[0], [
+    {
+      text: '1. Kopi Tuku — Rp25.000',
+      callback_data: 'veyra_tx_manage:select:1',
+    },
+  ]);
+  assert.deepEqual(result.reply_markup?.inline_keyboard[2], [
+    { text: 'Cancel', callback_data: 'veyra_tx_manage:cancel' },
+  ]);
+});
+
+test('manage delete one match creates confirm_action with confirm keyboard', async () => {
+  const { service } = createService([
+    [{ id: '1', telegram_id: '976684739' }],
+    [manageTransaction],
+  ]);
+  const state = createManageStateStore();
+
+  const result = await service.handleManagedTransaction(
+    {
+      telegramUserId: '976684739',
+      text: 'delete kopi tuku',
+      llmResult: {
+        intent: 'delete_transaction',
+        target: { merchant: 'kopi tuku' },
+      },
+    },
+    state.store,
+  );
+
+  assert.equal(result.status, 'needs_confirmation');
+  assert.equal((state.state.stateData as { action: string }).action, 'delete');
+  assert.match(result.message, /This will mark it as rejected/);
+  assert.deepEqual(result.reply_markup?.inline_keyboard[0][0], {
+    text: 'Confirm',
+    callback_data: 'veyra_tx_manage:confirm',
+  });
+});
+
+test('manage delete multiple matches creates select_transaction with candidate keyboard', async () => {
+  const { service } = createService([
+    [{ id: '1', telegram_id: '976684739' }],
+    [manageTransaction, manageTransaction2],
+  ]);
+  const state = createManageStateStore();
+
+  const result = await service.handleManagedTransaction(
+    {
+      telegramUserId: '976684739',
+      text: 'delete kopi tuku',
+      llmResult: {
+        intent: 'delete_transaction',
+        target: { merchant: 'kopi tuku' },
+      },
+    },
+    state.store,
+  );
+
+  assert.equal(result.status, 'needs_selection');
+  assert.equal(state.state.stateName, 'select_transaction');
+  assert.equal((state.state.stateData as { action: string }).action, 'delete');
+  assert.equal(
+    result.reply_markup?.inline_keyboard[1][0].callback_data,
+    'veyra_tx_manage:select:2',
+  );
+});
+
+test('manage select callback without DB state returns invalid', async () => {
+  const { service } = createService([[{ id: '1', telegram_id: '976684739' }]]);
+  const state = createManageStateStore();
+
+  const result = await service.handleManagedTransaction(
+    {
+      telegramUserId: '976684739',
+      text: 'veyra_tx_manage:select:1',
+      llmResult: null,
+    },
+    state.store,
+  );
+
+  assert.equal(result.status, 'invalid');
+  assert.equal(result.reply_markup, null);
+  assert.equal(state.state.stateName, 'idle');
+});
+
+test('manage confirm callback without DB state returns invalid and clears state', async () => {
+  const { service } = createService([[{ id: '1', telegram_id: '976684739' }]]);
+  const state = createManageStateStore();
+
+  const result = await service.handleManagedTransaction(
+    {
+      telegramUserId: '976684739',
+      text: 'veyra_tx_manage:confirm',
+      llmResult: null,
+    },
+    state.store,
+  );
+
+  assert.equal(result.status, 'invalid');
+  assert.deepEqual(state.calls.at(-1), {
+    method: 'resetState',
+    request: { userId: '1' },
+  });
+});
+
+test('manage invalid callback selection returns invalid and keeps state', async () => {
+  const state = createManageStateStore({
+    stateName: 'select_transaction',
+    stateData: { action: 'edit', candidates: [manageTransaction] },
+  });
+  const { service } = createService([[{ id: '1', telegram_id: '976684739' }]]);
+
+  const result = await service.handleManagedTransaction(
+    {
+      telegramUserId: '976684739',
+      text: 'veyra_tx_manage:select:9',
+      llmResult: null,
+    },
+    state.store,
+  );
+
+  assert.equal(result.status, 'invalid');
+  assert.equal(state.state.stateName, 'select_transaction');
+});
+
+test('manage valid callback selection moves to confirm_action', async () => {
+  const state = createManageStateStore({
+    stateName: 'select_transaction',
+    stateData: {
+      action: 'edit',
+      candidates: [manageTransaction, manageTransaction2],
+      changes: { category: 'Food' },
+    },
+  });
+  const { service } = createService([[{ id: '1', telegram_id: '976684739' }]]);
+
+  const result = await service.handleManagedTransaction(
+    {
+      telegramUserId: '976684739',
+      text: 'veyra_tx_manage:select:2',
+      llmResult: null,
+    },
+    state.store,
+  );
+
+  assert.equal(result.status, 'needs_confirmation');
+  assert.equal(state.state.stateName, 'confirm_action');
+  assert.equal(
+    (state.state.stateData as { transaction_id: string }).transaction_id,
+    '102',
+  );
+  assert.match(result.message, /Rp27\.000/);
+});
+
+test('manage callback confirm without valid DB state cannot mutate', async () => {
+  const state = createManageStateStore({
+    stateName: 'confirm_action',
+    stateData: {
+      action: 'edit',
+      transaction_id: '101',
+      changes: { category: 'Food' },
+    },
+  });
+  const { calls, service } = createService([
+    [{ id: '1', telegram_id: '976684739' }],
+    [],
+  ]);
+
+  const result = await service.handleManagedTransaction(
+    {
+      telegramUserId: '976684739',
+      text: 'veyra_tx_manage:confirm',
+      llmResult: null,
+    },
+    state.store,
+  );
+
+  assert.equal(result.status, 'invalid');
+  assert.equal(calls.length, 2);
+  assert.doesNotMatch(
+    calls.map((call) => call.text).join('\n'),
+    /UPDATE transactions/,
+  );
+  assert.equal(state.state.stateName, 'idle');
+});
+
+test('manage confirmed edit updates transaction and clears state', async () => {
+  const state = createManageStateStore({
+    stateName: 'confirm_action',
+    stateData: {
+      action: 'edit',
+      transaction_id: '101',
+      before: manageTransaction,
+      changes: { category: 'Food' },
+    },
+  });
+  const { calls, service } = createService([
+    [{ id: '1', telegram_id: '976684739' }],
+    [manageTransaction],
+    [],
+  ]);
+
+  const result = await service.handleManagedTransaction(
+    {
+      telegramUserId: '976684739',
+      text: 'veyra_tx_manage:confirm',
+      llmResult: null,
+    },
+    state.store,
+  );
+
+  assert.equal(result.status, 'completed');
+  assert.equal(result.reply_markup, null);
+  assert.match(result.message, /Updated\.\n\nKopi Tuku — Food — Rp25\.000/);
+  assert.match(calls[2].text, /UPDATE transactions/);
+  assert.match(calls[2].text, /category = \$1/);
+  assert.deepEqual(calls[2].values, ['Food', '101', '1']);
+  assert.equal(state.state.stateName, 'idle');
+});
+
+test('manage confirmed delete sets rejected and clears state', async () => {
+  const state = createManageStateStore({
+    stateName: 'confirm_action',
+    stateData: {
+      action: 'delete',
+      transaction_id: '101',
+      before: manageTransaction,
+    },
+  });
+  const { calls, service } = createService([
+    [{ id: '1', telegram_id: '976684739' }],
+    [manageTransaction],
+    [],
+  ]);
+
+  const result = await service.handleManagedTransaction(
+    {
+      telegramUserId: '976684739',
+      text: 'veyra_tx_manage:confirm',
+      llmResult: null,
+    },
+    state.store,
+  );
+
+  assert.equal(result.status, 'completed');
+  assert.match(result.message, /Deleted\./);
+  assert.match(calls[2].text, /status = 'rejected'/);
+  assert.deepEqual(calls[2].values, ['101', '1']);
+  assert.equal(state.state.stateName, 'idle');
+});
+
+test('manage request statePayload alone cannot trigger mutation', async () => {
+  const { calls, service } = createService([
+    [{ id: '1', telegram_id: '976684739' }],
+  ]);
+  const state = createManageStateStore();
+
+  const result = await service.handleManagedTransaction(
+    {
+      telegramUserId: '976684739',
+      text: 'yes',
+      statePayload: {
+        state_name: 'confirm_action',
+        state_data: { action: 'delete', transaction_id: '101' },
+      },
+      llmResult: null,
+    },
+    state.store,
+  );
+
+  assert.equal(result.status, 'invalid');
+  assert.equal(calls.length, 1);
+});
+
+test('manage callback data alone cannot trigger mutation', async () => {
+  const { calls, service } = createService([
+    [{ id: '1', telegram_id: '976684739' }],
+  ]);
+  const state = createManageStateStore();
+
+  const result = await service.handleManagedTransaction(
+    {
+      telegramUserId: '976684739',
+      text: 'veyra_tx_manage:confirm',
+      llmResult: null,
+    },
+    state.store,
+  );
+
+  assert.equal(result.status, 'invalid');
+  assert.equal(calls.length, 1);
+});
+
+test('manage normal typed number is not accepted as selection', async () => {
+  const state = createManageStateStore({
+    stateName: 'select_transaction',
+    stateData: { action: 'edit', candidates: [manageTransaction] },
+  });
+  const { service } = createService([[{ id: '1', telegram_id: '976684739' }]]);
+
+  const result = await service.handleManagedTransaction(
+    { telegramUserId: '976684739', text: '1', llmResult: null },
+    state.store,
+  );
+
+  assert.equal(result.status, 'invalid');
+  assert.equal(state.state.stateName, 'select_transaction');
+});
+
+test('manage normal typed yes is not accepted as confirmation', async () => {
+  const state = createManageStateStore({
+    stateName: 'confirm_action',
+    stateData: {
+      action: 'delete',
+      transaction_id: '101',
+      before: manageTransaction,
+    },
+  });
+  const { service } = createService([[{ id: '1', telegram_id: '976684739' }]]);
+
+  const result = await service.handleManagedTransaction(
+    { telegramUserId: '976684739', text: 'yes', llmResult: null },
+    state.store,
+  );
+
+  assert.equal(result.status, 'invalid');
+  assert.equal(state.state.stateName, 'confirm_action');
+});
+
+test('manage cannot edit another user transaction by target id', async () => {
+  const { calls, service } = createService([
+    [{ id: '1', telegram_id: '976684739' }],
+    [],
+  ]);
+  const state = createManageStateStore();
+
+  const result = await service.handleManagedTransaction(
+    {
+      telegramUserId: '976684739',
+      text: 'edit transaction 999',
+      llmResult: {
+        intent: 'edit_transaction',
+        target: { id: 999 },
+        changes: { category: 'Food' },
+      },
+    },
+    state.store,
+  );
+
+  assert.equal(result.status, 'not_found');
+  assert.match(calls[1].text, /AND id::text = \$2/);
+  assert.deepEqual(calls[1].values, ['1', '999']);
+});
+
+test('manage expired state resets to idle', async () => {
+  const state = createManageStateStore({
+    stateName: 'confirm_action',
+    stateData: {
+      action: 'delete',
+      transaction_id: '101',
+      before: manageTransaction,
+    },
+    expiresAt: '2000-01-01T00:00:00.000Z',
+  });
+  const { service } = createService([[{ id: '1', telegram_id: '976684739' }]]);
+
+  const result = await service.handleManagedTransaction(
+    {
+      telegramUserId: '976684739',
+      text: 'veyra_tx_manage:confirm',
+      llmResult: null,
+    },
+    state.store,
+  );
+
+  assert.equal(result.status, 'invalid');
+  assert.equal(
+    result.message,
+    'This edit/delete session expired. Please start again.',
+  );
+  assert.equal(state.state.stateName, 'idle');
 });
 
 test('formats experimental set category callback data only in experimental mode', async () => {

@@ -33,6 +33,13 @@ import {
   TransactionCallbackHandleResponseDto,
 } from './dto/transaction-callback-handle.dto';
 import {
+  TransactionManageChangesDto,
+  TransactionManageHandleRequestDto,
+  TransactionManageHandleResponseDto,
+  TransactionManageStateName,
+  TransactionManageTargetDto,
+} from './dto/transaction-manage.dto';
+import {
   SavedTransactionDto,
   SaveTransactionInputDto,
   TransactionHandleRequestDto,
@@ -121,11 +128,15 @@ interface InsertedImportRow extends QueryResultRow {
 interface TransactionRow extends QueryResultRow {
   id: string | number;
   user_id: string | number;
+  transaction_type?: string | null;
   amount: string | number;
   merchant: string | null;
   merchant_normalized: string | null;
   category: string | null;
+  transaction_date?: string | Date | null;
+  notes?: string | null;
   status: string | null;
+  created_at?: string | Date | null;
 }
 
 interface BudgetCategoryRow extends QueryResultRow {
@@ -162,13 +173,41 @@ interface ValidatedEmailReview {
 }
 
 interface TransactionHandleStateStore {
+  getState?(userId: string | number): Promise<{
+    stateName: string;
+    stateData: unknown;
+    expiresAt: string | null;
+  }>;
   upsertState?(request: {
     userId: string | number;
-    stateName: TransactionHandleStateName;
+    stateName: TransactionHandleStateName | TransactionManageStateName;
     stateData?: unknown;
     expiresAt?: string | null;
   }): Promise<unknown>;
   resetState(request: { userId: string | number }): Promise<unknown>;
+}
+
+interface ManageTransactionSnapshot {
+  id: string;
+  user_id: string;
+  transaction_type: NormalizedTransactionType;
+  amount: number;
+  merchant: string | null;
+  merchant_normalized: string | null;
+  category: string | null;
+  transaction_date: string | null;
+  notes: string | null;
+  status: string | null;
+}
+
+interface ManageStateData {
+  action?: 'edit' | 'delete';
+  candidates?: ManageTransactionSnapshot[];
+  changes?: Partial<
+    Record<keyof TransactionManageChangesDto, string | number | null>
+  >;
+  transaction_id?: string;
+  before?: ManageTransactionSnapshot;
 }
 
 interface ParsedTransactionCallback {
@@ -343,6 +382,84 @@ export class TransactionService {
     await this.resetConversationState(request.userId, stateStore);
 
     return this.buildHandleResponse(savedTransaction);
+  }
+
+  async handleManagedTransaction(
+    request: TransactionManageHandleRequestDto,
+    stateStore: TransactionHandleStateStore,
+  ): Promise<TransactionManageHandleResponseDto> {
+    const telegramUserId = this.cleanString(request.telegramUserId);
+
+    if (!telegramUserId) {
+      return this.manageInvalid('Telegram user is required.');
+    }
+
+    const user = await this.findTelegramUserByTelegramId(telegramUserId);
+
+    if (!user) {
+      return this.manageInvalid('Telegram user was not found.');
+    }
+
+    const userId = String(user.id);
+    const callback = this.parseManageCallback(request.text);
+
+    if (
+      callback.action === 'cancel' ||
+      request.llmResult?.intent === 'cancel_action'
+    ) {
+      await stateStore.resetState({ userId });
+      return this.manageResponse({
+        ok: true,
+        status: 'cancelled',
+        message: 'Cancelled.',
+      });
+    }
+
+    if (callback.action === 'select') {
+      return this.handleManageSelection(userId, callback.index, stateStore);
+    }
+
+    if (callback.action === 'confirm') {
+      return this.handleManageConfirmation(userId, stateStore);
+    }
+
+    if (callback.action === 'invalid') {
+      return this.manageInvalid(
+        'This action is no longer valid. Please start again.',
+      );
+    }
+
+    const intent = request.llmResult?.intent;
+
+    if (intent !== 'edit_transaction' && intent !== 'delete_transaction') {
+      return this.manageInvalid(
+        'This action is no longer valid. Please start again.',
+      );
+    }
+
+    if (intent === 'edit_transaction') {
+      const changes = this.validateManageChanges(request.llmResult?.changes);
+
+      if (!changes) {
+        return this.manageInvalid('Tell me what to change first.');
+      }
+
+      return this.startManageFlow({
+        userId,
+        action: 'edit',
+        target: request.llmResult?.target ?? null,
+        changes,
+        stateStore,
+      });
+    }
+
+    return this.startManageFlow({
+      userId,
+      action: 'delete',
+      target: request.llmResult?.target ?? null,
+      changes: {},
+      stateStore,
+    });
   }
 
   async handleEmailTransaction(
@@ -605,6 +722,693 @@ export class TransactionService {
     return result.rows[0];
   }
 
+  private async startManageFlow(input: {
+    userId: string;
+    action: 'edit' | 'delete';
+    target: TransactionManageTargetDto | null;
+    changes: ManageStateData['changes'];
+    stateStore: TransactionHandleStateStore;
+  }): Promise<TransactionManageHandleResponseDto> {
+    const candidates = await this.findManageCandidates(
+      input.userId,
+      input.target,
+    );
+
+    if (candidates.length === 0) {
+      await input.stateStore.resetState({ userId: input.userId });
+      return this.manageResponse({
+        ok: true,
+        status: 'not_found',
+        message: 'I could not find that transaction. Please be more specific.',
+      });
+    }
+
+    if (candidates.length === 1) {
+      const before = candidates[0];
+      const stateData: ManageStateData = {
+        action: input.action,
+        transaction_id: before.id,
+        before,
+        changes: input.action === 'edit' ? input.changes : undefined,
+      };
+
+      await this.upsertManageState(
+        input.stateStore,
+        input.userId,
+        'confirm_action',
+        stateData,
+      );
+
+      return this.manageResponse({
+        ok: true,
+        status: 'needs_confirmation',
+        message: this.buildManageConfirmationMessage(stateData),
+        replyMarkup: this.buildManageConfirmMarkup(),
+        stateName: 'confirm_action',
+        stateData,
+      });
+    }
+
+    const stateData: ManageStateData = {
+      action: input.action,
+      candidates,
+      changes: input.action === 'edit' ? input.changes : undefined,
+    };
+
+    await this.upsertManageState(
+      input.stateStore,
+      input.userId,
+      'select_transaction',
+      stateData,
+    );
+
+    return this.manageResponse({
+      ok: true,
+      status: 'needs_selection',
+      message: 'I found several transactions. Pick one:',
+      replyMarkup: this.buildManageSelectionMarkup(candidates),
+      stateName: 'select_transaction',
+      stateData,
+    });
+  }
+
+  private async handleManageSelection(
+    userId: string,
+    index: number | undefined,
+    stateStore: TransactionHandleStateStore,
+  ): Promise<TransactionManageHandleResponseDto> {
+    const state = await this.readManageState(userId, stateStore);
+
+    if (state.expired) {
+      await stateStore.resetState({ userId });
+      return this.manageExpired();
+    }
+
+    const stateData = this.asManageStateData(state.stateData);
+    const candidate = index ? stateData.candidates?.[index - 1] : undefined;
+
+    if (
+      state.stateName !== 'select_transaction' ||
+      (stateData.action !== 'edit' && stateData.action !== 'delete') ||
+      !candidate
+    ) {
+      return this.manageInvalid(
+        'This selection is no longer valid. Please start again.',
+      );
+    }
+
+    const nextStateData: ManageStateData = {
+      action: stateData.action,
+      transaction_id: candidate.id,
+      before: candidate,
+      changes: stateData.action === 'edit' ? stateData.changes : undefined,
+    };
+
+    await this.upsertManageState(
+      stateStore,
+      userId,
+      'confirm_action',
+      nextStateData,
+    );
+
+    return this.manageResponse({
+      ok: true,
+      status: 'needs_confirmation',
+      message: this.buildManageConfirmationMessage(nextStateData),
+      replyMarkup: this.buildManageConfirmMarkup(),
+      stateName: 'confirm_action',
+      stateData: nextStateData,
+    });
+  }
+
+  private async handleManageConfirmation(
+    userId: string,
+    stateStore: TransactionHandleStateStore,
+  ): Promise<TransactionManageHandleResponseDto> {
+    const state = await this.readManageState(userId, stateStore);
+
+    if (state.expired) {
+      await stateStore.resetState({ userId });
+      return this.manageExpired();
+    }
+
+    const stateData = this.asManageStateData(state.stateData);
+    const transactionId = this.cleanString(stateData.transaction_id);
+    const transaction = transactionId
+      ? await this.findTransaction(transactionId, userId)
+      : undefined;
+
+    if (
+      state.stateName !== 'confirm_action' ||
+      (stateData.action !== 'edit' && stateData.action !== 'delete') ||
+      !transactionId ||
+      !transaction
+    ) {
+      await stateStore.resetState({ userId });
+      return this.manageInvalid(
+        'This action is no longer valid. Please start again.',
+      );
+    }
+
+    if (stateData.action === 'edit') {
+      await this.applyManageEdit(
+        transactionId,
+        userId,
+        stateData.changes ?? {},
+      );
+      await stateStore.resetState({ userId });
+      const updated = this.applyManageChangesToSnapshot(
+        this.snapshotManageTransaction(transaction),
+        stateData.changes ?? {},
+      );
+
+      return this.manageResponse({
+        ok: true,
+        status: 'completed',
+        message: `Updated.\n\n${this.manageTransactionLine(updated)}`,
+        data: { transaction: updated },
+      });
+    }
+
+    await this.rejectManageTransaction(transactionId, userId);
+    await stateStore.resetState({ userId });
+    const deleted = this.snapshotManageTransaction({
+      ...transaction,
+      status: 'rejected',
+    });
+
+    return this.manageResponse({
+      ok: true,
+      status: 'completed',
+      message: `Deleted.\n\n${this.manageTransactionLine(deleted)}`,
+      data: { transaction: deleted },
+    });
+  }
+
+  private async findManageCandidates(
+    userId: string,
+    target: TransactionManageTargetDto | null,
+  ): Promise<ManageTransactionSnapshot[]> {
+    const values: Array<string | number> = [userId];
+    const filters = [
+      'user_id::text = $1',
+      "COALESCE(status, '') <> 'rejected'",
+    ];
+    const targetId =
+      target?.id === null || target?.id === undefined
+        ? undefined
+        : this.cleanString(String(target.id));
+
+    if (targetId) {
+      values.push(targetId);
+      filters.push(`id::text = $${values.length}`);
+    } else {
+      const merchant = this.cleanString(target?.merchant ?? undefined);
+      const category = this.cleanString(target?.category ?? undefined);
+      const amount =
+        target?.amount === null || target?.amount === undefined
+          ? null
+          : this.normalizeAmount(target.amount);
+
+      if (merchant) {
+        values.push(`%${merchant.toLowerCase()}%`);
+        filters.push(
+          `(lower(COALESCE(merchant, '')) LIKE $${values.length} OR lower(COALESCE(merchant_normalized, '')) LIKE $${values.length})`,
+        );
+      }
+
+      if (category) {
+        values.push(category);
+        filters.push(
+          `lower(COALESCE(category, '')) = lower($${values.length})`,
+        );
+      }
+
+      if (amount && amount > 0) {
+        values.push(amount);
+        filters.push(`amount::numeric = $${values.length}`);
+      }
+
+      if (!target?.period || target.period === 'recent') {
+        filters.push("transaction_date >= NOW() - INTERVAL '30 days'");
+      }
+    }
+
+    const result = await this.database.query<TransactionRow>(
+      `
+        SELECT
+          id,
+          user_id,
+          transaction_type,
+          amount,
+          merchant,
+          merchant_normalized,
+          category,
+          transaction_date,
+          notes,
+          status,
+          created_at
+        FROM transactions
+        WHERE ${filters.join('\n          AND ')}
+        ORDER BY transaction_date DESC NULLS LAST, created_at DESC NULLS LAST
+        LIMIT 5
+      `,
+      values,
+    );
+
+    return result.rows.map((row) => this.snapshotManageTransaction(row));
+  }
+
+  private validateManageChanges(
+    changes: TransactionManageChangesDto | null | undefined,
+  ): ManageStateData['changes'] | null {
+    if (!changes || typeof changes !== 'object') {
+      return null;
+    }
+
+    const validated: ManageStateData['changes'] = {};
+
+    if (changes.amount !== undefined && changes.amount !== null) {
+      const amount = this.normalizeAmount(changes.amount);
+
+      if (amount <= 0) {
+        return null;
+      }
+
+      validated.amount = amount;
+    }
+
+    for (const key of ['merchant', 'merchant_normalized', 'notes'] as const) {
+      if (changes[key] !== undefined) {
+        validated[key] = this.cleanString(changes[key] ?? undefined) ?? null;
+      }
+    }
+
+    if (changes.category !== undefined) {
+      const category = this.cleanString(changes.category ?? undefined);
+
+      if (!category) {
+        return null;
+      }
+
+      validated.category = category;
+    }
+
+    if (
+      changes.transaction_type !== undefined &&
+      changes.transaction_type !== null
+    ) {
+      const transactionType = this.cleanString(
+        changes.transaction_type,
+      )?.toLowerCase();
+
+      if (
+        transactionType !== 'expense' &&
+        transactionType !== 'income' &&
+        transactionType !== 'transfer' &&
+        transactionType !== 'reversal'
+      ) {
+        return null;
+      }
+
+      validated.transaction_type = transactionType;
+    }
+
+    if (
+      changes.transaction_date !== undefined &&
+      changes.transaction_date !== null
+    ) {
+      const date = new Date(changes.transaction_date);
+
+      if (Number.isNaN(date.getTime())) {
+        return null;
+      }
+
+      validated.transaction_date = date.toISOString();
+    }
+
+    return Object.keys(validated).length > 0 ? validated : null;
+  }
+
+  private async applyManageEdit(
+    transactionId: string,
+    userId: string,
+    changes: ManageStateData['changes'],
+  ): Promise<void> {
+    const allowedColumns: Record<string, string> = {
+      amount: 'amount',
+      merchant: 'merchant',
+      merchant_normalized: 'merchant_normalized',
+      category: 'category',
+      transaction_date: 'transaction_date',
+      transaction_type: 'transaction_type',
+      notes: 'notes',
+    };
+    const entries = Object.entries(changes ?? {}).filter(
+      ([key]) => allowedColumns[key],
+    );
+
+    if (entries.length === 0) {
+      throw new BadRequestException('changes are required');
+    }
+
+    const values: unknown[] = [];
+    const assignments = entries.map(([key, value], index) => {
+      values.push(value);
+      return `${allowedColumns[key]} = $${index + 1}`;
+    });
+    values.push(transactionId, userId);
+
+    await this.database.query(
+      `
+        UPDATE transactions
+        SET ${assignments.join(', ')},
+            updated_at = now()
+        WHERE id::text = $${values.length - 1}
+          AND user_id::text = $${values.length}
+      `,
+      values,
+    );
+  }
+
+  private async rejectManageTransaction(
+    transactionId: string,
+    userId: string,
+  ): Promise<void> {
+    await this.database.query(
+      `
+        UPDATE transactions
+        SET status = 'rejected',
+            updated_at = now()
+        WHERE id::text = $1
+          AND user_id::text = $2
+      `,
+      [transactionId, userId],
+    );
+  }
+
+  private async readManageState(
+    userId: string,
+    stateStore: TransactionHandleStateStore,
+  ): Promise<{
+    stateName: string;
+    stateData: unknown;
+    expired: boolean;
+  }> {
+    const state = stateStore.getState
+      ? await stateStore.getState(userId)
+      : { stateName: 'idle', stateData: {}, expiresAt: null };
+    const expired = Boolean(
+      state.expiresAt && new Date(state.expiresAt).getTime() <= Date.now(),
+    );
+
+    return {
+      stateName: state.stateName,
+      stateData: state.stateData,
+      expired,
+    };
+  }
+
+  private async upsertManageState(
+    stateStore: TransactionHandleStateStore,
+    userId: string,
+    stateName: Exclude<TransactionManageStateName, 'idle'>,
+    stateData: ManageStateData,
+  ): Promise<void> {
+    await stateStore.upsertState?.({
+      userId,
+      stateName,
+      stateData,
+      expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+    });
+  }
+
+  private asManageStateData(value: unknown): ManageStateData {
+    if (!value || typeof value !== 'object') {
+      return {};
+    }
+
+    return value as ManageStateData;
+  }
+
+  private parseManageCallback(
+    text: string | undefined,
+  ):
+    | { action: 'select'; index?: number }
+    | { action: 'confirm' | 'cancel' | 'invalid' | null } {
+    const value = this.cleanString(text);
+
+    if (!value || !value.startsWith('veyra_tx_manage:')) {
+      return { action: null };
+    }
+
+    if (value === 'veyra_tx_manage:confirm') {
+      return { action: 'confirm' };
+    }
+
+    if (value === 'veyra_tx_manage:cancel') {
+      return { action: 'cancel' };
+    }
+
+    const select = /^veyra_tx_manage:select:(\d+)$/.exec(value);
+
+    if (select) {
+      return {
+        action: 'select',
+        index: Number(select[1]),
+      };
+    }
+
+    return { action: 'invalid' };
+  }
+
+  private snapshotManageTransaction(
+    row: TransactionRow,
+  ): ManageTransactionSnapshot {
+    const transactionType = this.cleanString(
+      row.transaction_type,
+    )?.toLowerCase();
+
+    return {
+      id: String(row.id),
+      user_id: String(row.user_id),
+      transaction_type:
+        transactionType === 'income' ||
+        transactionType === 'transfer' ||
+        transactionType === 'reversal'
+          ? transactionType
+          : 'expense',
+      amount: this.normalizeAmount(row.amount),
+      merchant: row.merchant,
+      merchant_normalized: row.merchant_normalized,
+      category: row.category,
+      transaction_date: this.formatNullableTimestamp(row.transaction_date),
+      notes: row.notes ?? null,
+      status: row.status,
+    };
+  }
+
+  private formatNullableTimestamp(
+    value: string | Date | null | undefined,
+  ): string | null {
+    if (!value) {
+      return null;
+    }
+
+    if (value instanceof Date) {
+      return value.toISOString();
+    }
+
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? value : date.toISOString();
+  }
+
+  private buildManageSelectionMarkup(
+    candidates: ManageTransactionSnapshot[],
+  ): TelegramReplyMarkupDto {
+    return {
+      inline_keyboard: [
+        ...candidates.map((candidate, index) => [
+          {
+            text: this.telegramSafeButtonLabel(
+              `${index + 1}. ${this.manageCandidateLabel(candidate)}`,
+            ),
+            callback_data: `veyra_tx_manage:select:${index + 1}`,
+          },
+        ]),
+        [
+          {
+            text: 'Cancel',
+            callback_data: 'veyra_tx_manage:cancel',
+          },
+        ],
+      ],
+    };
+  }
+
+  private buildManageConfirmMarkup(): TelegramReplyMarkupDto {
+    return {
+      inline_keyboard: [
+        [
+          {
+            text: 'Confirm',
+            callback_data: 'veyra_tx_manage:confirm',
+          },
+          {
+            text: 'Cancel',
+            callback_data: 'veyra_tx_manage:cancel',
+          },
+        ],
+      ],
+    };
+  }
+
+  private buildManageConfirmationMessage(stateData: ManageStateData): string {
+    if (!stateData.before) {
+      return 'Confirm?';
+    }
+
+    if (stateData.action === 'delete') {
+      return [
+        'Confirm delete?',
+        '',
+        this.manageTransactionLine(stateData.before),
+        '',
+        'This will mark it as rejected.',
+      ].join('\n');
+    }
+
+    return [
+      'Confirm edit?',
+      '',
+      'Before:',
+      this.manageTransactionLine(stateData.before),
+      '',
+      'After:',
+      this.manageTransactionLine(
+        this.applyManageChangesToSnapshot(
+          stateData.before,
+          stateData.changes ?? {},
+        ),
+      ),
+    ].join('\n');
+  }
+
+  private applyManageChangesToSnapshot(
+    before: ManageTransactionSnapshot,
+    changes: ManageStateData['changes'],
+  ): ManageTransactionSnapshot {
+    return {
+      ...before,
+      amount:
+        typeof changes?.amount === 'number' ? changes.amount : before.amount,
+      merchant:
+        typeof changes?.merchant === 'string' || changes?.merchant === null
+          ? changes.merchant
+          : before.merchant,
+      merchant_normalized:
+        typeof changes?.merchant_normalized === 'string' ||
+        changes?.merchant_normalized === null
+          ? changes.merchant_normalized
+          : before.merchant_normalized,
+      category:
+        typeof changes?.category === 'string' || changes?.category === null
+          ? changes.category
+          : before.category,
+      transaction_date:
+        typeof changes?.transaction_date === 'string'
+          ? changes.transaction_date
+          : before.transaction_date,
+      transaction_type:
+        changes?.transaction_type === 'expense' ||
+        changes?.transaction_type === 'income' ||
+        changes?.transaction_type === 'transfer' ||
+        changes?.transaction_type === 'reversal'
+          ? changes.transaction_type
+          : before.transaction_type,
+      notes:
+        typeof changes?.notes === 'string' || changes?.notes === null
+          ? changes.notes
+          : before.notes,
+    };
+  }
+
+  private manageCandidateLabel(candidate: ManageTransactionSnapshot): string {
+    const name =
+      candidate.merchant_normalized ??
+      candidate.merchant ??
+      candidate.category ??
+      this.manageShortDate(candidate.transaction_date);
+
+    return `${name} — ${this.formatCurrency(this.normalizeAmount(candidate.amount))}`;
+  }
+
+  private manageTransactionLine(
+    transaction: ManageTransactionSnapshot,
+  ): string {
+    return [
+      transaction.merchant_normalized ?? transaction.merchant ?? 'Unknown',
+      transaction.category ?? 'Uncategorized',
+      this.formatCurrency(this.normalizeAmount(transaction.amount)),
+    ].join(' — ');
+  }
+
+  private manageShortDate(value: string | null): string {
+    if (!value) {
+      return 'Transaction';
+    }
+
+    const date = new Date(value);
+
+    if (Number.isNaN(date.getTime())) {
+      return 'Transaction';
+    }
+
+    return date.toLocaleDateString('en-GB', {
+      day: 'numeric',
+      month: 'short',
+      timeZone: 'Asia/Jakarta',
+    });
+  }
+
+  private manageResponse(input: {
+    ok: boolean;
+    status: TransactionManageHandleResponseDto['status'];
+    message: string;
+    replyMarkup?: TelegramReplyMarkupDto | null;
+    stateName?: TransactionManageStateName;
+    stateData?: ManageStateData;
+    data?: Record<string, unknown>;
+  }): TransactionManageHandleResponseDto {
+    return {
+      ok: input.ok,
+      status: input.status,
+      message: input.message,
+      reply_markup: input.replyMarkup ?? null,
+      state: {
+        state_name: input.stateName ?? 'idle',
+        state_data: (input.stateData ?? {}) as Record<string, unknown>,
+      },
+      data: input.data ?? {},
+    };
+  }
+
+  private manageInvalid(message: string): TransactionManageHandleResponseDto {
+    return this.manageResponse({
+      ok: false,
+      status: 'invalid',
+      message,
+    });
+  }
+
+  private manageExpired(): TransactionManageHandleResponseDto {
+    return this.manageResponse({
+      ok: false,
+      status: 'invalid',
+      message: 'This edit/delete session expired. Please start again.',
+    });
+  }
+
   private validateEmailReviewRequest(
     request: EmailTransactionResolveReviewRequestDto,
     userId: string,
@@ -623,7 +1427,9 @@ export class TransactionService {
     const source = this.cleanString(candidate.source)?.toLowerCase();
 
     if (source !== 'email') {
-      throw new BadRequestException('transactionCandidate.source must be email');
+      throw new BadRequestException(
+        'transactionCandidate.source must be email',
+      );
     }
 
     const amount = this.normalizeAmount(candidate.amount);
@@ -877,9 +1683,9 @@ export class TransactionService {
     return this.formatConfirmationHtml(lines);
   }
 
-  private buildEmailReviewActions(transactionId: string): NonNullable<
-    EmailTransactionResolveReviewResponseDto['actions']
-  > {
+  private buildEmailReviewActions(
+    transactionId: string,
+  ): NonNullable<EmailTransactionResolveReviewResponseDto['actions']> {
     return {
       confirm: {
         action: 'save_transaction',
