@@ -1,4 +1,5 @@
 import { NormalizedTransactionType } from './normalize-transaction.dto';
+import { TelegramReplyMarkupDto } from './confirmation-payload.dto';
 
 export type EmailTransactionHandleStatus =
   | 'confirmed'
@@ -105,7 +106,7 @@ export interface EmailReviewActionDto {
 
 export interface EmailTransactionResolveReviewResponseDto {
   status: EmailTransactionResolveReviewStatus;
-  reason?: 'user_not_found' | 'category_not_found' | 'low_confidence';
+  reason?: 'user_not_found' | 'category_not_found';
   message?: string;
   transaction?: EmailTransactionResponseTransactionDto & {
     status: 'confirmed' | 'pending';
@@ -118,4 +119,5 @@ export interface EmailTransactionResolveReviewResponseDto {
     cancel: EmailReviewActionDto;
     changeCategory: EmailReviewActionDto;
   };
+  replyMarkup?: TelegramReplyMarkupDto;
 }

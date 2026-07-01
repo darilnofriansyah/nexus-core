@@ -26,6 +26,10 @@ import {
 import {
   OverspendingCheckRequestDto,
   OverspendingCheckResponseDto,
+  OverspendingHandleRequestDto,
+  OverspendingHandleResponseDto,
+  OverspendingRecordRequestDto,
+  OverspendingRecordResponseDto,
 } from './budgets/dto/overspending-check.dto';
 import { VeyraTelegramMessageDto } from './dto/telegram-message.dto';
 import { IntentService } from './intent/intent.service';
@@ -159,6 +163,20 @@ export class VeyraController {
     @Body() body: OverspendingCheckRequestDto,
   ): Promise<OverspendingCheckResponseDto> {
     return this.budgetService.checkOverspending(body);
+  }
+
+  @Post('budgets/overspending/handle')
+  handleOverspending(
+    @Body() body: OverspendingHandleRequestDto,
+  ): Promise<OverspendingHandleResponseDto> {
+    return this.budgetService.handleOverspending(body);
+  }
+
+  @Post('budgets/overspending/record')
+  recordOverspending(
+    @Body() body: OverspendingRecordRequestDto,
+  ): Promise<OverspendingRecordResponseDto> {
+    return this.budgetService.recordOverspendingAlert(body);
   }
 
   @Post('transactions/normalize')

@@ -1335,3 +1335,254 @@ test('propagates missing budget errors during overspending check', async () => {
     NotFoundException,
   );
 });
+
+test('overspending handle returns no_alert without checking alert records below threshold', async () => {
+  const { calls, service } = createService([
+    [{ cycle_start_day: 25 }],
+    [
+      {
+        budget_id: '12',
+        category: 'Food',
+        parent_budget_id: null,
+        budget_amount: '1000000',
+        spent_amount: '425000',
+      },
+    ],
+  ]);
+
+  const result = await service.handleOverspending({
+    userId: 1,
+    category: 'Food',
+    asOfDate: '2026-06-25',
+  });
+
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[1].values, [
+    '1',
+    'Food',
+    '2026-06-25',
+    '2026-07-25',
+  ]);
+  assert.deepEqual(result, {
+    ok: true,
+    status: 'no_alert',
+    shouldAlert: false,
+    alreadyAlerted: false,
+    message: null,
+    data: {
+      transactionId: undefined,
+      userId: '1',
+      budgetId: '12',
+      category: 'Food',
+      spentPercent: 42.5,
+      spentAmount: 425000,
+      budgetAmount: 1000000,
+      remainingAmount: 575000,
+      cycleStart: '2026-06-25',
+      cycleEnd: '2026-07-25',
+    },
+  });
+});
+
+test('overspending handle returns Telegram-ready alert without inserting budget_alerts', async () => {
+  const { calls, service } = createService([
+    [{ cycle_start_day: 25 }],
+    [
+      {
+        budget_id: '12',
+        category: 'Food',
+        parent_budget_id: null,
+        budget_amount: '1000000',
+        spent_amount: '854000',
+      },
+    ],
+    [{ exists: false }],
+  ]);
+
+  const result = await service.handleOverspending({
+    userId: 1,
+    category: 'Food',
+    transactionId: 123,
+    asOfDate: '2026-06-25',
+  });
+
+  assert.equal(calls.length, 3);
+  assert.doesNotMatch(calls[2].text, /INSERT INTO budget_alerts/);
+  assert.deepEqual(calls[2].values, [
+    '1',
+    '12',
+    'overspend_80',
+    '2026-06-25',
+  ]);
+  assert.deepEqual(result, {
+    ok: true,
+    status: 'alert_required',
+    shouldAlert: true,
+    alreadyAlerted: false,
+    message: {
+      text:
+        '⚠️ <b>Budget Warning</b>\n\n' +
+        'Food has reached 85.4%.\n' +
+        'Spent: Rp854.000\n' +
+        'Budget: Rp1.000.000\n' +
+        'Remaining: Rp146.000',
+      parse_mode: 'HTML',
+      disable_web_page_preview: true,
+    },
+    data: {
+      transactionId: 123,
+      userId: '1',
+      budgetId: '12',
+      category: 'Food',
+      alertType: 'overspend_80',
+      thresholdPercent: 80,
+      periodKey: '2026-06-25',
+      spentPercent: 85.4,
+      spentAmount: 854000,
+      budgetAmount: 1000000,
+      remainingAmount: 146000,
+      cycleStart: '2026-06-25',
+      cycleEnd: '2026-07-25',
+      alertRecord: {
+        userId: '1',
+        budgetId: '12',
+        alertType: 'overspend_80',
+        thresholdPercent: 80,
+        periodKey: '2026-06-25',
+      },
+    },
+  });
+});
+
+test('overspending handle returns already_alerted when duplicate exists', async () => {
+  const { service } = createService([
+    [{ cycle_start_day: 25 }],
+    [
+      {
+        budget_id: '12',
+        category: 'Food',
+        parent_budget_id: null,
+        budget_amount: '1000000',
+        spent_amount: '1000000',
+      },
+    ],
+    [{ exists: true }],
+  ]);
+
+  const result = await service.handleOverspending({
+    userId: 1,
+    category: 'Food',
+    transactionId: 123,
+    asOfDate: '2026-06-25',
+  });
+
+  assert.deepEqual(result, {
+    ok: true,
+    status: 'already_alerted',
+    shouldAlert: false,
+    alreadyAlerted: true,
+    message: null,
+    data: {
+      transactionId: 123,
+      userId: '1',
+      budgetId: '12',
+      category: 'Food',
+      alertType: 'overspend_100',
+      periodKey: '2026-06-25',
+    },
+  });
+});
+
+test('records overspending alert after delivery succeeds', async () => {
+  const { calls, service } = createService([
+    [{ exists: false }],
+    [
+      {
+        user_id: 1,
+        budget_id: 12,
+        alert_type: 'overspend_80',
+        threshold_percent: 80,
+        period_key: '2026-06-25',
+      },
+    ],
+  ]);
+
+  const result = await service.recordOverspendingAlert({
+    userId: 1,
+    budgetId: 12,
+    alertType: 'overspend_80',
+    periodKey: '2026-06-25',
+  });
+
+  assert.equal(calls.length, 2);
+  assert.match(calls[1].text, /INSERT INTO budget_alerts/);
+  assert.deepEqual(calls[1].values, [
+    '1',
+    '12',
+    'overspend_80',
+    80,
+    '2026-06-25',
+  ]);
+  assert.deepEqual(result, {
+    ok: true,
+    status: 'recorded',
+    data: {
+      userId: '1',
+      budgetId: '12',
+      alertType: 'overspend_80',
+      thresholdPercent: 80,
+      periodKey: '2026-06-25',
+    },
+  });
+});
+
+test('record overspending alert is idempotent when alert already exists', async () => {
+  const { calls, service } = createService([[{ exists: true }]]);
+
+  const result = await service.recordOverspendingAlert({
+    userId: 1,
+    budgetId: 12,
+    alertType: 'overspend_120',
+    thresholdPercent: 120,
+    periodKey: '2026-06-25',
+  });
+
+  assert.equal(calls.length, 1);
+  assert.deepEqual(result, {
+    ok: true,
+    status: 'already_recorded',
+    data: {
+      userId: '1',
+      budgetId: '12',
+      alertType: 'overspend_120',
+      thresholdPercent: 120,
+      periodKey: '2026-06-25',
+    },
+  });
+});
+
+test('record overspending alert validates alert type and period key', async () => {
+  const { service } = createService();
+
+  await assert.rejects(
+    () =>
+      service.recordOverspendingAlert({
+        userId: 1,
+        budgetId: 12,
+        alertType: 'other' as never,
+        periodKey: '2026-06-25',
+      }),
+    BadRequestException,
+  );
+
+  await assert.rejects(
+    () =>
+      service.recordOverspendingAlert({
+        userId: 1,
+        budgetId: 12,
+        alertType: 'overspend_80',
+        periodKey: '2026-6-25',
+      }),
+    BadRequestException,
+  );
+});

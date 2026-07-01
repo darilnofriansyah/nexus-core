@@ -521,12 +521,14 @@ export class TransactionService {
     }
 
     const validated = this.validateEmailReviewRequest(request, String(user.id));
-    const category = await this.findExistingBudgetCategory(
+    const budgetCategory = await this.findExistingBudgetCategory(
       validated.userId,
       validated.resolution.category,
     );
+    const transactionStatus =
+      validated.resolution.confidence >= 85 ? 'confirmed' : 'pending';
 
-    if (!category) {
+    if (transactionStatus === 'confirmed' && !budgetCategory) {
       return {
         status: 'needs_review',
         reason: 'category_not_found',
@@ -536,27 +538,7 @@ export class TransactionService {
       };
     }
 
-    if (validated.resolution.confidence < 75) {
-      return {
-        status: 'needs_review',
-        reason: 'low_confidence',
-        transactionCandidate: request.transactionCandidate,
-        resolution: {
-          ...request.resolution,
-          confidence: validated.resolution.confidence,
-        },
-        telegramText: this.buildEmailReviewTelegramText({
-          status: 'needs_review',
-          amount: validated.candidate.amount,
-          merchant: validated.candidate.merchantNormalized,
-          category,
-          reason: 'low confidence',
-        }),
-      };
-    }
-
-    const transactionStatus =
-      validated.resolution.confidence >= 85 ? 'confirmed' : 'pending';
+    const category = budgetCategory ?? validated.resolution.category;
     const transaction = await this.saveEmailReviewTransaction({
       userId: validated.userId,
       candidate: {
@@ -600,6 +582,10 @@ export class TransactionService {
       transaction,
       telegramText,
       actions: this.buildEmailReviewActions(transaction.id),
+      replyMarkup: this.buildConfirmationReplyMarkup(
+        transaction.id,
+        PRODUCTION_CALLBACK_MODE,
+      ),
     };
   }
 
@@ -2494,7 +2480,7 @@ export class TransactionService {
       inline_keyboard: [
         [
           {
-            text: 'Approve',
+            text: 'Save',
             callback_data: this.saveTransactionCallbackData(transactionId),
           },
           {
@@ -2504,7 +2490,7 @@ export class TransactionService {
         ],
         [
           {
-            text: 'Reject',
+            text: 'Cancel',
             callback_data: this.cancelTransactionCallbackData(transactionId),
           },
         ],

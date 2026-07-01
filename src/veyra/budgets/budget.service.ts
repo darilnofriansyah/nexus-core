@@ -22,9 +22,14 @@ import {
   BudgetCategoryDto,
 } from './dto/budget-categories.dto';
 import {
+  OverspendingAlertRecordDto,
   OverspendingAlertType,
   OverspendingCheckRequestDto,
   OverspendingCheckResponseDto,
+  OverspendingHandleRequestDto,
+  OverspendingHandleResponseDto,
+  OverspendingRecordRequestDto,
+  OverspendingRecordResponseDto,
 } from './dto/overspending-check.dto';
 
 interface BudgetStatusRow extends QueryResultRow {
@@ -75,6 +80,14 @@ interface BudgetCategoryRow extends QueryResultRow {
 
 interface AlertExistsRow extends QueryResultRow {
   exists: boolean;
+}
+
+interface AlertInsertRow extends QueryResultRow {
+  user_id: string | number;
+  budget_id: string | number;
+  alert_type: OverspendingAlertType;
+  threshold_percent: string | number;
+  period_key: string;
 }
 
 type BudgetHandleIntent =
@@ -433,7 +446,7 @@ export class BudgetService {
   async checkOverspending(
     request: OverspendingCheckRequestDto,
   ): Promise<OverspendingCheckResponseDto> {
-    const userId = this.cleanString(request.userId);
+    const userId = this.cleanString(String(request.userId ?? ''));
     const category = this.cleanString(request.category);
 
     if (!userId) {
@@ -488,6 +501,121 @@ export class BudgetService {
       cycleStart: status.cycle_start,
       cycleEnd: status.cycle_end,
       periodKey,
+    };
+  }
+
+  async handleOverspending(
+    request: OverspendingHandleRequestDto,
+  ): Promise<OverspendingHandleResponseDto> {
+    const userId = this.cleanString(String(request.userId ?? ''));
+    const category = this.cleanString(request.category);
+
+    if (!userId) {
+      throw new BadRequestException('userId is required');
+    }
+
+    if (!category) {
+      throw new BadRequestException('category is required');
+    }
+
+    const status = await this.getDirectBudgetStatus(
+      userId,
+      category,
+      this.parseReferenceDate(request.asOfDate ?? undefined),
+    );
+    const alertType = this.resolveOverspendingAlertType(status.spent_percent);
+    const baseData = this.buildOverspendingBaseData(
+      status,
+      userId,
+      request.transactionId,
+    );
+
+    if (!alertType) {
+      return {
+        ok: true,
+        status: 'no_alert',
+        shouldAlert: false,
+        alreadyAlerted: false,
+        message: null,
+        data: baseData,
+      };
+    }
+
+    const thresholdPercent = this.thresholdPercentForAlertType(alertType);
+    const periodKey = this.periodKeyFromCycleStart(status.cycle_start);
+    const alertRecord = this.buildOverspendingAlertRecord({
+      userId,
+      budgetId: status.budget_id,
+      alertType,
+      thresholdPercent,
+      periodKey,
+    });
+    const alreadyAlerted = await this.hasBudgetAlert(alertRecord);
+
+    if (alreadyAlerted) {
+      return {
+        ok: true,
+        status: 'already_alerted',
+        shouldAlert: false,
+        alreadyAlerted: true,
+        message: null,
+        data: {
+          transactionId: request.transactionId,
+          userId,
+          budgetId: status.budget_id,
+          category: status.category,
+          alertType,
+          periodKey,
+        },
+      };
+    }
+
+    return {
+      ok: true,
+      status: 'alert_required',
+      shouldAlert: true,
+      alreadyAlerted: false,
+      message: {
+        text: this.buildOverspendingTelegramText({
+          category: status.category,
+          spentPercent: status.spent_percent,
+          spentAmount: status.spent_amount,
+          budgetAmount: status.budget_amount,
+          remainingAmount: status.remaining_amount,
+        }),
+        parse_mode: 'HTML',
+        disable_web_page_preview: true,
+      },
+      data: {
+        ...baseData,
+        alertType,
+        thresholdPercent,
+        periodKey,
+        alertRecord,
+      },
+    };
+  }
+
+  async recordOverspendingAlert(
+    request: OverspendingRecordRequestDto,
+  ): Promise<OverspendingRecordResponseDto> {
+    const alertRecord = this.normalizeOverspendingAlertRecord(request);
+    const exists = await this.hasBudgetAlert(alertRecord);
+
+    if (exists) {
+      return {
+        ok: true,
+        status: 'already_recorded',
+        data: alertRecord,
+      };
+    }
+
+    const inserted = await this.insertBudgetAlert(alertRecord);
+
+    return {
+      ok: true,
+      status: 'recorded',
+      data: inserted,
     };
   }
 
@@ -740,9 +868,10 @@ export class BudgetService {
   private async getDirectBudgetStatus(
     userId: string,
     category: string,
+    referenceDate = new Date(),
   ): Promise<BudgetStatusResponseDto> {
     const cycleStartDay = await this.getCycleStartDay(userId);
-    const cycle = this.calculateCurrentCycle(new Date(), cycleStartDay);
+    const cycle = this.calculateCurrentCycle(referenceDate, cycleStartDay);
     const result = await this.database.query<BudgetStatusRow>(
       `
         WITH matched_user AS (
@@ -812,6 +941,54 @@ export class BudgetService {
       `Budget: ${this.formatCurrency(input.budgetAmount)}`,
       `Remaining: ${this.formatCurrency(input.remainingAmount)}`,
     ].join('\n');
+  }
+
+  private buildOverspendingTelegramText(input: {
+    category: string;
+    spentPercent: number;
+    spentAmount: number;
+    budgetAmount: number;
+    remainingAmount: number;
+  }): string {
+    return [
+      '⚠️ <b>Budget Warning</b>',
+      '',
+      `${this.escapeTelegramHtml(input.category)} has reached ${input.spentPercent}%.`,
+      `Spent: ${this.formatTelegramCurrency(input.spentAmount)}`,
+      `Budget: ${this.formatTelegramCurrency(input.budgetAmount)}`,
+      `Remaining: ${this.formatTelegramCurrency(input.remainingAmount)}`,
+    ].join('\n');
+  }
+
+  private buildOverspendingBaseData(
+    status: BudgetStatusResponseDto,
+    userId: string,
+    transactionId: string | number | null | undefined,
+  ): OverspendingHandleResponseDto['data'] {
+    return {
+      transactionId,
+      userId,
+      budgetId: status.budget_id,
+      category: status.category,
+      spentPercent: status.spent_percent,
+      spentAmount: status.spent_amount,
+      budgetAmount: status.budget_amount,
+      remainingAmount: status.remaining_amount,
+      cycleStart: status.cycle_start,
+      cycleEnd: status.cycle_end,
+    };
+  }
+
+  private buildOverspendingAlertRecord(
+    input: OverspendingAlertRecordDto,
+  ): OverspendingAlertRecordDto {
+    return {
+      userId: input.userId,
+      budgetId: input.budgetId,
+      alertType: input.alertType,
+      thresholdPercent: input.thresholdPercent,
+      periodKey: input.periodKey,
+    };
   }
 
   private mergeBudgetHandlePayload(
@@ -1296,6 +1473,101 @@ export class BudgetService {
     );
 
     return Boolean(result.rows[0]?.exists);
+  }
+
+  private normalizeOverspendingAlertRecord(
+    request: OverspendingRecordRequestDto,
+  ): OverspendingAlertRecordDto {
+    const userId = this.cleanString(String(request.userId ?? ''));
+    const budgetId = this.cleanString(String(request.budgetId ?? ''));
+    const alertType = request.alertType;
+    const periodKey = this.cleanString(request.periodKey);
+
+    if (!userId) {
+      throw new BadRequestException('userId is required');
+    }
+
+    if (!budgetId) {
+      throw new BadRequestException('budgetId is required');
+    }
+
+    if (!this.isOverspendingAlertType(alertType)) {
+      throw new BadRequestException(
+        'alertType must be overspend_80, overspend_100, or overspend_120',
+      );
+    }
+
+    if (!periodKey || !/^\d{4}-\d{2}-\d{2}$/.test(periodKey)) {
+      throw new BadRequestException('periodKey must be YYYY-MM-DD');
+    }
+
+    return {
+      userId,
+      budgetId,
+      alertType,
+      thresholdPercent:
+        request.thresholdPercent === null || request.thresholdPercent === undefined
+          ? this.thresholdPercentForAlertType(alertType)
+          : this.toNumber(request.thresholdPercent),
+      periodKey,
+    };
+  }
+
+  private async insertBudgetAlert(
+    alertRecord: OverspendingAlertRecordDto,
+  ): Promise<OverspendingAlertRecordDto> {
+    const result = await this.database.query<AlertInsertRow>(
+      `
+        INSERT INTO budget_alerts (
+          user_id,
+          budget_id,
+          alert_type,
+          threshold_percent,
+          period_key,
+          created_at
+        )
+        VALUES ($1, $2, $3, $4, $5, now())
+        RETURNING user_id, budget_id, alert_type, threshold_percent, period_key
+      `,
+      [
+        alertRecord.userId,
+        alertRecord.budgetId,
+        alertRecord.alertType,
+        alertRecord.thresholdPercent,
+        alertRecord.periodKey,
+      ],
+    );
+    const row = result.rows[0];
+
+    if (!row) {
+      throw new Error('Budget alert insert did not return a row');
+    }
+
+    return {
+      userId: String(row.user_id),
+      budgetId: String(row.budget_id),
+      alertType: row.alert_type,
+      thresholdPercent: this.toNumber(row.threshold_percent),
+      periodKey: row.period_key,
+    };
+  }
+
+  private isOverspendingAlertType(
+    alertType: unknown,
+  ): alertType is OverspendingAlertType {
+    return (
+      alertType === 'overspend_80' ||
+      alertType === 'overspend_100' ||
+      alertType === 'overspend_120'
+    );
+  }
+
+  private thresholdPercentForAlertType(alertType: OverspendingAlertType): number {
+    return {
+      overspend_80: 80,
+      overspend_100: 100,
+      overspend_120: 120,
+    }[alertType];
   }
 
   private formatCurrency(amount: number): string {

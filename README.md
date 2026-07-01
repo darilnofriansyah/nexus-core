@@ -506,7 +506,11 @@ Overview response shape:
 
 ### `POST /api/veyra/budgets/overspending-check`
 
-Calculates direct-category current-cycle spending and classifies whether an overspending alert should be sent. This endpoint only reads `budget_alerts` to prevent duplicate notifications; it does not insert alert records or send Telegram messages.
+Deprecated. Use `POST /api/veyra/budgets/overspending/handle` plus `POST /api/veyra/budgets/overspending/record` for new n8n flows.
+
+### `POST /api/veyra/budgets/overspending/handle`
+
+Calculates direct-category current-cycle spending and classifies whether an overspending alert should be sent. This endpoint reads `budget_alerts` to prevent duplicate notifications, returns a Telegram-ready message when an alert is required, and does not insert alert records or send Telegram messages.
 
 Alert thresholds:
 
@@ -521,8 +525,108 @@ Example request body:
 
 ```json
 {
-  "userId": "example-user-id",
-  "category": "Food"
+  "userId": 1,
+  "category": "Food",
+  "transactionId": 123,
+  "asOfDate": "2026-06-25"
+}
+```
+
+Example `alert_required` response:
+
+```json
+{
+  "ok": true,
+  "status": "alert_required",
+  "shouldAlert": true,
+  "alreadyAlerted": false,
+  "message": {
+    "text": "⚠️ <b>Budget Warning</b>\n\nFood has reached 85.4%.\nSpent: Rp854.000\nBudget: Rp1.000.000\nRemaining: Rp146.000",
+    "parse_mode": "HTML",
+    "disable_web_page_preview": true
+  },
+  "data": {
+    "transactionId": 123,
+    "userId": "1",
+    "budgetId": "12",
+    "category": "Food",
+    "alertType": "overspend_80",
+    "thresholdPercent": 80,
+    "periodKey": "2026-06-25",
+    "spentPercent": 85.4,
+    "spentAmount": 854000,
+    "budgetAmount": 1000000,
+    "remainingAmount": 146000,
+    "cycleStart": "2026-06-25",
+    "cycleEnd": "2026-07-25",
+    "alertRecord": {
+      "userId": "1",
+      "budgetId": "12",
+      "alertType": "overspend_80",
+      "thresholdPercent": 80,
+      "periodKey": "2026-06-25"
+    }
+  }
+}
+```
+
+Example `no_alert` response:
+
+```json
+{
+  "ok": true,
+  "status": "no_alert",
+  "shouldAlert": false,
+  "alreadyAlerted": false,
+  "message": null,
+  "data": {
+    "userId": "1",
+    "budgetId": "12",
+    "category": "Food",
+    "spentPercent": 42.5,
+    "spentAmount": 425000,
+    "budgetAmount": 1000000,
+    "remainingAmount": 575000,
+    "cycleStart": "2026-06-25",
+    "cycleEnd": "2026-07-25"
+  }
+}
+```
+
+Example `already_alerted` response:
+
+```json
+{
+  "ok": true,
+  "status": "already_alerted",
+  "shouldAlert": false,
+  "alreadyAlerted": true,
+  "message": null,
+  "data": {
+    "userId": "1",
+    "budgetId": "12",
+    "category": "Food",
+    "alertType": "overspend_80",
+    "periodKey": "2026-06-25"
+  }
+}
+```
+
+`alreadyAlerted` is `true` when a row already exists in `budget_alerts` for the same `user_id`, `budget_id`, `alert_type`, and `period_key`. `periodKey` uses the full cycle start date (`YYYY-MM-DD`) to match production data. n8n should send `message` through Telegram Reliable Sender when `status` is `alert_required`, then call `/api/veyra/budgets/overspending/record` with `data.alertRecord` only after successful Telegram delivery.
+
+### `POST /api/veyra/budgets/overspending/record`
+
+Records that an overspending alert was successfully delivered. This endpoint is idempotent and only writes `budget_alerts`; it does not calculate spending or send Telegram messages.
+
+Example request body:
+
+```json
+{
+  "userId": 1,
+  "budgetId": 12,
+  "alertType": "overspend_80",
+  "thresholdPercent": 80,
+  "periodKey": "2026-06-25"
 }
 ```
 
@@ -530,29 +634,24 @@ Example response:
 
 ```json
 {
-  "shouldAlert": true,
-  "alreadyAlerted": false,
-  "alertType": "overspend_80",
-  "telegramHtml": "<b>Budget warning</b>\n\nCategory: <b>Food</b>\nSpent: Rp854.000 (85.4%)\nBudget: Rp1.000.000\nRemaining: Rp146.000",
-  "alertRecord": {
-    "budgetId": "example-budget-id",
+  "ok": true,
+  "status": "recorded",
+  "data": {
+    "userId": "1",
+    "budgetId": "12",
     "alertType": "overspend_80",
-    "periodKey": "2026-06-15"
-  },
-  "budgetId": "example-budget-id",
-  "userId": "example-user-id",
-  "category": "Food",
-  "spentPercent": 85.4,
-  "spentAmount": 854000,
-  "budgetAmount": 1000000,
-  "remainingAmount": 146000,
-  "cycleStart": "2026-06-15",
-  "cycleEnd": "2026-07-15",
-  "periodKey": "2026-06-15"
+    "thresholdPercent": 80,
+    "periodKey": "2026-06-25"
+  }
 }
 ```
 
-`alreadyAlerted` is `true` when a row already exists in `budget_alerts` for the same `user_id`, `budget_id`, `alert_type`, and `period_key`. `periodKey` uses the full cycle start date (`YYYY-MM-DD`) to match production data. n8n should insert `alertRecord` into `budget_alerts` only after successful Telegram delivery.
+If the row already exists, `status` is `already_recorded` with the same `data` shape. Recommended database hardening when applying non-destructive schema improvements:
+
+```sql
+CREATE UNIQUE INDEX IF NOT EXISTS budget_alerts_unique_period_alert
+ON budget_alerts (user_id, budget_id, alert_type, period_key);
+```
 
 ### `POST /api/veyra/transactions/normalize`
 
@@ -659,7 +758,7 @@ Example pending response:
         "inline_keyboard": [
           [
             {
-              "text": "Approve",
+              "text": "Save",
               "callback_data": "save_transaction:123"
             },
             {
@@ -669,7 +768,7 @@ Example pending response:
           ],
           [
             {
-              "text": "Reject",
+              "text": "Cancel",
               "callback_data": "cancel_transaction:123"
             }
           ]
@@ -807,9 +906,9 @@ This endpoint can replace deterministic email parser Code nodes and the high-con
 
 ### `POST /api/veyra/transactions/email/resolve-review`
 
-Resolves an email transaction candidate that previously returned `status: "needs_review"` from the email ingestion flow. n8n may use an LLM to suggest a category from the user's existing budget names, but Core API validates the category against active `budgets.category` for the resolved `telegram_users` row before inserting anything.
+Resolves an email transaction candidate that previously returned `status: "needs_review"` from the email ingestion flow. n8n may use an LLM to suggest a category. Core API validates the category against active `budgets.category` before confirming high-confidence rows; low-confidence rows are saved as pending with the LLM category so the user can save, cancel, or change category.
 
-The endpoint accepts confidence as `0..1` or `0..100`. Confidence `>= 85` inserts a confirmed email transaction and best-effort learns the merchant alias/category rule without duplicating existing user-scoped rows. Confidence `75..84` inserts a pending email transaction and returns production callback actions for n8n. Confidence `< 75` returns `needs_review` without saving. It does not create budgets and does not send Telegram messages.
+The endpoint accepts confidence as `0..1` or `0..100`. Confidence `>= 85` inserts a confirmed email transaction and best-effort learns the merchant alias/category rule without duplicating existing user-scoped rows. Confidence `< 85` inserts a pending email transaction with the LLM category and returns production callback actions/markup for n8n. It does not create budgets and does not send Telegram messages.
 
 Example n8n HTTP Request body:
 
@@ -868,6 +967,26 @@ Example pending response:
       "action": "change_categories",
       "transactionId": "123"
     }
+  },
+  "replyMarkup": {
+    "inline_keyboard": [
+      [
+        {
+          "text": "Save",
+          "callback_data": "save_transaction:123"
+        },
+        {
+          "text": "Change Category",
+          "callback_data": "change_categories:123"
+        }
+      ],
+      [
+        {
+          "text": "Cancel",
+          "callback_data": "cancel_transaction:123"
+        }
+      ]
+    ]
   }
 }
 ```
@@ -923,7 +1042,7 @@ Example response:
     "inline_keyboard": [
       [
         {
-          "text": "Approve",
+          "text": "Save",
           "callback_data": "save_transaction:transaction-id"
         },
         {
@@ -933,7 +1052,7 @@ Example response:
       ],
       [
         {
-          "text": "Reject",
+          "text": "Cancel",
           "callback_data": "cancel_transaction:transaction-id"
         }
       ]
@@ -1459,20 +1578,38 @@ Body:
 
 n8n should run LLM parsing first, then call `/api/veyra/budgets/handle`, then send `message.text`, `message.parse_mode`, and `message.disable_web_page_preview` through Telegram Reliable Sender for single-message replies. For `budget_overview`, iterate over `data.messages` and send each string as its own Telegram Reliable Sender call. This replaces only the budget workflow orchestration step after parsing; keep Telegram Trigger nodes, LLM parsing, Telegram sending, callback routing, credentials, retries, and production workflow management in n8n.
 
-Recommended Veyra overspending check node settings:
+Recommended Veyra overspending handle node settings:
 
 ```txt
 Method: POST
-URL: http://core-api:3001/api/veyra/budgets/overspending-check
+URL: http://core-api:3001/api/veyra/budgets/overspending/handle
 Send Body: JSON
 Body:
 {
   "userId": "={{$json.user_id}}",
-  "category": "={{$json.category}}"
+  "category": "={{$json.category}}",
+  "transactionId": "={{$json.transaction_id}}",
+  "asOfDate": "={{$json.transaction_date}}"
 }
 ```
 
-Use `shouldAlert`, `alreadyAlerted`, `alertType`, and `telegramHtml` in n8n to decide whether to continue to the existing Telegram notification path. Send `telegramHtml` as Telegram HTML. After successful delivery, insert `alertRecord.budgetId`, `alertRecord.alertType`, and `alertRecord.periodKey` into `budget_alerts`. This replaces only the direct-category spending, threshold, duplicate-check, and alert text calculation; keep scheduling, transaction triggers, Telegram sending, delivery retry, and alert record insertion orchestration in n8n for now.
+When `status` is `alert_required`, send `message.text`, `message.parse_mode`, and `message.disable_web_page_preview` through Telegram Reliable Sender. After Telegram success, call the record endpoint with `data.alertRecord`:
+
+```txt
+Method: POST
+URL: http://core-api:3001/api/veyra/budgets/overspending/record
+Send Body: JSON
+Body:
+{
+  "userId": "={{$json.data.alertRecord.userId}}",
+  "budgetId": "={{$json.data.alertRecord.budgetId}}",
+  "alertType": "={{$json.data.alertRecord.alertType}}",
+  "thresholdPercent": "={{$json.data.alertRecord.thresholdPercent}}",
+  "periodKey": "={{$json.data.alertRecord.periodKey}}"
+}
+```
+
+If Telegram delivery fails, do not call `record`. This replaces only the direct-category spending, threshold, duplicate-check, alert text calculation, and durable delivered-alert recording; keep scheduling, transaction triggers, Telegram sending, delivery retry, and orchestration in n8n.
 
 Recommended Veyra transaction normalize node settings:
 
@@ -1569,7 +1706,7 @@ Parse mode = {{$json.parseMode}}
 Production callback data emitted by this endpoint:
 
 ```txt
-Approve = save_transaction:{transactionId}
+Save = save_transaction:{transactionId}
 Cancel = cancel_transaction:{transactionId}
 Change category = change_categories:{transactionId}
 ```
@@ -1819,12 +1956,20 @@ curl -X POST http://localhost:3001/api/veyra/budgets/upsert \
   -d '{"userId":"example-user-id","category":"Food","amount":1500000,"periodType":"monthly"}'
 ```
 
-Overspending check test:
+Overspending handle test:
 
 ```bash
-curl -X POST http://localhost:3001/api/veyra/budgets/overspending-check \
+curl -X POST http://localhost:3001/api/veyra/budgets/overspending/handle \
   -H 'content-type: application/json' \
-  -d '{"userId":"example-user-id","category":"Food"}'
+  -d '{"userId":"example-user-id","category":"Food","transactionId":123,"asOfDate":"2026-06-25"}'
+```
+
+Overspending record test:
+
+```bash
+curl -X POST http://localhost:3001/api/veyra/budgets/overspending/record \
+  -H 'content-type: application/json' \
+  -d '{"userId":"example-user-id","budgetId":"example-budget-id","alertType":"overspend_80","periodKey":"2026-06-25"}'
 ```
 
 Transaction normalize test:

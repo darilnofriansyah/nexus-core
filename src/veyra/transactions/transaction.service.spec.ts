@@ -379,13 +379,13 @@ test('handles manual transaction with low confidence as pending confirmation', a
   assert.match(result.confirmationPayload?.text ?? '', /Confirm transaction/);
   assert.deepEqual(result.confirmationPayload?.reply_markup.inline_keyboard, [
     [
-      { text: 'Approve', callback_data: 'save_transaction:tx-pending' },
+      { text: 'Save', callback_data: 'save_transaction:tx-pending' },
       {
         text: 'Change Category',
         callback_data: 'change_categories:tx-pending',
       },
     ],
-    [{ text: 'Reject', callback_data: 'cancel_transaction:tx-pending' }],
+    [{ text: 'Cancel', callback_data: 'cancel_transaction:tx-pending' }],
   ]);
 });
 
@@ -706,10 +706,10 @@ test('builds confirmation payload for normal pending transaction', () => {
   assert.equal(result.parseMode, 'HTML');
   assert.deepEqual(result.replyMarkup.inline_keyboard, [
     [
-      { text: 'Approve', callback_data: 'save_transaction:tx-1' },
+      { text: 'Save', callback_data: 'save_transaction:tx-1' },
       { text: 'Change Category', callback_data: 'change_categories:tx-1' },
     ],
-    [{ text: 'Reject', callback_data: 'cancel_transaction:tx-1' }],
+    [{ text: 'Cancel', callback_data: 'cancel_transaction:tx-1' }],
   ]);
   assert.equal(
     result.replyMarkup.inline_keyboard
@@ -860,13 +860,13 @@ test('builds manual confirmation payload snapshot with wallet and notes', () => 
   assert.equal(result.parseMode, null);
   assert.deepEqual(result.replyMarkup.inline_keyboard, [
     [
-      { text: 'Approve', callback_data: 'save_transaction:tx-manual' },
+      { text: 'Save', callback_data: 'save_transaction:tx-manual' },
       {
         text: 'Change Category',
         callback_data: 'change_categories:tx-manual',
       },
     ],
-    [{ text: 'Reject', callback_data: 'cancel_transaction:tx-manual' }],
+    [{ text: 'Cancel', callback_data: 'cancel_transaction:tx-manual' }],
   ]);
 });
 
@@ -1544,6 +1544,13 @@ test('resolves medium confidence email review as pending with production actions
   assert.equal(result.actions?.confirm.transactionId, '123');
   assert.equal(result.actions?.cancel.action, 'cancel_transaction');
   assert.equal(result.actions?.changeCategory.action, 'change_categories');
+  assert.deepEqual(result.replyMarkup?.inline_keyboard, [
+    [
+      { text: 'Save', callback_data: 'save_transaction:123' },
+      { text: 'Change Category', callback_data: 'change_categories:123' },
+    ],
+    [{ text: 'Cancel', callback_data: 'cancel_transaction:123' }],
+  ]);
   assert.equal(calls[2].values[8], 'pending');
   assert.equal(calls[2].values[9], 84);
   assert.equal(
@@ -1552,10 +1559,11 @@ test('resolves medium confidence email review as pending with production actions
   );
 });
 
-test('returns needs_review for low confidence email review without saving', async () => {
+test('resolves low confidence email review as pending with LLM category', async () => {
   const { calls, service } = createService([
     [{ id: '1', telegram_id: '976684739' }],
     [{ category: 'Food' }],
+    [{ id: '123' }],
   ]);
 
   const result = await service.resolveEmailTransactionReview({
@@ -1575,11 +1583,45 @@ test('returns needs_review for low confidence email review without saving', asyn
     },
   });
 
-  assert.equal(result.status, 'needs_review');
-  assert.equal(result.reason, 'low_confidence');
-  assert.equal(result.transaction, undefined);
-  assert.match(result.telegramText ?? '', /low confidence/);
-  assert.equal(calls.length, 2);
+  assert.equal(result.status, 'pending');
+  assert.equal(result.reason, undefined);
+  assert.equal(result.transaction?.status, 'pending');
+  assert.equal(result.transaction?.category, 'Food');
+  assert.equal(result.transaction?.confidence, 74);
+  assert.equal(result.actions?.confirm.transactionId, '123');
+  assert.equal(result.replyMarkup?.inline_keyboard[0][0].text, 'Save');
+  assert.equal(calls[2].values[8], 'pending');
+  assert.equal(calls[2].values[9], 74);
+});
+
+test('resolves low confidence email review with unknown LLM category as pending', async () => {
+  const { calls, service } = createService([
+    [{ id: '1', telegram_id: '976684739' }],
+    [],
+    [{ id: '123' }],
+  ]);
+
+  const result = await service.resolveEmailTransactionReview({
+    telegramUserId: '976684739',
+    transactionCandidate: {
+      source: 'email',
+      transactionType: 'expense',
+      amount: 25000,
+      merchant: 'TUKU',
+      merchantNormalized: 'tuku',
+      rawPayload: {},
+    },
+    resolution: {
+      category: 'LLM Made Category',
+      confidence: 0.74,
+      resolver: 'llm',
+    },
+  });
+
+  assert.equal(result.status, 'pending');
+  assert.equal(result.transaction?.category, 'LLM Made Category');
+  assert.equal(calls[2].values[5], 'LLM Made Category');
+  assert.equal(calls[2].values[8], 'pending');
 });
 
 test('returns needs_review when email review category is not in budgets', async () => {
