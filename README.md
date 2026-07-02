@@ -1285,7 +1285,7 @@ If the transaction row is missing, `status` is `not_found`. If it is already con
 
 ### `POST /api/veyra/transactions/callback/handle`
 
-Routes one Telegram transaction callback through Core API and returns a Telegram `editMessageText` payload for n8n to send. Core API parses only the production callback names, validates numeric transaction and budget ids, checks ownership with `userId`, and reuses the existing confirm, cancel, category-options, and set-category logic.
+Routes one Telegram transaction callback through Core API. `veyra_tx_manage:*` callback data is normalized and passed to `/transactions/manage/handle`; all other supported transaction callback data keeps the existing Telegram `editMessageText` response behavior.
 
 Supported callback data:
 
@@ -1294,6 +1294,9 @@ save_transaction:{transactionId}
 cancel_transaction:{transactionId}
 change_categories:{transactionId}
 catid:{budgetId}:{transactionId}
+veyra_tx_manage:select:{index}
+veyra_tx_manage:confirm
+veyra_tx_manage:cancel
 ```
 
 Example request body:
@@ -1328,6 +1331,28 @@ Example response:
 
 For `change_categories:{transactionId}`, `telegram.reply_markup` contains `inline_keyboard` buttons using `catid:{budgetId}:{transactionId}`. Unknown or invalid callback data returns `status: "error"` and safe user-facing `telegram.text`.
 
+Manage callback example:
+
+```json
+{
+  "telegramUserId": "123456789",
+  "callbackData": "veyra_tx_manage:select:1"
+}
+```
+
+Core API forwards manage callbacks internally as:
+
+```json
+{
+  "telegramUserId": "123456789",
+  "text": "veyra_tx_manage:select:1",
+  "llmResult": null,
+  "statePayload": {}
+}
+```
+
+Transaction ids are not stored in `veyra_tx_manage:*` callback data. Selection and confirmation are validated from `conversation_states.state_data`: selection indexes map to stored `candidates`, and confirmation uses the stored `transaction_id`. Stale or repeated callbacks return an invalid response without mutating transactions.
+
 Recommended n8n callback flow:
 
 ```txt
@@ -1353,44 +1378,6 @@ Telegram Callback Query Trigger
 ```
 
 This replaces only the transaction callback parsing/routing and per-branch HTTP Request mapping in n8n. Keep Telegram Callback Query triggers, Telegram edit/send execution, callback answer nodes, overspend orchestration, and credentials in n8n.
-
-### `POST /api/veyra/callback`
-
-Dispatches Telegram callback payloads from the existing n8n callback workflow. Callback data starting with `veyra_tx_manage:` is normalized and passed to `/transactions/manage/handle`; all other callback data keeps the existing transaction callback behavior.
-
-Supported transaction manage callback data:
-
-```txt
-veyra_tx_manage:select:{index}
-veyra_tx_manage:confirm
-veyra_tx_manage:cancel
-```
-
-Example Telegram callback body:
-
-```json
-{
-  "callback_query": {
-    "data": "veyra_tx_manage:select:1",
-    "from": {
-      "id": 123456789
-    }
-  }
-}
-```
-
-Core API forwards manage callbacks internally as:
-
-```json
-{
-  "telegramUserId": "123456789",
-  "text": "veyra_tx_manage:select:1",
-  "llmResult": null,
-  "statePayload": {}
-}
-```
-
-Transaction ids are not stored in `veyra_tx_manage:*` callback data. Selection and confirmation are validated from `conversation_states.state_data`: selection indexes map to stored `candidates`, and confirmation uses the stored `transaction_id`. Stale or repeated callbacks return an invalid response without mutating transactions.
 
 ### `GET /api/veyra/conversation-states/:userId`
 

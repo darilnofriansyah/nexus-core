@@ -68,7 +68,7 @@ import {
   EmailTransactionResolveReviewResponseDto,
 } from './transactions/dto/email-transaction.dto';
 import {
-  TransactionCallbackHandleRequestDto,
+  TransactionCallbackDispatchRequestDto,
   TransactionCallbackHandleResponseDto,
 } from './transactions/dto/transaction-callback-handle.dto';
 import {
@@ -76,7 +76,6 @@ import {
   TransactionManageHandleResponseDto,
 } from './transactions/dto/transaction-manage.dto';
 import { TransactionService } from './transactions/transaction.service';
-import { VeyraCallbackRequestDto } from './dto/callback.dto';
 
 @Controller('veyra')
 export class VeyraController {
@@ -250,14 +249,7 @@ export class VeyraController {
 
   @Post('transactions/callback/handle')
   handleTransactionCallback(
-    @Body() body: TransactionCallbackHandleRequestDto,
-  ): Promise<TransactionCallbackHandleResponseDto> {
-    return this.transactionService.handleTransactionCallback(body);
-  }
-
-  @Post('callback')
-  handleCallback(
-    @Body() body: VeyraCallbackRequestDto,
+    @Body() body: TransactionCallbackDispatchRequestDto,
   ): Promise<
     TransactionManageHandleResponseDto | TransactionCallbackHandleResponseDto
   > {
@@ -288,7 +280,7 @@ export class VeyraController {
     });
   }
 
-  private readCallbackData(body: VeyraCallbackRequestDto): string {
+  private readCallbackData(body: TransactionCallbackDispatchRequestDto): string {
     return this.readString(
       body.callbackData ??
         body.data ??
@@ -297,15 +289,17 @@ export class VeyraController {
     );
   }
 
-  private readTelegramUserId(body: VeyraCallbackRequestDto): string {
+  private readTelegramUserId(
+    body: TransactionCallbackDispatchRequestDto,
+  ): string {
     return this.readString(
       body.telegramUserId ?? this.readCallbackQuery(body)?.from?.id,
     );
   }
 
   private readCallbackQuery(
-    body: VeyraCallbackRequestDto,
-  ): VeyraCallbackRequestDto['callback_query'] {
+    body: TransactionCallbackDispatchRequestDto,
+  ): TransactionCallbackDispatchRequestDto['callback_query'] {
     return body.callback_query ?? body.callbackQuery;
   }
 

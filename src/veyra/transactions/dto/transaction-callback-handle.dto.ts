@@ -16,6 +16,32 @@ export interface TransactionCallbackHandleRequestDto {
   messageId?: number;
 }
 
+export interface TransactionCallbackQueryDto {
+  data?: unknown;
+  from?: {
+    id?: unknown;
+  };
+  message?: {
+    chat?: {
+      id?: unknown;
+    };
+    message_id?: unknown;
+  };
+}
+
+export interface TransactionCallbackDispatchRequestDto {
+  telegramUserId?: unknown;
+  userId?: unknown;
+  user_id?: unknown;
+  callbackData?: unknown;
+  data?: unknown;
+  text?: unknown;
+  chatId?: unknown;
+  messageId?: unknown;
+  callback_query?: TransactionCallbackQueryDto;
+  callbackQuery?: TransactionCallbackQueryDto;
+}
+
 export interface TransactionCallbackTelegramPayloadDto {
   method: 'editMessageText';
   chat_id?: string | number;

@@ -67,10 +67,10 @@ function createController() {
   return { calls, controller, manageResponse, callbackResponse };
 }
 
-test('/callback routes manage select callback to transaction manage handler', async () => {
+test('/transactions/callback/handle routes manage select callback to transaction manage handler', async () => {
   const { calls, controller } = createController();
 
-  await controller.handleCallback({
+  await controller.handleTransactionCallback({
     telegramUserId: '123456789',
     callbackData: 'veyra_tx_manage:select:1',
   });
@@ -88,10 +88,10 @@ test('/callback routes manage select callback to transaction manage handler', as
   ]);
 });
 
-test('/callback routes manage confirm callback to transaction manage handler', async () => {
+test('/transactions/callback/handle routes manage confirm callback to transaction manage handler', async () => {
   const { calls, controller } = createController();
 
-  await controller.handleCallback({
+  await controller.handleTransactionCallback({
     callback_query: {
       data: 'veyra_tx_manage:confirm',
       from: { id: 123456789 },
@@ -107,10 +107,10 @@ test('/callback routes manage confirm callback to transaction manage handler', a
   });
 });
 
-test('/callback routes manage cancel callback to transaction manage handler', async () => {
+test('/transactions/callback/handle routes manage cancel callback to transaction manage handler', async () => {
   const { calls, controller } = createController();
 
-  await controller.handleCallback({
+  await controller.handleTransactionCallback({
     telegramUserId: '123456789',
     text: 'veyra_tx_manage:cancel',
   });
@@ -124,10 +124,10 @@ test('/callback routes manage cancel callback to transaction manage handler', as
   });
 });
 
-test('/callback returns transaction manage response as-is', async () => {
+test('/transactions/callback/handle returns transaction manage response as-is', async () => {
   const { controller, manageResponse } = createController();
 
-  const result = await controller.handleCallback({
+  const result = await controller.handleTransactionCallback({
     telegramUserId: '123456789',
     data: 'veyra_tx_manage:select:1',
   });
@@ -135,10 +135,10 @@ test('/callback returns transaction manage response as-is', async () => {
   assert.equal(result, manageResponse);
 });
 
-test('/callback does not mutate transactions directly for manage callbacks', async () => {
+test('/transactions/callback/handle does not mutate transactions directly for manage callbacks', async () => {
   const { calls, controller } = createController();
 
-  await controller.handleCallback({
+  await controller.handleTransactionCallback({
     telegramUserId: '123456789',
     callbackData: 'veyra_tx_manage:confirm',
   });
@@ -149,10 +149,10 @@ test('/callback does not mutate transactions directly for manage callbacks', asy
   );
 });
 
-test('/callback stale manage callback delegates without direct mutation', async () => {
+test('/transactions/callback/handle stale manage callback delegates without direct mutation', async () => {
   const { calls, controller } = createController();
 
-  await controller.handleCallback({
+  await controller.handleTransactionCallback({
     telegramUserId: '123456789',
     callbackData: 'veyra_tx_manage:confirm',
   });
@@ -164,10 +164,10 @@ test('/callback stale manage callback delegates without direct mutation', async 
   );
 });
 
-test('/callback non-manage callbacks use existing transaction callback behavior', async () => {
+test('/transactions/callback/handle non-manage callbacks use existing transaction callback behavior', async () => {
   const { calls, callbackResponse, controller } = createController();
 
-  const result = await controller.handleCallback({
+  const result = await controller.handleTransactionCallback({
     telegramUserId: '123456789',
     userId: '1',
     callbackData: 'save_transaction:123',
@@ -190,10 +190,10 @@ test('/callback non-manage callbacks use existing transaction callback behavior'
   ]);
 });
 
-test('/callback missing callback data returns existing callback fallback', async () => {
+test('/transactions/callback/handle missing callback data returns existing callback fallback', async () => {
   const { calls, controller } = createController();
 
-  await controller.handleCallback({
+  await controller.handleTransactionCallback({
     telegramUserId: '123456789',
     userId: 1,
   });
@@ -208,10 +208,10 @@ test('/callback missing callback data returns existing callback fallback', async
   });
 });
 
-test('/callback missing telegram user id returns invalid without direct mutation', async () => {
+test('/transactions/callback/handle missing telegram user id returns invalid without direct mutation', async () => {
   const { calls, controller } = createController();
 
-  await controller.handleCallback({
+  await controller.handleTransactionCallback({
     callbackData: 'veyra_tx_manage:confirm',
   });
 
