@@ -76,6 +76,7 @@ import {
   TransactionManageHandleResponseDto,
 } from './transactions/dto/transaction-manage.dto';
 import { TransactionService } from './transactions/transaction.service';
+import { VeyraCallbackRequestDto } from './dto/callback.dto';
 
 @Controller('veyra')
 export class VeyraController {
@@ -252,6 +253,85 @@ export class VeyraController {
     @Body() body: TransactionCallbackHandleRequestDto,
   ): Promise<TransactionCallbackHandleResponseDto> {
     return this.transactionService.handleTransactionCallback(body);
+  }
+
+  @Post('callback')
+  handleCallback(
+    @Body() body: VeyraCallbackRequestDto,
+  ): Promise<
+    TransactionManageHandleResponseDto | TransactionCallbackHandleResponseDto
+  > {
+    const callbackData = this.readCallbackData(body);
+
+    if (callbackData.startsWith('veyra_tx_manage:')) {
+      return this.transactionService.handleManagedTransaction(
+        {
+          telegramUserId: this.readTelegramUserId(body),
+          text: callbackData,
+          llmResult: null,
+          statePayload: {},
+        },
+        this.conversationStateService,
+      );
+    }
+
+    return this.transactionService.handleTransactionCallback({
+      telegramUserId: this.readTelegramUserId(body),
+      userId: this.readNumber(body.userId ?? body.user_id),
+      callbackData,
+      chatId: this.readChatId(
+        body.chatId ?? this.readCallbackQuery(body)?.message?.chat?.id,
+      ),
+      messageId: this.readNumber(
+        body.messageId ?? this.readCallbackQuery(body)?.message?.message_id,
+      ),
+    });
+  }
+
+  private readCallbackData(body: VeyraCallbackRequestDto): string {
+    return this.readString(
+      body.callbackData ??
+        body.data ??
+        body.text ??
+        this.readCallbackQuery(body)?.data,
+    );
+  }
+
+  private readTelegramUserId(body: VeyraCallbackRequestDto): string {
+    return this.readString(
+      body.telegramUserId ?? this.readCallbackQuery(body)?.from?.id,
+    );
+  }
+
+  private readCallbackQuery(
+    body: VeyraCallbackRequestDto,
+  ): VeyraCallbackRequestDto['callback_query'] {
+    return body.callback_query ?? body.callbackQuery;
+  }
+
+  private readString(value: unknown): string {
+    if (typeof value === 'string') {
+      return value.trim();
+    }
+
+    if (typeof value === 'number' || typeof value === 'bigint') {
+      return String(value);
+    }
+
+    return '';
+  }
+
+  private readChatId(value: unknown): string | number | undefined {
+    return typeof value === 'string' || typeof value === 'number'
+      ? value
+      : undefined;
+  }
+
+  private readNumber(value: unknown): number {
+    const parsed =
+      typeof value === 'number' ? value : Number(this.readString(value));
+
+    return Number.isSafeInteger(parsed) ? parsed : 0;
   }
 
   @Post('transactions/category-options')
