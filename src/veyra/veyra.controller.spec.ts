@@ -8,10 +8,17 @@ function createController() {
     ok: true,
     status: 'needs_confirmation',
     message: 'Confirm edit?',
-    reply_markup: null,
+    reply_markup: {
+      inline_keyboard: [
+        [
+          { text: 'Confirm', callback_data: 'veyra_tx_manage:confirm' },
+          { text: 'Cancel', callback_data: 'veyra_tx_manage:cancel' },
+        ],
+      ],
+    },
     state: {
       state_name: 'confirm_action',
-      state_data: {},
+      state_data: { transaction_id: '163' },
     },
     data: {},
   };
@@ -124,15 +131,29 @@ test('/transactions/callback/handle routes manage cancel callback to transaction
   });
 });
 
-test('/transactions/callback/handle returns transaction manage response as-is', async () => {
+test('/transactions/callback/handle returns manage callback as telegram edit payload', async () => {
   const { controller, manageResponse } = createController();
 
   const result = await controller.handleTransactionCallback({
     telegramUserId: '123456789',
     data: 'veyra_tx_manage:select:1',
+    chatId: '123456789',
+    messageId: '42',
   });
 
-  assert.equal(result, manageResponse);
+  assert.deepEqual(result, {
+    status: 'ok',
+    action: 'veyra_tx_manage',
+    transactionId: 163,
+    telegram: {
+      method: 'editMessageText',
+      chat_id: '123456789',
+      message_id: 42,
+      text: manageResponse.message,
+      parse_mode: 'HTML',
+      reply_markup: manageResponse.reply_markup,
+    },
+  });
 });
 
 test('/transactions/callback/handle does not mutate transactions directly for manage callbacks', async () => {

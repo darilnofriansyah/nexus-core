@@ -1336,18 +1336,40 @@ Manage callback example:
 ```json
 {
   "telegramUserId": "123456789",
-  "callbackData": "veyra_tx_manage:select:1"
+  "callbackData": "veyra_tx_manage:select:1",
+  "chatId": "123456789",
+  "messageId": 42
 }
 ```
 
-Core API forwards manage callbacks internally as:
+Manage callback response:
 
 ```json
 {
-  "telegramUserId": "123456789",
-  "text": "veyra_tx_manage:select:1",
-  "llmResult": null,
-  "statePayload": {}
+  "status": "ok",
+  "action": "veyra_tx_manage",
+  "transactionId": 163,
+  "telegram": {
+    "method": "editMessageText",
+    "chat_id": "123456789",
+    "message_id": 42,
+    "text": "Confirm edit?\n\nBefore:\nFamily Mart — Food — Rp16.000\n\nAfter:\nUnknown — food — Rp16.000",
+    "parse_mode": "HTML",
+    "reply_markup": {
+      "inline_keyboard": [
+        [
+          {
+            "text": "Confirm",
+            "callback_data": "veyra_tx_manage:confirm"
+          },
+          {
+            "text": "Cancel",
+            "callback_data": "veyra_tx_manage:cancel"
+          }
+        ]
+      ]
+    }
+  }
 }
 ```
 

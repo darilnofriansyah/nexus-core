@@ -248,15 +248,13 @@ export class VeyraController {
   }
 
   @Post('transactions/callback/handle')
-  handleTransactionCallback(
+  async handleTransactionCallback(
     @Body() body: TransactionCallbackDispatchRequestDto,
-  ): Promise<
-    TransactionManageHandleResponseDto | TransactionCallbackHandleResponseDto
-  > {
+  ): Promise<TransactionCallbackHandleResponseDto> {
     const callbackData = this.readCallbackData(body);
 
     if (callbackData.startsWith('veyra_tx_manage:')) {
-      return this.transactionService.handleManagedTransaction(
+      const response = await this.transactionService.handleManagedTransaction(
         {
           telegramUserId: this.readTelegramUserId(body),
           text: callbackData,
@@ -265,6 +263,8 @@ export class VeyraController {
         },
         this.conversationStateService,
       );
+
+      return this.formatManageCallbackResponse(response, body);
     }
 
     return this.transactionService.handleTransactionCallback({
@@ -278,6 +278,43 @@ export class VeyraController {
         body.messageId ?? this.readCallbackQuery(body)?.message?.message_id,
       ),
     });
+  }
+
+  private formatManageCallbackResponse(
+    response: TransactionManageHandleResponseDto,
+    body: TransactionCallbackDispatchRequestDto,
+  ): TransactionCallbackHandleResponseDto {
+    const transactionId = this.readManageResponseTransactionId(response);
+
+    return {
+      status: response.ok ? 'ok' : 'error',
+      action: 'veyra_tx_manage',
+      ...(transactionId ? { transactionId } : {}),
+      telegram: {
+        method: 'editMessageText',
+        chat_id: this.readChatId(
+          body.chatId ?? this.readCallbackQuery(body)?.message?.chat?.id,
+        ),
+        message_id: this.readPositiveNumber(
+          body.messageId ?? this.readCallbackQuery(body)?.message?.message_id,
+        ),
+        text: response.message,
+        parse_mode: 'HTML',
+        reply_markup: response.reply_markup,
+      },
+    };
+  }
+
+  private readManageResponseTransactionId(
+    response: TransactionManageHandleResponseDto,
+  ): number | undefined {
+    const dataTransaction = this.readRecord(response.data.transaction);
+    const stateData = this.readRecord(response.state.state_data);
+    const before = this.readRecord(stateData.before);
+
+    return this.readPositiveNumber(
+      dataTransaction.id ?? stateData.transaction_id ?? before.id,
+    );
   }
 
   private readCallbackData(body: TransactionCallbackDispatchRequestDto): string {
@@ -326,6 +363,18 @@ export class VeyraController {
       typeof value === 'number' ? value : Number(this.readString(value));
 
     return Number.isSafeInteger(parsed) ? parsed : 0;
+  }
+
+  private readPositiveNumber(value: unknown): number | undefined {
+    const parsed = this.readNumber(value);
+
+    return parsed > 0 ? parsed : undefined;
+  }
+
+  private readRecord(value: unknown): Record<string, unknown> {
+    return value && typeof value === 'object'
+      ? (value as Record<string, unknown>)
+      : {};
   }
 
   @Post('transactions/category-options')
