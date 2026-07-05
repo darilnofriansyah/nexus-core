@@ -2379,6 +2379,40 @@ test('handles confirmed Krom QRIS email with category rule', async () => {
   ]);
 });
 
+test('falls back to emailHtml when emailText is not parseable', async () => {
+  const { calls, service } = createService([
+    [],
+    [{ canonical_name: 'Kopi Tuku Canonical' }],
+    [{ category: 'Food' }],
+    [{ id: 'import-html' }],
+    [{ id: 'tx-email-html' }],
+    [],
+    [],
+  ]);
+
+  const result = await service.handleEmailTransaction({
+    telegramUserId: '976684739',
+    userId: 1,
+    source: 'email',
+    email: {
+      messageId: 'gmail-qris-html',
+      from: 'no-reply@krom.id',
+      subject: 'Transaksi QRIS berhasil',
+      date: '2026-06-22T10:00:00+07:00',
+      emailText: 'Open this email in a client that supports HTML.',
+      emailHtml:
+        '<p>Transaksi QRIS berhasil.</p><p>Merchant: Kopi Tuku</p><p>Jumlah: Rp25.000</p>',
+    },
+  });
+
+  assert.equal(result.status, 'confirmed');
+  assert.equal(result.provider, 'Krom');
+  assert.equal(result.templateKey, 'krom-qris-payment');
+  assert.equal(result.transaction?.id, 'tx-email-html');
+  assert.equal(result.parsed?.merchant, 'Kopi Tuku');
+  assert.deepEqual(calls[2].values, ['1', 'Kopi Tuku Canonical', 'Kopi Tuku']);
+});
+
 test('returns needs_review for BCA known template without category', async () => {
   const { calls, service } = createService([
     [],

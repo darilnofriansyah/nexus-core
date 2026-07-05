@@ -1,0 +1,381 @@
+import { Injectable } from '@nestjs/common';
+import { QueryResultRow } from 'pg';
+import { DatabaseService } from '../../database/database.service';
+
+export interface ConversationalUser {
+  id: string;
+  telegramUserId: string | null;
+  cycleStartDay: number;
+}
+
+export interface AmountCount {
+  total: number;
+  count: number;
+}
+
+export interface BreakdownItem {
+  name: string;
+  amount: number;
+  count: number;
+}
+
+export interface TransactionItem {
+  id: string;
+  amount: number;
+  merchant: string | null;
+  category: string | null;
+  transactionDate: string;
+}
+
+export interface DailyItem {
+  date: string;
+  amount: number;
+  count: number;
+}
+
+export interface CashflowSummary {
+  incomeTotal: number;
+  expenseTotal: number;
+  net: number;
+  incomeCount: number;
+  expenseCount: number;
+}
+
+interface UserRow extends QueryResultRow {
+  id: string | number;
+  telegram_id: string | number | null;
+  cycle_start_day: string | number | null;
+}
+
+interface AmountCountRow extends QueryResultRow {
+  total: string | number | null;
+  count: string | number;
+}
+
+interface BreakdownRow extends QueryResultRow {
+  name: string | null;
+  amount: string | number | null;
+  count: string | number;
+}
+
+interface TransactionRow extends QueryResultRow {
+  id: string | number;
+  amount: string | number;
+  merchant: string | null;
+  category: string | null;
+  transaction_date: string | Date;
+}
+
+interface DailyRow extends QueryResultRow {
+  day: string | Date;
+  amount: string | number | null;
+  count: string | number;
+}
+
+interface CashflowRow extends QueryResultRow {
+  income_total: string | number | null;
+  expense_total: string | number | null;
+  income_count: string | number;
+  expense_count: string | number;
+}
+
+@Injectable()
+export class ConversationalRepository {
+  constructor(private readonly database: DatabaseService) {}
+
+  async findUser(
+    userId: string | null,
+    telegramUserId: string | null,
+  ): Promise<ConversationalUser | null> {
+    const result = await this.database.query<UserRow>(
+      `
+        SELECT id, telegram_id, cycle_start_day
+        FROM telegram_users
+        WHERE ($1::text IS NOT NULL AND id::text = $1::text)
+          OR ($2::text IS NOT NULL AND telegram_id::text = $2::text)
+        ORDER BY CASE WHEN id::text = $1::text THEN 0 ELSE 1 END
+        LIMIT 1
+      `,
+      [userId, telegramUserId],
+    );
+    const row = result.rows[0];
+
+    if (!row) {
+      return null;
+    }
+
+    return {
+      id: String(row.id),
+      telegramUserId: row.telegram_id == null ? null : String(row.telegram_id),
+      cycleStartDay: this.clampCycleStartDay(row.cycle_start_day),
+    };
+  }
+
+  async expenseTotal(
+    userId: string,
+    start: string,
+    end: string,
+  ): Promise<AmountCount> {
+    const result = await this.database.query<AmountCountRow>(
+      `
+        SELECT COALESCE(SUM(amount), 0) AS total, COUNT(*) AS count
+        FROM transactions
+        WHERE user_id::text = $1
+          AND status = 'confirmed'
+          AND transaction_type = 'expense'
+          AND transaction_date >= $2::date
+          AND transaction_date < $3::date
+      `,
+      [userId, start, end],
+    );
+
+    return this.mapAmountCount(result.rows[0]);
+  }
+
+  async categoryTotal(
+    userId: string,
+    category: string,
+    start: string,
+    end: string,
+  ): Promise<AmountCount> {
+    const result = await this.database.query<AmountCountRow>(
+      `
+        SELECT COALESCE(SUM(amount), 0) AS total, COUNT(*) AS count
+        FROM transactions
+        WHERE user_id::text = $1
+          AND status = 'confirmed'
+          AND transaction_type = 'expense'
+          AND transaction_date >= $2::date
+          AND transaction_date < $3::date
+          AND lower(category) = lower($4)
+      `,
+      [userId, start, end, category],
+    );
+
+    return this.mapAmountCount(result.rows[0]);
+  }
+
+  async merchantTotal(
+    userId: string,
+    merchant: string,
+    start: string,
+    end: string,
+  ): Promise<AmountCount> {
+    const result = await this.database.query<AmountCountRow>(
+      `
+        SELECT COALESCE(SUM(amount), 0) AS total, COUNT(*) AS count
+        FROM transactions
+        WHERE user_id::text = $1
+          AND status = 'confirmed'
+          AND transaction_type = 'expense'
+          AND transaction_date >= $2::date
+          AND transaction_date < $3::date
+          AND (
+            merchant_normalized ILIKE '%' || $4 || '%'
+            OR merchant ILIKE '%' || $4 || '%'
+          )
+      `,
+      [userId, start, end, merchant],
+    );
+
+    return this.mapAmountCount(result.rows[0]);
+  }
+
+  async topCategories(
+    userId: string,
+    start: string,
+    end: string,
+    limit: number,
+  ): Promise<BreakdownItem[]> {
+    const result = await this.database.query<BreakdownRow>(
+      `
+        SELECT category AS name, COALESCE(SUM(amount), 0) AS amount, COUNT(*) AS count
+        FROM transactions
+        WHERE user_id::text = $1
+          AND status = 'confirmed'
+          AND transaction_type = 'expense'
+          AND transaction_date >= $2::date
+          AND transaction_date < $3::date
+          AND category IS NOT NULL
+        GROUP BY category
+        ORDER BY amount DESC
+        LIMIT $4
+      `,
+      [userId, start, end, limit],
+    );
+
+    return this.mapBreakdown(result.rows);
+  }
+
+  async topMerchants(
+    userId: string,
+    start: string,
+    end: string,
+    limit: number,
+  ): Promise<BreakdownItem[]> {
+    const result = await this.database.query<BreakdownRow>(
+      `
+        SELECT COALESCE(merchant_normalized, merchant) AS name, COALESCE(SUM(amount), 0) AS amount, COUNT(*) AS count
+        FROM transactions
+        WHERE user_id::text = $1
+          AND status = 'confirmed'
+          AND transaction_type = 'expense'
+          AND transaction_date >= $2::date
+          AND transaction_date < $3::date
+          AND COALESCE(merchant_normalized, merchant) IS NOT NULL
+        GROUP BY COALESCE(merchant_normalized, merchant)
+        ORDER BY amount DESC
+        LIMIT $4
+      `,
+      [userId, start, end, limit],
+    );
+
+    return this.mapBreakdown(result.rows);
+  }
+
+  async largestTransactions(
+    userId: string,
+    start: string,
+    end: string,
+    limit: number,
+  ): Promise<TransactionItem[]> {
+    const result = await this.database.query<TransactionRow>(
+      `
+        SELECT id, amount, merchant, category, transaction_date
+        FROM transactions
+        WHERE user_id::text = $1
+          AND status = 'confirmed'
+          AND transaction_type = 'expense'
+          AND transaction_date >= $2::date
+          AND transaction_date < $3::date
+        ORDER BY amount DESC, transaction_date DESC
+        LIMIT $4
+      `,
+      [userId, start, end, limit],
+    );
+
+    return result.rows.map((row) => this.mapTransaction(row));
+  }
+
+  async recentTransactions(
+    userId: string,
+    start: string,
+    end: string,
+    limit: number,
+  ): Promise<TransactionItem[]> {
+    const result = await this.database.query<TransactionRow>(
+      `
+        SELECT id, amount, merchant, category, transaction_date
+        FROM transactions
+        WHERE user_id::text = $1
+          AND status = 'confirmed'
+          AND transaction_date >= $2::date
+          AND transaction_date < $3::date
+        ORDER BY transaction_date DESC, id DESC
+        LIMIT $4
+      `,
+      [userId, start, end, limit],
+    );
+
+    return result.rows.map((row) => this.mapTransaction(row));
+  }
+
+  async spendingByDay(
+    userId: string,
+    start: string,
+    end: string,
+  ): Promise<DailyItem[]> {
+    const result = await this.database.query<DailyRow>(
+      `
+        SELECT transaction_date::date AS day, COALESCE(SUM(amount), 0) AS amount, COUNT(*) AS count
+        FROM transactions
+        WHERE user_id::text = $1
+          AND status = 'confirmed'
+          AND transaction_type = 'expense'
+          AND transaction_date >= $2::date
+          AND transaction_date < $3::date
+        GROUP BY transaction_date::date
+        ORDER BY transaction_date::date
+      `,
+      [userId, start, end],
+    );
+
+    return result.rows.map((row) => ({
+      date: this.formatDate(row.day),
+      amount: Number(row.amount ?? 0),
+      count: Number(row.count),
+    }));
+  }
+
+  async cashflowSummary(
+    userId: string,
+    start: string,
+    end: string,
+  ): Promise<CashflowSummary> {
+    const result = await this.database.query<CashflowRow>(
+      `
+        SELECT
+          COALESCE(SUM(amount) FILTER (WHERE transaction_type = 'income'), 0) AS income_total,
+          COALESCE(SUM(amount) FILTER (WHERE transaction_type = 'expense'), 0) AS expense_total,
+          COUNT(*) FILTER (WHERE transaction_type = 'income') AS income_count,
+          COUNT(*) FILTER (WHERE transaction_type = 'expense') AS expense_count
+        FROM transactions
+        WHERE user_id::text = $1
+          AND status = 'confirmed'
+          AND transaction_type IN ('income', 'expense')
+          AND transaction_date >= $2::date
+          AND transaction_date < $3::date
+      `,
+      [userId, start, end],
+    );
+    const row = result.rows[0];
+    const incomeTotal = Number(row?.income_total ?? 0);
+    const expenseTotal = Number(row?.expense_total ?? 0);
+
+    return {
+      incomeTotal,
+      expenseTotal,
+      net: incomeTotal - expenseTotal,
+      incomeCount: Number(row?.income_count ?? 0),
+      expenseCount: Number(row?.expense_count ?? 0),
+    };
+  }
+
+  private mapBreakdown(rows: BreakdownRow[]): BreakdownItem[] {
+    return rows.map((row) => ({
+      name: row.name ?? 'Uncategorized',
+      amount: Number(row.amount ?? 0),
+      count: Number(row.count),
+    }));
+  }
+
+  private mapAmountCount(row: AmountCountRow | undefined): AmountCount {
+    return {
+      total: Number(row?.total ?? 0),
+      count: Number(row?.count ?? 0),
+    };
+  }
+
+  private mapTransaction(row: TransactionRow): TransactionItem {
+    return {
+      id: String(row.id),
+      amount: Number(row.amount),
+      merchant: row.merchant,
+      category: row.category,
+      transactionDate: this.formatDate(row.transaction_date),
+    };
+  }
+
+  private formatDate(value: Date | string): string {
+    return value instanceof Date
+      ? value.toISOString().slice(0, 10)
+      : value.slice(0, 10);
+  }
+
+  private clampCycleStartDay(value: string | number | null): number {
+    const day = Number(value ?? 1);
+    return Number.isFinite(day)
+      ? Math.min(Math.max(Math.trunc(day), 1), 31)
+      : 1;
+  }
+}

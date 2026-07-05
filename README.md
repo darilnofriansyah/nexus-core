@@ -977,7 +977,7 @@ Delete is a soft delete: Core API updates `transactions.status = 'rejected'` and
 
 Handles one Gmail-sourced transaction notification with deterministic bank email parsers. This endpoint parses only the supported Phase 1 templates: BCA credit-card transaction notifications, Mandiri e-money top-ups, Krom incoming transfers, Krom QRIS payments, and Krom outgoing transfers. It does not call an LLM, does not execute DB-driven parser templates, and does not auto-save unknown BCA, Mandiri, or Krom templates.
 
-The handler deduplicates Gmail messages through `transaction_imports` using `source = "email"` and `source_reference = email.messageId`. Parse outcomes are logged to `email_parse_attempts` with a trimmed `body_sample`, not the full email body. The table definitions are in `docs/migration/2026-06-23-email-transaction-imports.sql` and should be applied separately.
+The handler deduplicates Gmail messages through `transaction_imports` using `source = "email"` and `source_reference = email.messageId`. It parses `emailText` first, then falls back to `emailHtml` converted with `html-to-text` when the text body is not parseable. Parse outcomes are logged to `email_parse_attempts` with a trimmed `body_sample`, not the full email body. The table definitions are in `docs/migration/2026-06-23-email-transaction-imports.sql` and should be applied separately.
 
 Confirmed saves insert into `transactions` with `source = "email"` and `status = "confirmed"` only when the parser returns a valid transaction, amount is positive, merchant is known or an allowed fallback, and category resolves from `category_rules` or an allowed existing fallback budget category. If category cannot be resolved, Core API returns `needs_review` instead of inserting a confirmed transaction.
 
@@ -995,7 +995,7 @@ Example n8n HTTP Request body:
     "subject": "Email subject",
     "date": "2026-06-22T10:00:00+07:00",
     "emailText": "plain text body",
-    "emailHtml": "optional"
+    "emailHtml": "<p>optional fallback HTML body</p>"
   }
 }
 ```
@@ -1543,6 +1543,122 @@ top_categories, top_merchants, largest_transactions, recent_transactions
 daily_average_spending, most_frequent_merchant, spending_by_day, weekday_analysis
 transaction_count, subscription_summary, spending_trend, cashflow_summary
 help, greeting, unknown
+```
+
+### `POST /api/veyra/conversational/handle`
+
+Handles structured analytics results from the n8n Master Intent Classifier. Core API resolves the user, resolves the period from `telegram_users.cycle_start_day`, queries PostgreSQL, calculates deterministic facts, and returns either a Telegram-ready message or an `insight_payload` for n8n's Insight LLM. Core API does not call any LLM.
+
+Example n8n HTTP Request body:
+
+```json
+{
+  "telegramUserId": "976684739",
+  "userId": 1,
+  "text": "how my spending looked like this week?",
+  "timezone": "Asia/Jakarta",
+  "statePayload": {},
+  "llmResult": {
+    "intent": "spending_summary",
+    "period": "this_week",
+    "comparisonPeriod": null,
+    "merchant": null,
+    "category": null,
+    "limit": null,
+    "target": null,
+    "needs_insight": false,
+    "confidence": 0.91
+  }
+}
+```
+
+Response shape:
+
+```json
+{
+  "ok": true,
+  "status": "ok",
+  "intent": "spending_summary",
+  "message": {
+    "text": "Spending: <b>Rp1.250.000</b> from 8 transactions.",
+    "parse_mode": "HTML",
+    "disable_web_page_preview": true,
+    "reply_markup": null
+  },
+  "data": {},
+  "insight_payload": null
+}
+```
+
+Supported MVP intents: `spending_summary`, `category_spending`, `merchant_spending`, `top_merchants`, `top_categories`, `largest_transactions`, `recent_transactions`, `transaction_count`, `spending_by_day`, `daily_average_spending`, `spending_trend`, `cashflow_summary`.
+
+Unsupported for now returns `status: "unsupported_intent"`: `subscription_summary`, `subscription_detail`, `spending_comparison`, `merchant_comparison`, `category_comparison`, `weekday_analysis`, `most_frequent_merchant`, `unknown`.
+
+When `status` is `needs_insight`, n8n should send `insight_payload` to the Insight LLM, then send the LLM result through Telegram Reliable Sender. Otherwise send `message` directly. Keep Telegram trigger, Master Intent Classifier LLM, optional Insight LLM, reliable Telegram sender, and workflow orchestration in n8n.
+
+Insight LLM prompt:
+
+```txt
+You are Veyra, a strict personal finance assistant.
+
+Create a short spending insight from the facts below.
+Use only the provided facts. Do not invent transactions, merchants, or categories.
+
+Rules:
+
+* Max 3 bullets.
+* Mention whether spending is improving, worsening, stable, concentrated, or unusual.
+* Be direct and slightly strict.
+* Use Indonesian Rupiah formatting.
+* No markdown table.
+* Return Telegram-safe HTML only.
+
+Facts:
+{{ JSON.stringify($json.insight_payload) }}
+```
+
+Curl examples:
+
+```bash
+curl -X POST "$CORE_API_URL/api/veyra/conversational/handle" \
+  -H "content-type: application/json" \
+  -H "x-core-api-key: $CORE_API_KEY" \
+  -d '{"telegramUserId":"976684739","text":"how my spending looked like this week?","timezone":"Asia/Jakarta","llmResult":{"intent":"spending_summary","period":"this_week","needs_insight":false}}'
+
+curl -X POST "$CORE_API_URL/api/veyra/conversational/handle" \
+  -H "content-type: application/json" \
+  -H "x-core-api-key: $CORE_API_KEY" \
+  -d '{"telegramUserId":"976684739","timezone":"Asia/Jakarta","llmResult":{"intent":"top_categories","period":"current_cycle","limit":5,"needs_insight":false}}'
+
+curl -X POST "$CORE_API_URL/api/veyra/conversational/handle" \
+  -H "content-type: application/json" \
+  -H "x-core-api-key: $CORE_API_KEY" \
+  -d '{"telegramUserId":"976684739","text":"how is my spending trend now?","timezone":"Asia/Jakarta","llmResult":{"intent":"spending_trend","period":"current_cycle","comparisonPeriod":"previous_cycle","needs_insight":true}}'
+
+curl -X POST "$CORE_API_URL/api/veyra/conversational/handle" \
+  -H "content-type: application/json" \
+  -H "x-core-api-key: $CORE_API_KEY" \
+  -d '{"telegramUserId":"976684739","timezone":"Asia/Jakarta","llmResult":{"intent":"daily_average_spending","period":"current_cycle"}}'
+
+curl -X POST "$CORE_API_URL/api/veyra/conversational/handle" \
+  -H "content-type: application/json" \
+  -H "x-core-api-key: $CORE_API_KEY" \
+  -d '{"telegramUserId":"976684739","timezone":"Asia/Jakarta","llmResult":{"intent":"cashflow_summary","period":"current_cycle"}}'
+
+curl -X POST "$CORE_API_URL/api/veyra/conversational/handle" \
+  -H "content-type: application/json" \
+  -H "x-core-api-key: $CORE_API_KEY" \
+  -d '{"telegramUserId":"976684739","llmResult":{"intent":"category_spending","period":"current_cycle","category":"Food","needs_insight":true}}'
+
+curl -X POST "$CORE_API_URL/api/veyra/conversational/handle" \
+  -H "content-type: application/json" \
+  -H "x-core-api-key: $CORE_API_KEY" \
+  -d '{"telegramUserId":"976684739","llmResult":{"intent":"category_spending","period":"current_cycle"}}'
+
+curl -X POST "$CORE_API_URL/api/veyra/conversational/handle" \
+  -H "content-type: application/json" \
+  -H "x-core-api-key: $CORE_API_KEY" \
+  -d '{"telegramUserId":"976684739","llmResult":{"intent":"subscription_summary","period":"current_cycle"}}'
 ```
 
 ### `POST /api/veyra/transactions/category-options`

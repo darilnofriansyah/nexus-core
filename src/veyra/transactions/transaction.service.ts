@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
+import { convert } from 'html-to-text';
 import { QueryResultRow } from 'pg';
 import { DatabaseService } from '../../database/database.service';
 import {
@@ -170,6 +171,12 @@ interface ValidatedEmailReview {
     category: string;
     confidence: number;
   };
+}
+
+interface EmailParseAttempt {
+  parser: EmailTransactionParser;
+  parsed?: ParsedEmailTransactionDto;
+  reason?: string;
 }
 
 interface TransactionHandleStateStore {
@@ -480,9 +487,11 @@ export class TransactionService {
       });
     }
 
-    const parserInput = this.buildEmailParserInput(validated);
-    const parser = this.findEmailParser(parserInput);
-    const provider = parser?.provider ?? this.detectEmailProvider(parserInput);
+    const parserInputs = this.buildEmailParserInputs(validated);
+    const parsedAttempt = this.parseEmail(parserInputs);
+    const parser = parsedAttempt?.parser;
+    const provider =
+      parser?.provider ?? this.detectEmailProviderFromInputs(parserInputs);
 
     if (!provider) {
       return this.recordUnconfirmedEmailAttempt({
@@ -495,7 +504,7 @@ export class TransactionService {
       });
     }
 
-    if (!parser) {
+    if (!parser || !parsedAttempt) {
       return this.recordUnconfirmedEmailAttempt({
         request: validated,
         status: 'unsupported_template',
@@ -506,17 +515,15 @@ export class TransactionService {
       });
     }
 
-    let parsed: ParsedEmailTransactionDto;
+    const parsed = parsedAttempt.parsed;
 
-    try {
-      parsed = parser.parse(parserInput);
-    } catch (error) {
+    if (!parsed) {
       return this.recordUnconfirmedEmailAttempt({
         request: validated,
         status: 'parse_failed',
         provider: parser.provider,
         templateKey: parser.templateKey,
-        reason: error instanceof Error ? error.message : 'email parse failed',
+        reason: parsedAttempt.reason ?? 'email parse failed',
         parsed: undefined,
       });
     }
@@ -530,8 +537,8 @@ export class TransactionService {
           parsedValidationReason === 'email is not a transaction'
             ? 'ignored_non_transaction'
             : 'parse_failed',
-        provider: parsed.provider,
-        templateKey: parsed.templateKey,
+        provider: parsed?.provider ?? parser.provider,
+        templateKey: parsed?.templateKey ?? parser.templateKey,
         reason: parsedValidationReason,
         parsed,
       });
@@ -1733,6 +1740,7 @@ export class TransactionService {
     const from = this.cleanString(email.from);
     const subject = this.cleanString(email.subject);
     const emailText = this.cleanString(email.emailText);
+    const emailHtml = this.cleanString(email.emailHtml);
 
     if (!messageId) {
       throw new BadRequestException('email.messageId is required');
@@ -1746,8 +1754,10 @@ export class TransactionService {
       throw new BadRequestException('email.subject is required');
     }
 
-    if (!emailText) {
-      throw new BadRequestException('email.emailText is required');
+    if (!emailText && !emailHtml) {
+      throw new BadRequestException(
+        'email.emailText or email.emailHtml is required',
+      );
     }
 
     if (email.date && Number.isNaN(new Date(email.date).getTime())) {
@@ -1764,22 +1774,74 @@ export class TransactionService {
         from,
         subject,
         date: this.cleanString(email.date),
-        emailText,
-        emailHtml: this.cleanString(email.emailHtml),
+        emailText: emailText ?? '',
+        emailHtml,
       },
     };
   }
 
+  private buildEmailParserInputs(
+    request: EmailTransactionHandleRequestDto,
+  ): EmailParserInput[] {
+    const inputs = [
+      this.buildEmailParserInput(request, request.email.emailText),
+    ];
+    const htmlText = request.email.emailHtml
+      ? convert(request.email.emailHtml, { wordwrap: false })
+      : '';
+
+    if (
+      htmlText &&
+      normalizeEmailWhitespace(htmlText) !==
+        normalizeEmailWhitespace(request.email.emailText)
+    ) {
+      inputs.push(this.buildEmailParserInput(request, htmlText));
+    }
+
+    return inputs.filter((input) => input.normalizedText);
+  }
+
   private buildEmailParserInput(
     request: EmailTransactionHandleRequestDto,
+    text: string,
   ): EmailParserInput {
-    const text = request.email.emailText;
-
     return {
       email: request.email,
       text,
       normalizedText: normalizeEmailWhitespace(text),
     };
+  }
+
+  private parseEmail(
+    inputs: EmailParserInput[],
+  ): EmailParseAttempt | undefined {
+    let failedAttempt: EmailParseAttempt | undefined;
+
+    for (const input of inputs) {
+      const parser = this.findEmailParser(input);
+
+      if (!parser) {
+        continue;
+      }
+
+      try {
+        const parsed = parser.parse(input);
+        const reason = this.emailParsedValidationReason(parsed);
+
+        if (!reason) {
+          return { parser, parsed };
+        }
+
+        failedAttempt = { parser, parsed, reason };
+      } catch (error) {
+        failedAttempt = {
+          parser,
+          reason: error instanceof Error ? error.message : 'email parse failed',
+        };
+      }
+    }
+
+    return failedAttempt;
   }
 
   private findEmailParser(
@@ -1801,6 +1863,20 @@ export class TransactionService {
 
     if (/\bkrom\b/i.test(combined)) {
       return 'Krom';
+    }
+
+    return null;
+  }
+
+  private detectEmailProviderFromInputs(
+    inputs: EmailParserInput[],
+  ): string | null {
+    for (const input of inputs) {
+      const provider = this.detectEmailProvider(input);
+
+      if (provider) {
+        return provider;
+      }
     }
 
     return null;
