@@ -8,7 +8,6 @@ import {
 } from './dto/message-route.dto';
 import {
   VeyraMessageRouteRepository,
-  VeyraMessageRouteState,
   VeyraMessageRouteUser,
 } from './message-route.repository';
 
