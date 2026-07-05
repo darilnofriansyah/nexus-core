@@ -1,0 +1,4 @@
+Transaksi QRIS berhasil.
+Merchant: Kopi Tuku
+Jumlah: Rp25.000
+Tanggal 2026-06-25 09:30

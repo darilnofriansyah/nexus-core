@@ -1,0 +1,5 @@
+Notifikasi Transaksi Kartu Kredit BCA
+Merchant / ATM : TOKO BUKU
+Jenis Transaksi : E-COMMERCE
+Pada Tanggal : 25-06-2026 00:05
+Sejumlah : Rp123.456,00

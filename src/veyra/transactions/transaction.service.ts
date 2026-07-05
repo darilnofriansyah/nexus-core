@@ -59,9 +59,12 @@ import {
   ParsedEmailTransactionDto,
 } from './dto/email-transaction.dto';
 import {
+  EmailTemplateDetection,
   EmailParserInput,
   EmailTransactionParser,
   buildEmailParserRegistry,
+  detectEmailProviderAndTemplate,
+  normalizeEmailBody,
   normalizeEmailWhitespace,
 } from './email-parsers';
 
@@ -175,6 +178,8 @@ interface ValidatedEmailReview {
 
 interface EmailParseAttempt {
   parser: EmailTransactionParser;
+  input: EmailParserInput;
+  detection: EmailTemplateDetection;
   parsed?: ParsedEmailTransactionDto;
   reason?: string;
 }
@@ -490,10 +495,12 @@ export class TransactionService {
     const parserInputs = this.buildEmailParserInputs(validated);
     const parsedAttempt = this.parseEmail(parserInputs);
     const parser = parsedAttempt?.parser;
-    const provider =
-      parser?.provider ?? this.detectEmailProviderFromInputs(parserInputs);
+    const detection =
+      parsedAttempt?.detection ??
+      this.detectEmailProviderFromInputs(parserInputs);
+    const provider = parser?.provider ?? detection.provider;
 
-    if (!provider) {
+    if (provider === 'unknown') {
       return this.recordUnconfirmedEmailAttempt({
         request: validated,
         status: 'unsupported_provider',
@@ -501,6 +508,7 @@ export class TransactionService {
         templateKey: null,
         reason: 'email sender or body is not a supported provider',
         parsed: undefined,
+        detection,
       });
     }
 
@@ -512,6 +520,7 @@ export class TransactionService {
         templateKey: null,
         reason: `${provider} email template is not supported`,
         parsed: undefined,
+        detection,
       });
     }
 
@@ -525,6 +534,7 @@ export class TransactionService {
         templateKey: parser.templateKey,
         reason: parsedAttempt.reason ?? 'email parse failed',
         parsed: undefined,
+        detection,
       });
     }
 
@@ -541,6 +551,7 @@ export class TransactionService {
         templateKey: parsed?.templateKey ?? parser.templateKey,
         reason: parsedValidationReason,
         parsed,
+        detection,
       });
     }
 
@@ -554,6 +565,7 @@ export class TransactionService {
         templateKey: parsed.templateKey,
         reason: 'merchant could not be resolved',
         parsed,
+        detection,
       });
     }
 
@@ -567,6 +579,7 @@ export class TransactionService {
         templateKey: parsed.templateKey,
         reason: 'merchant alias could not be resolved',
         parsed,
+        detection,
       });
     }
 
@@ -586,6 +599,7 @@ export class TransactionService {
         templateKey: parsed.templateKey,
         reason: 'category could not be resolved',
         parsed,
+        detection,
       });
     }
 
@@ -1784,18 +1798,37 @@ export class TransactionService {
     request: EmailTransactionHandleRequestDto,
   ): EmailParserInput[] {
     const inputs = [
-      this.buildEmailParserInput(request, request.email.emailText),
+      this.buildEmailParserInput(request, request.email.emailText, 'text', []),
     ];
-    const htmlText = request.email.emailHtml
-      ? convert(request.email.emailHtml, { wordwrap: false })
-      : '';
+    const normalizedBody = normalizeEmailBody({
+      emailText: request.email.emailText,
+      emailHtml: request.email.emailHtml,
+      htmlToText: (html) => convert(html, { wordwrap: false }),
+    });
 
     if (
-      htmlText &&
-      normalizeEmailWhitespace(htmlText) !==
-        normalizeEmailWhitespace(request.email.emailText)
+      normalizedBody.source === 'html' &&
+      normalizedBody.text !== normalizeEmailWhitespace(request.email.emailText)
     ) {
-      inputs.push(this.buildEmailParserInput(request, htmlText));
+      inputs.push(
+        this.buildEmailParserInput(
+          request,
+          normalizedBody.text,
+          normalizedBody.source,
+          normalizedBody.warnings,
+        ),
+      );
+    } else if (request.email.emailHtml) {
+      const htmlText = normalizeEmailWhitespace(
+        convert(request.email.emailHtml, { wordwrap: false }),
+      );
+
+      if (
+        htmlText &&
+        htmlText !== normalizeEmailWhitespace(request.email.emailText)
+      ) {
+        inputs.push(this.buildEmailParserInput(request, htmlText, 'html', []));
+      }
     }
 
     return inputs.filter((input) => input.normalizedText);
@@ -1804,11 +1837,15 @@ export class TransactionService {
   private buildEmailParserInput(
     request: EmailTransactionHandleRequestDto,
     text: string,
+    bodySource: EmailParserInput['bodySource'],
+    bodyWarnings: string[],
   ): EmailParserInput {
     return {
       email: request.email,
       text,
       normalizedText: normalizeEmailWhitespace(text),
+      bodySource,
+      bodyWarnings,
     };
   }
 
@@ -1819,6 +1856,11 @@ export class TransactionService {
 
     for (const input of inputs) {
       const parser = this.findEmailParser(input);
+      const detection = detectEmailProviderAndTemplate({
+        from: input.email.from,
+        subject: input.email.subject,
+        normalizedText: input.normalizedText,
+      });
 
       if (!parser) {
         continue;
@@ -1829,13 +1871,15 @@ export class TransactionService {
         const reason = this.emailParsedValidationReason(parsed);
 
         if (!reason) {
-          return { parser, parsed };
+          return { parser, input, detection, parsed };
         }
 
-        failedAttempt = { parser, parsed, reason };
+        failedAttempt = { parser, input, detection, parsed, reason };
       } catch (error) {
         failedAttempt = {
           parser,
+          input,
+          detection,
           reason: error instanceof Error ? error.message : 'email parse failed',
         };
       }
@@ -1850,36 +1894,27 @@ export class TransactionService {
     return this.emailParsers.find((parser) => parser.canParse(input));
   }
 
-  private detectEmailProvider(input: EmailParserInput): string | null {
-    const combined = `${input.email.from} ${input.email.subject} ${input.normalizedText}`;
-
-    if (/\bbca\b|klikbca|bank central asia/i.test(combined)) {
-      return 'BCA';
-    }
-
-    if (/\bmandiri\b/i.test(combined)) {
-      return 'Mandiri';
-    }
-
-    if (/\bkrom\b/i.test(combined)) {
-      return 'Krom';
-    }
-
-    return null;
-  }
-
   private detectEmailProviderFromInputs(
     inputs: EmailParserInput[],
-  ): string | null {
+  ): EmailTemplateDetection {
     for (const input of inputs) {
-      const provider = this.detectEmailProvider(input);
+      const detection = detectEmailProviderAndTemplate({
+        from: input.email.from,
+        subject: input.email.subject,
+        normalizedText: input.normalizedText,
+      });
 
-      if (provider) {
-        return provider;
+      if (detection.provider !== 'unknown') {
+        return detection;
       }
     }
 
-    return null;
+    return {
+      provider: 'unknown',
+      templateKey: null,
+      confidence: 0,
+      matchedSignals: [],
+    };
   }
 
   private emailParsedValidationReason(
@@ -1933,6 +1968,7 @@ export class TransactionService {
     templateKey: string | null;
     reason: string;
     parsed: ParsedEmailTransactionDto | undefined;
+    detection: EmailTemplateDetection;
   }): Promise<EmailTransactionHandleResponseDto> {
     const inserted = await this.createTransactionImport({
       userId: input.request.userId,
@@ -1958,6 +1994,7 @@ export class TransactionService {
       templateKey: input.templateKey,
       parsed: input.parsed,
       errorReason: input.reason,
+      detection: input.detection,
     });
 
     return this.buildEmailResponse({
@@ -2024,6 +2061,7 @@ export class TransactionService {
     templateKey: string | null;
     parsed: ParsedEmailTransactionDto | undefined;
     errorReason: string | null;
+    detection: EmailTemplateDetection;
   }): Promise<void> {
     await this.database.query(
       `
@@ -2061,15 +2099,73 @@ export class TransactionService {
         input.request.email.from,
         input.request.email.subject,
         input.request.email.date ?? null,
-        input.parsed ?? null,
+        this.buildEmailParsedPayload(input.parsed, {
+          bodySource: this.detectBodySource(input.parsed),
+          provider: input.detection.provider,
+          templateKey: input.detection.templateKey,
+          matchedSignals: input.detection.matchedSignals,
+          reason: input.errorReason,
+        }),
         input.errorReason,
-        this.safeEmailBodySample(input.request.email.emailText),
+        this.safeEmailBodySample(input.request),
       ],
     );
   }
 
-  private safeEmailBodySample(value: string): string {
-    return normalizeEmailWhitespace(value).slice(0, 1000);
+  private safeEmailBodySample(
+    request: EmailTransactionHandleRequestDto,
+  ): string {
+    const body = normalizeEmailBody({
+      emailText: request.email.emailText,
+      emailHtml: request.email.emailHtml,
+      htmlToText: (html) => convert(html, { wordwrap: false }),
+    });
+
+    return body.text.slice(0, 1000);
+  }
+
+  private buildEmailParsedPayload(
+    parsed: ParsedEmailTransactionDto | undefined,
+    diagnostics: {
+      bodySource: string | null;
+      provider: string | null;
+      templateKey: string | null;
+      matchedSignals: string[];
+      reason: string | null;
+    },
+  ): Record<string, unknown> {
+    const missingFields: string[] = [];
+
+    if (!parsed?.amount) {
+      missingFields.push('amount');
+    }
+
+    if (!parsed?.merchant) {
+      missingFields.push('merchant');
+    }
+
+    if (!parsed?.transactionDate) {
+      missingFields.push('transactionDate');
+    }
+
+    return {
+      parsed: parsed ?? null,
+      diagnostics: {
+        ...diagnostics,
+        missingFields,
+        amountMatched: Boolean(parsed?.amount),
+        dateMatched: Boolean(parsed?.transactionDate),
+        merchantMatched: Boolean(parsed?.merchant),
+      },
+    };
+  }
+
+  private detectBodySource(
+    parsed: ParsedEmailTransactionDto | undefined,
+  ): string | null {
+    const bodySource = parsed?.raw.bodySource;
+
+    return typeof bodySource === 'string' ? bodySource : null;
   }
 
   private buildEmailRawPayload(
@@ -2089,6 +2185,7 @@ export class TransactionService {
             provider: parsed.provider,
             templateKey: parsed.templateKey,
             confidence: parsed.confidence,
+            warnings: parsed.warnings,
           }
         : null,
       parsed: parsed ?? null,
@@ -2283,8 +2380,20 @@ export class TransactionService {
           input.request.email.from,
           input.request.email.subject,
           input.request.email.date ?? null,
-          input.parsed,
-          this.safeEmailBodySample(input.request.email.emailText),
+          this.buildEmailParsedPayload(input.parsed, {
+            bodySource: this.detectBodySource(input.parsed),
+            provider: input.parsed.provider,
+            templateKey: input.parsed.templateKey,
+            matchedSignals: detectEmailProviderAndTemplate({
+              from: input.request.email.from,
+              subject: input.request.email.subject,
+              normalizedText: normalizeEmailWhitespace(
+                input.request.email.emailText,
+              ),
+            }).matchedSignals,
+            reason: null,
+          }),
+          this.safeEmailBodySample(input.request),
         ],
       );
 

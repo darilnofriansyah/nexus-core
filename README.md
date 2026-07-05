@@ -977,7 +977,7 @@ Delete is a soft delete: Core API updates `transactions.status = 'rejected'` and
 
 Handles one Gmail-sourced transaction notification with deterministic bank email parsers. This endpoint parses only the supported Phase 1 templates: BCA credit-card transaction notifications, Mandiri e-money top-ups, Krom incoming transfers, Krom QRIS payments, and Krom outgoing transfers. It does not call an LLM, does not execute DB-driven parser templates, and does not auto-save unknown BCA, Mandiri, or Krom templates.
 
-The handler deduplicates Gmail messages through `transaction_imports` using `source = "email"` and `source_reference = email.messageId`. It parses `emailText` first, then falls back to `emailHtml` converted with `html-to-text` when the text body is not parseable. Parse outcomes are logged to `email_parse_attempts` with a trimmed `body_sample`, not the full email body. The table definitions are in `docs/migration/2026-06-23-email-transaction-imports.sql` and should be applied separately.
+The handler deduplicates Gmail messages through `transaction_imports` using `source = "email"` and `source_reference = email.messageId`. It normalizes the email body, parses `emailText` first, then falls back to `emailHtml` converted with `html-to-text` when the text body is missing, too short, or not parseable. Provider/template detection runs before extraction, so known providers with unknown templates still return `unsupported_template`. Parse outcomes are logged to `email_parse_attempts` with structured diagnostics and a trimmed `body_sample`, not the full email body. The table definitions are in `docs/migration/2026-06-23-email-transaction-imports.sql` and should be applied separately.
 
 Confirmed saves insert into `transactions` with `source = "email"` and `status = "confirmed"` only when the parser returns a valid transaction, amount is positive, merchant is known or an allowed fallback, and category resolves from `category_rules` or an allowed existing fallback budget category. If category cannot be resolved, Core API returns `needs_review` instead of inserting a confirmed transaction.
 
@@ -1022,10 +1022,12 @@ Example confirmed response:
     "confidence": 97
   },
   "parsed": {
+    "ok": true,
     "provider": "Krom",
     "templateKey": "krom-qris-payment",
     "emailId": "gmail-message-id",
     "merchant": "Kopi Tuku",
+    "merchantNormalized": null,
     "amount": 25000,
     "transactionDate": "2026-06-22T10:00:00+07:00",
     "bank": "Krom",
@@ -1033,7 +1035,10 @@ Example confirmed response:
     "type": "expense",
     "confidence": 97,
     "isTransaction": true,
-    "raw": {}
+    "raw": {
+      "bodySource": "text"
+    },
+    "warnings": []
   },
   "telegram": {
     "text": "<b>Transaction recorded</b>\n\nAmount: Rp25.000\nMerchant: Kopi Tuku\nCategory: Food\nSource: Krom",

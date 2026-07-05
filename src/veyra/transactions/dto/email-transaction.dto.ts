@@ -53,10 +53,12 @@ export interface EmailTransactionResolveReviewRequestDto {
 }
 
 export interface ParsedEmailTransactionDto {
+  ok: true;
   provider: string;
   templateKey: string;
   emailId: string;
   merchant: string | null;
+  merchantNormalized: string | null;
   amount: number | null;
   transactionDate: string | null;
   bank: string;
@@ -65,6 +67,7 @@ export interface ParsedEmailTransactionDto {
   confidence: number;
   isTransaction: boolean;
   raw: Record<string, unknown>;
+  warnings: string[];
 }
 
 export interface EmailTransactionResponseTransactionDto {
