@@ -74,6 +74,7 @@ const SUPPORTED_INTENTS: readonly VeyraIntent[] = [
   'subscription_summary',
   'spending_trend',
   'cashflow_summary',
+  'burn_rate_forecast',
   'help',
   'greeting',
   'unknown',
@@ -276,6 +277,14 @@ export class IntentsService {
 
     if (/\bcash\s*flow\b|\bcashflow\b|\bincome vs expense\b/.test(text)) {
       return 'cashflow_summary';
+    }
+
+    if (
+      /\bburn rate\b|\bspending too fast\b|\bexceed (?:my )?budget\b|\bsafely spend per day\b|\bbudget run out\b|\bforecast my spending\b|\bproject my spending\b/.test(
+        text,
+      )
+    ) {
+      return 'burn_rate_forecast';
     }
 
     if (/\b(compare|comparison|vs|versus)\b.*\bmerchant/.test(text)) {

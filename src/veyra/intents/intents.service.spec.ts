@@ -82,12 +82,33 @@ test('classifies conversation control from active state', () => {
 });
 
 test('classifies additional analytics production intents', () => {
-  assert.equal(classify('daily average spending this month').intent, 'daily_average_spending');
-  assert.equal(classify('most frequent merchant').intent, 'most_frequent_merchant');
-  assert.equal(classify('spending by day last month').intent, 'spending_by_day');
+  assert.equal(
+    classify('daily average spending this month').intent,
+    'daily_average_spending',
+  );
+  assert.equal(
+    classify('most frequent merchant').intent,
+    'most_frequent_merchant',
+  );
+  assert.equal(
+    classify('spending by day last month').intent,
+    'spending_by_day',
+  );
   assert.equal(classify('weekday analysis').intent, 'weekday_analysis');
-  assert.equal(classify('compare merchant spending').intent, 'merchant_comparison');
-  assert.equal(classify('compare category spending').intent, 'category_comparison');
+  assert.equal(
+    classify('compare merchant spending').intent,
+    'merchant_comparison',
+  );
+  assert.equal(
+    classify('compare category spending').intent,
+    'category_comparison',
+  );
+  assert.equal(classify('what is my burn rate?').intent, 'burn_rate_forecast');
+  assert.equal(
+    classify('will my food budget run out?').intent,
+    'burn_rate_forecast',
+  );
+  assert.equal(classify('will my food budget run out?').category, 'Food');
 });
 
 test('returns structured unknown result for unsupported text', () => {

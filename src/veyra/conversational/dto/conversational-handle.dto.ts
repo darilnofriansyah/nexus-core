@@ -11,6 +11,7 @@ export type ConversationalIntent =
   | 'daily_average_spending'
   | 'spending_trend'
   | 'cashflow_summary'
+  | 'burn_rate_forecast'
   | 'subscription_summary'
   | 'subscription_detail'
   | 'spending_comparison'
@@ -38,6 +39,7 @@ export type ConversationalStatus =
   | 'unsupported_intent'
   | 'user_not_found'
   | 'needs_insight'
+  | 'success'
   | 'error';
 
 export interface ConversationalLlmResultDto {

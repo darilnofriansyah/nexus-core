@@ -41,6 +41,11 @@ export interface CashflowSummary {
   expenseCount: number;
 }
 
+export interface BudgetItem {
+  category: string;
+  amount: number;
+}
+
 interface UserRow extends QueryResultRow {
   id: string | number;
   telegram_id: string | number | null;
@@ -77,6 +82,11 @@ interface CashflowRow extends QueryResultRow {
   expense_total: string | number | null;
   income_count: string | number;
   expense_count: string | number;
+}
+
+interface BudgetRow extends QueryResultRow {
+  category: string;
+  amount: string | number;
 }
 
 @Injectable()
@@ -339,6 +349,29 @@ export class ConversationalRepository {
       incomeCount: Number(row?.income_count ?? 0),
       expenseCount: Number(row?.expense_count ?? 0),
     };
+  }
+
+  async activeBudgets(
+    userId: string,
+    category: string | null = null,
+  ): Promise<BudgetItem[]> {
+    const result = await this.database.query<BudgetRow>(
+      `
+        SELECT category, amount
+        FROM budgets
+        WHERE user_id::text = $1
+          AND is_active = true
+          AND amount IS NOT NULL
+          AND (($2::text IS NULL AND parent_budget_id IS NULL) OR lower(category) = lower($2))
+        ORDER BY category
+      `,
+      [userId, category],
+    );
+
+    return result.rows.map((row) => ({
+      category: row.category,
+      amount: Number(row.amount),
+    }));
   }
 
   private mapBreakdown(rows: BreakdownRow[]): BreakdownItem[] {

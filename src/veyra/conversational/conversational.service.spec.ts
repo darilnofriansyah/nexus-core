@@ -1,8 +1,9 @@
 import * as assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { mock, test } from 'node:test';
 import {
   AmountCount,
   BreakdownItem,
+  BudgetItem,
   CashflowSummary,
   ConversationalRepository,
   ConversationalUser,
@@ -34,6 +35,10 @@ class FakeRepository {
     },
   ];
   days: DailyItem[] = [{ date: '2026-07-01', amount: 50000, count: 1 }];
+  budgets: BudgetItem[] = [];
+  categoryTotals = new Map<string, AmountCount>([
+    ['food', { total: 400000, count: 10 }],
+  ]);
   cashflow: CashflowSummary = {
     incomeTotal: 200000,
     expenseTotal: 50000,
@@ -51,8 +56,16 @@ class FakeRepository {
     return this.expenseTotals.shift() ?? { total: 0, count: 0 };
   }
 
-  async categoryTotal() {
-    return { total: 75000, count: 3 };
+  async categoryTotal(
+    _userId?: string,
+    category?: string,
+  ): Promise<AmountCount> {
+    return (
+      this.categoryTotals.get(String(category).toLowerCase()) ?? {
+        total: 75000,
+        count: 3,
+      }
+    );
   }
 
   async merchantTotal() {
@@ -81,6 +94,17 @@ class FakeRepository {
 
   async cashflowSummary() {
     return this.cashflow;
+  }
+
+  async activeBudgets(
+    _userId?: string,
+    category?: string | null,
+  ): Promise<BudgetItem[]> {
+    return category
+      ? this.budgets.filter(
+          (budget) => budget.category.toLowerCase() === category.toLowerCase(),
+        )
+      : this.budgets;
   }
 }
 
@@ -113,6 +137,151 @@ test('resolves current_cycle and previous_cycle from cycle_start_day', () => {
       end: '2026-06-25',
     },
   );
+});
+
+test('burn_rate_forecast calculates current cycle from cycle_start_day', async () => {
+  mock.timers.enable({
+    apis: ['Date'],
+    now: new Date('2026-07-05T02:00:00.000Z'),
+  });
+  try {
+    const { repo, service } = createService();
+    repo.expenseTotals = [{ total: 2500000, count: 10 }];
+
+    const result = await service.handle({
+      userId: 1,
+      timezone: 'Asia/Jakarta',
+      llmResult: { intent: 'burn_rate_forecast', period: 'this_month' },
+    });
+
+    assert.equal(result.status, 'success');
+    assert.equal(result.data.cycleStart, '2026-06-25');
+    assert.equal(result.data.cycleEnd, '2026-07-25');
+    assert.equal(result.data.elapsedDays, 11);
+    assert.equal(result.data.status, 'safe');
+    assert.match(result.message.text, /No budget limit found/);
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test('burn_rate_forecast returns no_data without transactions', async () => {
+  mock.timers.enable({
+    apis: ['Date'],
+    now: new Date('2026-07-05T02:00:00.000Z'),
+  });
+  try {
+    const { repo, service } = createService();
+    repo.expenseTotals = [{ total: 0, count: 0 }];
+
+    const result = await service.handle({
+      userId: 1,
+      llmResult: { intent: 'burn_rate_forecast' },
+    });
+
+    assert.equal(result.status, 'success');
+    assert.equal(result.data.status, 'no_data');
+    assert.equal(result.data.spentSoFar, 0);
+    assert.match(result.message.text, /No confirmed spending/);
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test('burn_rate_forecast reports safe category budget', async () => {
+  mock.timers.enable({
+    apis: ['Date'],
+    now: new Date('2026-07-04T18:00:00.000Z'),
+  });
+  try {
+    const { repo, service } = createService();
+    repo.budgets = [{ category: 'Food', amount: 1200000 }];
+    repo.categoryTotals.set('food', { total: 400000, count: 10 });
+
+    const result = await service.handle({
+      userId: 1,
+      timezone: 'Asia/Jakarta',
+      llmResult: { intent: 'burn_rate_forecast', category: 'Food' },
+    });
+
+    assert.equal(result.data.status, 'safe');
+    assert.equal(result.data.budgetLimit, 1200000);
+    assert.equal(result.data.category, 'Food');
+    assert.match(result.message.text, /Food burn-rate forecast/);
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test('burn_rate_forecast reports projected overrun', async () => {
+  mock.timers.enable({
+    apis: ['Date'],
+    now: new Date('2026-07-04T18:00:00.000Z'),
+  });
+  try {
+    const { repo, service } = createService();
+    repo.budgets = [{ category: 'Food', amount: 1000000 }];
+    repo.categoryTotals.set('food', { total: 800000, count: 10 });
+
+    const result = await service.handle({
+      userId: 1,
+      timezone: 'Asia/Jakarta',
+      llmResult: { intent: 'burn_rate_forecast', category: 'Food' },
+    });
+
+    assert.equal(result.data.status, 'projected_overrun');
+    assert.equal(result.data.projectedOverrun, 1181818.1818181816);
+    assert.match(result.message.text, /Slow down/);
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test('burn_rate_forecast reports already exceeded budget', async () => {
+  mock.timers.enable({
+    apis: ['Date'],
+    now: new Date('2026-07-04T18:00:00.000Z'),
+  });
+  try {
+    const { repo, service } = createService();
+    repo.budgets = [{ category: 'Food', amount: 1000000 }];
+    repo.categoryTotals.set('food', { total: 1200000, count: 10 });
+
+    const result = await service.handle({
+      userId: 1,
+      timezone: 'Asia/Jakarta',
+      llmResult: { intent: 'burn_rate_forecast', category: 'Food' },
+    });
+
+    assert.equal(result.data.status, 'already_over_budget');
+    assert.equal(result.data.remainingBudget, -200000);
+    assert.match(result.message.text, /already over budget/);
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test('burn_rate_forecast respects timezone and elapsedDays never hits zero', async () => {
+  mock.timers.enable({
+    apis: ['Date'],
+    now: new Date('2026-06-24T18:00:00.000Z'),
+  });
+  try {
+    const { repo, service } = createService();
+    repo.expenseTotals = [{ total: 50000, count: 1 }];
+
+    const result = await service.handle({
+      userId: 1,
+      timezone: 'Asia/Jakarta',
+      llmResult: { intent: 'burn_rate_forecast' },
+    });
+
+    assert.equal(result.data.today, '2026-06-25');
+    assert.equal(result.data.cycleStart, '2026-06-25');
+    assert.equal(result.data.elapsedDays, 1);
+  } finally {
+    mock.timers.reset();
+  }
 });
 
 test('formats Indonesian Rupiah and clamps limit', () => {

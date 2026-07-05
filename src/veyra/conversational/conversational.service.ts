@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import {
   BreakdownItem,
+  BudgetItem,
   CashflowSummary,
   ConversationalRepository,
   ConversationalUser,
@@ -30,6 +31,7 @@ const SUPPORTED = new Set<ConversationalIntent>([
   'daily_average_spending',
   'spending_trend',
   'cashflow_summary',
+  'burn_rate_forecast',
 ]);
 
 const OPTIONAL_INSIGHT = new Set<ConversationalIntent>([
@@ -51,6 +53,7 @@ const NEVER_INSIGHT = new Set<ConversationalIntent>([
   'merchant_spending',
   'recent_transactions',
   'transaction_count',
+  'burn_rate_forecast',
 ]);
 
 const DEFAULT_PERIODS: Partial<
@@ -64,6 +67,7 @@ const DEFAULT_PERIODS: Partial<
   recent_transactions: 'current_cycle',
   largest_transactions: 'current_cycle',
   spending_trend: 'current_cycle',
+  burn_rate_forecast: 'current_cycle',
 };
 
 const INSIGHT_RULES = [
@@ -148,8 +152,14 @@ export class ConversationalService {
     const now = new Date();
     const timezone = this.cleanString(request.timezone) ?? 'Asia/Jakarta';
     const defaultPeriod = DEFAULT_PERIODS[intent] ?? 'current_cycle';
+    const periodLabel = this.normalizePeriod(
+      request.llmResult?.period,
+      defaultPeriod,
+    );
     const period = this.resolvePeriod(
-      this.normalizePeriod(request.llmResult?.period, defaultPeriod),
+      intent === 'burn_rate_forecast' && periodLabel === 'this_month'
+        ? 'current_cycle'
+        : periodLabel,
       user.cycleStartDay,
       timezone,
       now,
@@ -168,7 +178,7 @@ export class ConversationalService {
 
     if (result.status) {
       return this.response(
-        result.status === 'ok',
+        result.status === 'ok' || result.status === 'success',
         result.status,
         intent,
         result.message,
@@ -426,6 +436,15 @@ export class ConversationalService {
       );
       return this.cashflowResult(period, cashflow);
     }
+    if (intent === 'burn_rate_forecast') {
+      return this.burnRateForecast(
+        user,
+        period,
+        timezone,
+        now,
+        this.cleanString(request.llmResult?.category),
+      );
+    }
 
     const summary = await this.repository.expenseTotal(
       user.id,
@@ -544,6 +563,176 @@ export class ConversationalService {
       hasData: cashflow.incomeCount > 0 || cashflow.expenseCount > 0,
       message: `Income ${this.formatRupiah(cashflow.incomeTotal)}, spending ${this.formatRupiah(cashflow.expenseTotal)}, net <b>${this.formatRupiah(cashflow.net)}</b>.`,
     };
+  }
+
+  private async burnRateForecast(
+    user: ConversationalUser,
+    period: ConversationalPeriodDto,
+    timezone: string,
+    now: Date,
+    category: string | null,
+  ): Promise<IntentResult> {
+    const total = category
+      ? await this.repository.categoryTotal(
+          user.id,
+          category,
+          period.start,
+          period.end,
+        )
+      : await this.repository.expenseTotal(user.id, period.start, period.end);
+    const budget =
+      (await this.repository.activeBudgets(user.id, category))[0] ?? null;
+    const forecast = this.buildBurnRateForecast(
+      period,
+      timezone,
+      now,
+      category,
+      total.total,
+      budget,
+    );
+    const perBudgetForecasts = category
+      ? []
+      : await Promise.all(
+          (await this.repository.activeBudgets(user.id)).map(async (item) => {
+            const budgetTotal = await this.repository.categoryTotal(
+              user.id,
+              item.category,
+              period.start,
+              period.end,
+            );
+            return this.buildBurnRateForecast(
+              period,
+              timezone,
+              now,
+              item.category,
+              budgetTotal.total,
+              item,
+            );
+          }),
+        );
+
+    return {
+      data: {
+        ...forecast,
+        ...(perBudgetForecasts.length ? { perBudgetForecasts } : {}),
+      },
+      facts: forecast,
+      hasData: true,
+      message: this.burnRateMessage(forecast),
+      status: 'success',
+    };
+  }
+
+  private buildBurnRateForecast(
+    period: ConversationalPeriodDto,
+    timezone: string,
+    now: Date,
+    category: string | null,
+    spentSoFar: number,
+    budget: BudgetItem | null,
+  ) {
+    const today = this.formatParts(this.localParts(now, timezone));
+    const elapsedDays = this.daysElapsed(period, timezone, now);
+    const totalCycleDays =
+      this.toDateNumber(this.parseDate(period.end)) -
+      this.toDateNumber(this.parseDate(period.start));
+    const daysLeft = Math.max(totalCycleDays - elapsedDays, 0);
+    const averageDailySpend = spentSoFar / elapsedDays;
+    const projectedCycleSpend = averageDailySpend * totalCycleDays;
+    const budgetLimit = budget?.amount ?? null;
+    const remainingBudget =
+      budgetLimit === null ? null : budgetLimit - spentSoFar;
+    const safeDailySpend =
+      remainingBudget === null ? null : remainingBudget / Math.max(daysLeft, 1);
+    const projectedOverrun =
+      budgetLimit === null
+        ? null
+        : Math.max(projectedCycleSpend - budgetLimit, 0);
+    const projectedRemaining =
+      budgetLimit === null
+        ? null
+        : Math.max(budgetLimit - projectedCycleSpend, 0);
+    const exhaustionDate =
+      budgetLimit === null || spentSoFar <= 0 || averageDailySpend <= 0
+        ? null
+        : this.formatParts(
+            this.addDays(
+              this.parseDate(period.start),
+              Math.ceil(budgetLimit / averageDailySpend),
+            ),
+          );
+
+    return {
+      cycleStart: period.start,
+      cycleEnd: period.end,
+      today,
+      elapsedDays,
+      daysLeft,
+      totalCycleDays,
+      category,
+      spentSoFar,
+      averageDailySpend,
+      projectedCycleSpend,
+      budgetLimit,
+      remainingBudget,
+      safeDailySpend,
+      projectedOverrun,
+      projectedRemaining,
+      exhaustionDate,
+      status: this.burnRateStatus(
+        spentSoFar,
+        budgetLimit,
+        projectedCycleSpend,
+        safeDailySpend,
+        averageDailySpend,
+      ),
+    };
+  }
+
+  private burnRateStatus(
+    spentSoFar: number,
+    budgetLimit: number | null,
+    projectedCycleSpend: number,
+    safeDailySpend: number | null,
+    averageDailySpend: number,
+  ): string {
+    if (spentSoFar <= 0) return 'no_data';
+    if (budgetLimit !== null && spentSoFar >= budgetLimit) {
+      return 'already_over_budget';
+    }
+    if (budgetLimit !== null && projectedCycleSpend > budgetLimit) {
+      return 'projected_overrun';
+    }
+    if (safeDailySpend !== null && safeDailySpend < averageDailySpend) {
+      return 'warning';
+    }
+    return 'safe';
+  }
+
+  private burnRateMessage(
+    forecast: ReturnType<ConversationalService['buildBurnRateForecast']>,
+  ): string {
+    const title = forecast.category
+      ? `${this.escape(forecast.category)} burn-rate forecast`
+      : 'Burn-rate forecast';
+    const spent = this.formatRupiah(forecast.spentSoFar);
+    const burnRate = this.formatRupiah(forecast.averageDailySpend);
+    const projected = this.formatRupiah(forecast.projectedCycleSpend);
+
+    if (forecast.status === 'no_data') {
+      return `<b>${title}</b>\n• No confirmed spending found in this cycle.\n• Burn rate cannot be judged yet. Convenient, but not impressive.`;
+    }
+    if (forecast.budgetLimit === null) {
+      return `<b>${title}</b>\n• You spent ${spent} in ${forecast.elapsedDays} days.\n• Current burn rate: ${burnRate}/day.\n• Projected cycle spend: ${projected}. No budget limit found, so I cannot judge the damage properly.`;
+    }
+    if (forecast.status === 'already_over_budget') {
+      return `<b>${title}</b>\n• Spent: ${spent} of ${this.formatRupiah(forecast.budgetLimit)}.\n• You are already over budget by ${this.formatRupiah(Math.abs(forecast.remainingBudget ?? 0))}.\n• Burn rate: ${burnRate}/day. Damage control now, not later.`;
+    }
+    if (forecast.status === 'projected_overrun') {
+      return `<b>${title}</b>\n• Spent: ${spent} of ${this.formatRupiah(forecast.budgetLimit)}.\n• Burn rate: ${burnRate}/day. Safe daily spend left: ${this.formatRupiah(forecast.safeDailySpend ?? 0)}/day.\n• Projected spend: ${projected}. You are on track to exceed by ${this.formatRupiah(forecast.projectedOverrun ?? 0)}. Slow down.`;
+    }
+
+    return `<b>${title}</b>\n• Spent: ${spent} of ${this.formatRupiah(forecast.budgetLimit)}.\n• Burn rate: ${burnRate}/day. Safe daily spend left: ${this.formatRupiah(forecast.safeDailySpend ?? 0)}/day.\n• Projected spend: ${projected}. Still under budget. Barely acceptable.`;
   }
 
   private breakdownResult(

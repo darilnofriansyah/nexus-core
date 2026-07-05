@@ -1545,6 +1545,7 @@ category_comparison, merchant_comparison
 top_categories, top_merchants, largest_transactions, recent_transactions
 daily_average_spending, most_frequent_merchant, spending_by_day, weekday_analysis
 transaction_count, subscription_summary, spending_trend, cashflow_summary
+burn_rate_forecast
 help, greeting, unknown
 ```
 
@@ -1593,11 +1594,69 @@ Response shape:
 }
 ```
 
-Supported MVP intents: `spending_summary`, `category_spending`, `merchant_spending`, `top_merchants`, `top_categories`, `largest_transactions`, `recent_transactions`, `transaction_count`, `spending_by_day`, `daily_average_spending`, `spending_trend`, `cashflow_summary`.
+Supported MVP intents: `spending_summary`, `category_spending`, `merchant_spending`, `top_merchants`, `top_categories`, `largest_transactions`, `recent_transactions`, `transaction_count`, `spending_by_day`, `daily_average_spending`, `spending_trend`, `cashflow_summary`, `burn_rate_forecast`.
 
 Unsupported for now returns `status: "unsupported_intent"`: `subscription_summary`, `subscription_detail`, `spending_comparison`, `merchant_comparison`, `category_comparison`, `weekday_analysis`, `most_frequent_merchant`, `unknown`.
 
 When `status` is `needs_insight`, n8n should send `insight_payload` to the Insight LLM, then send the LLM result through Telegram Reliable Sender. Otherwise send `message` directly. Keep Telegram trigger, Master Intent Classifier LLM, optional Insight LLM, reliable Telegram sender, and workflow orchestration in n8n.
+
+`burn_rate_forecast` is deterministic and returns a Telegram-ready HTML message from Core API. It counts only confirmed expense transactions in the user's current cycle from `telegram_users.cycle_start_day`; pending, rejected, deleted, income, transfer, and reversal rows are ignored by the existing analytics queries. n8n should classify the intent, pass any explicit `category`, then send `message` directly.
+
+Example burn-rate request:
+
+```json
+{
+  "telegramUserId": "976684739",
+  "userId": 1,
+  "text": "will my food budget run out?",
+  "timezone": "Asia/Jakarta",
+  "statePayload": {},
+  "llmResult": {
+    "intent": "burn_rate_forecast",
+    "period": "this_month",
+    "category": "Food",
+    "merchant": null,
+    "limit": null,
+    "target": {},
+    "confidence": 0.91
+  }
+}
+```
+
+Example burn-rate response:
+
+```json
+{
+  "ok": true,
+  "status": "success",
+  "intent": "burn_rate_forecast",
+  "message": {
+    "text": "<b>Food burn-rate forecast</b>\n• Spent: Rp400.000 of Rp1.000.000.\n• Burn rate: Rp40.000/day. Safe daily spend left: Rp30.000/day.\n• Projected spend: Rp900.000. Still under budget. Barely acceptable.",
+    "parse_mode": "HTML",
+    "disable_web_page_preview": true,
+    "reply_markup": null
+  },
+  "data": {
+    "cycleStart": "2026-06-25",
+    "cycleEnd": "2026-07-25",
+    "elapsedDays": 10,
+    "daysLeft": 20,
+    "totalCycleDays": 30,
+    "category": "Food",
+    "spentSoFar": 400000,
+    "averageDailySpend": 40000,
+    "projectedCycleSpend": 900000,
+    "budgetLimit": 1000000,
+    "remainingBudget": 600000,
+    "safeDailySpend": 30000,
+    "projectedOverrun": 0,
+    "projectedRemaining": 100000,
+    "exhaustionDate": "2026-07-20",
+    "status": "safe"
+  },
+  "insight_payload": null
+}
+```
 
 Insight LLM prompt:
 
@@ -1647,6 +1706,11 @@ curl -X POST "$CORE_API_URL/api/veyra/conversational/handle" \
   -H "content-type: application/json" \
   -H "x-core-api-key: $CORE_API_KEY" \
   -d '{"telegramUserId":"976684739","timezone":"Asia/Jakarta","llmResult":{"intent":"cashflow_summary","period":"current_cycle"}}'
+
+curl -X POST "$CORE_API_URL/api/veyra/conversational/handle" \
+  -H "content-type: application/json" \
+  -H "x-core-api-key: $CORE_API_KEY" \
+  -d '{"telegramUserId":"976684739","timezone":"Asia/Jakarta","text":"will my food budget run out?","llmResult":{"intent":"burn_rate_forecast","period":"this_month","category":"Food"}}'
 
 curl -X POST "$CORE_API_URL/api/veyra/conversational/handle" \
   -H "content-type: application/json" \

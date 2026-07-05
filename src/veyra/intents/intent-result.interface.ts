@@ -27,6 +27,7 @@ export type VeyraIntent =
   | 'subscription_summary'
   | 'spending_trend'
   | 'cashflow_summary'
+  | 'burn_rate_forecast'
   | 'help'
   | 'greeting'
   | 'unknown';
