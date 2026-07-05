@@ -1,3 +1,5 @@
+import { BudgetWatchdogResponseDto } from '../../budgets/dto/overspending-check.dto';
+
 export type ConfirmTransactionStatus =
   | 'confirmed'
   | 'rejected'
@@ -27,4 +29,5 @@ export interface ConfirmTransactionResponseDto {
   userId: string;
   summary: ConfirmTransactionSummaryDto | null;
   editMessage: ConfirmTransactionEditMessageDto | null;
+  watchdog?: BudgetWatchdogResponseDto;
 }

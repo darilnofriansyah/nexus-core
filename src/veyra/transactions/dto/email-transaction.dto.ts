@@ -1,5 +1,6 @@
 import { NormalizedTransactionType } from './normalize-transaction.dto';
 import { TelegramReplyMarkupDto } from './confirmation-payload.dto';
+import { BudgetWatchdogResponseDto } from '../../budgets/dto/overspending-check.dto';
 
 export type EmailTransactionHandleStatus =
   | 'confirmed'
@@ -95,6 +96,7 @@ export interface EmailTransactionHandleResponseDto {
     text: string;
     parseMode: 'HTML';
   };
+  watchdog?: BudgetWatchdogResponseDto;
 }
 
 export type EmailTransactionResolveReviewStatus =
@@ -117,6 +119,7 @@ export interface EmailTransactionResolveReviewResponseDto {
   transactionCandidate?: EmailReviewTransactionCandidateDto;
   resolution?: EmailReviewResolutionDto;
   telegramText?: string;
+  watchdog?: BudgetWatchdogResponseDto;
   actions?: {
     confirm: EmailReviewActionDto;
     cancel: EmailReviewActionDto;

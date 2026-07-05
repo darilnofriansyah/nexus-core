@@ -22,6 +22,8 @@ import {
   BudgetCategoryDto,
 } from './dto/budget-categories.dto';
 import {
+  BudgetWatchdogAlertDto,
+  BudgetWatchdogResponseDto,
   OverspendingAlertRecordDto,
   OverspendingAlertType,
   OverspendingCheckRequestDto,
@@ -88,6 +90,15 @@ interface AlertInsertRow extends QueryResultRow {
   alert_type: OverspendingAlertType;
   threshold_percent: string | number;
   period_key: string;
+}
+
+interface WatchdogTransactionRow extends QueryResultRow {
+  id: string | number;
+  user_id: string | number;
+  transaction_type: string | null;
+  category: string | null;
+  status: string | null;
+  transaction_date: string | Date | null;
 }
 
 type BudgetHandleIntent =
@@ -508,10 +519,40 @@ export class BudgetService {
     request: OverspendingHandleRequestDto,
   ): Promise<OverspendingHandleResponseDto> {
     const userId = this.cleanString(String(request.userId ?? ''));
-    const category = this.cleanString(request.category);
+    const category = this.cleanString(request.category ?? undefined);
 
     if (!userId) {
       throw new BadRequestException('userId is required');
+    }
+
+    if (request.transactionId !== undefined && request.transactionId !== null) {
+      const watchdog = await this.evaluateTransaction({
+        userId,
+        transactionId: request.transactionId,
+        reason: 'overspending_check',
+      });
+      const alert = watchdog.alerts[0];
+
+      return {
+        ok: true,
+        status: watchdog.hasAlert ? 'alert_required' : 'no_alert',
+        shouldAlert: watchdog.hasAlert,
+        alreadyAlerted: false,
+        message: watchdog.message ?? null,
+        data: {
+          transactionId: request.transactionId,
+          userId,
+          ...(alert
+            ? {
+                budgetId: alert.budgetId,
+                category: alert.category,
+                alertType: alert.type,
+                spentPercent: alert.usedPercent,
+                remainingAmount: alert.remainingAmount,
+              }
+            : { category: category ?? '' }),
+        },
+      };
     }
 
     if (!category) {
@@ -616,6 +657,94 @@ export class BudgetService {
       ok: true,
       status: 'recorded',
       data: inserted,
+    };
+  }
+
+  async evaluateTransaction(request: {
+    userId: string | number;
+    transactionId: string | number;
+    timezone?: string | null;
+    reason?: string | null;
+  }): Promise<BudgetWatchdogResponseDto> {
+    const userId = this.cleanString(String(request.userId ?? ''));
+    const transactionId = this.cleanString(String(request.transactionId ?? ''));
+
+    if (!userId) {
+      throw new BadRequestException('userId is required');
+    }
+
+    if (!transactionId) {
+      throw new BadRequestException('transactionId is required');
+    }
+
+    const transaction = await this.findWatchdogTransaction(userId, transactionId);
+
+    if (!transaction) {
+      return this.skippedWatchdog('transaction_not_found');
+    }
+
+    if (transaction.status !== 'confirmed') {
+      return this.skippedWatchdog('transaction_not_confirmed');
+    }
+
+    if (transaction.transaction_type !== 'expense') {
+      return this.skippedWatchdog('transaction_not_expense');
+    }
+
+    if (!transaction.category) {
+      return this.skippedWatchdog('transaction_category_missing');
+    }
+
+    let status: BudgetStatusResponseDto;
+
+    try {
+      status = await this.getDirectBudgetStatus(
+        userId,
+        transaction.category,
+        this.parseReferenceDate(
+          this.toReferenceDateString(transaction.transaction_date),
+        ),
+      );
+    } catch (error) {
+      if (error instanceof NotFoundException) {
+        return this.skippedWatchdog('budget_not_found');
+      }
+
+      throw error;
+    }
+
+    const alerts: BudgetWatchdogAlertDto[] = [];
+
+    for (const alertType of this.resolveBudgetWatchdogAlertTypes(status)) {
+      const periodKey = this.periodKeyFromCycleStart(status.cycle_start);
+      const alertRecord = this.buildOverspendingAlertRecord({
+        userId,
+        budgetId: status.budget_id,
+        alertType,
+        thresholdPercent: this.thresholdPercentForAlertType(alertType),
+        periodKey,
+      });
+
+      if (await this.hasBudgetAlert(alertRecord)) {
+        continue;
+      }
+
+      await this.insertBudgetAlert(alertRecord);
+      alerts.push(this.buildWatchdogAlert(status, alertType));
+    }
+
+    return {
+      checked: true,
+      hasAlert: alerts.length > 0,
+      alerts,
+      message:
+        alerts.length > 0
+          ? {
+              text: this.buildWatchdogTelegramText(alerts),
+              parse_mode: 'HTML',
+              disable_web_page_preview: true,
+            }
+          : null,
     };
   }
 
@@ -861,6 +990,144 @@ export class BudgetService {
     return null;
   }
 
+  private async findWatchdogTransaction(
+    userId: string,
+    transactionId: string,
+  ): Promise<WatchdogTransactionRow | undefined> {
+    const result = await this.database.query<WatchdogTransactionRow>(
+      `
+        SELECT
+          id,
+          user_id,
+          transaction_type,
+          category,
+          status,
+          transaction_date
+        FROM transactions
+        WHERE id::text = $1
+          AND user_id::text = $2
+        LIMIT 1
+      `,
+      [transactionId, userId],
+    );
+    const row = result.rows[0];
+
+    if (!row) {
+      return undefined;
+    }
+
+    return {
+      ...row,
+      transaction_type:
+        this.cleanString(row.transaction_type ?? undefined)?.toLowerCase() ??
+        null,
+      status:
+        this.cleanString(row.status ?? undefined)?.toLowerCase() ?? null,
+      category: this.cleanString(row.category ?? undefined) ?? null,
+    };
+  }
+
+  private skippedWatchdog(
+    reason: NonNullable<BudgetWatchdogResponseDto['reason']>,
+  ): BudgetWatchdogResponseDto {
+    return {
+      checked: false,
+      reason,
+      hasAlert: false,
+      alerts: [],
+    };
+  }
+
+  private resolveBudgetWatchdogAlertTypes(
+    status: BudgetStatusResponseDto,
+  ): OverspendingAlertType[] {
+    const alerts: OverspendingAlertType[] = [];
+
+    if (status.spent_percent >= 75) {
+      alerts.push('budget_75');
+    }
+
+    if (status.spent_percent >= 90) {
+      alerts.push('budget_90');
+    }
+
+    if (status.spent_percent >= 100) {
+      alerts.push('budget_100');
+    }
+
+    if (this.projectedCycleSpend(status) > status.budget_amount) {
+      alerts.push('budget_forecast_overrun');
+    }
+
+    return alerts;
+  }
+
+  private buildWatchdogAlert(
+    status: BudgetStatusResponseDto,
+    type: OverspendingAlertType,
+  ): BudgetWatchdogAlertDto {
+    const projectedCycleSpend = this.projectedCycleSpend(status);
+
+    return {
+      type,
+      budgetId: status.budget_id,
+      category: status.category,
+      usedPercent: status.spent_percent,
+      remainingAmount: status.remaining_amount,
+      safeDailySpend: this.safeDailySpend(status),
+      projectedCycleSpend,
+      projectedOverrun: Math.max(0, projectedCycleSpend - status.budget_amount),
+    };
+  }
+
+  private buildWatchdogTelegramText(alerts: BudgetWatchdogAlertDto[]): string {
+    return alerts
+      .map((alert) =>
+        [
+          '<b>Budget warning.</b>',
+          `${this.escapeTelegramHtml(alert.category)} is now ${alert.usedPercent}% used.`,
+          `Remaining: ${this.formatTelegramCurrency(alert.remainingAmount)}.`,
+          `Safe daily spend: ${this.formatTelegramCurrency(alert.safeDailySpend)}.`,
+          alert.projectedOverrun > 0
+            ? `Projected overrun: ${this.formatTelegramCurrency(alert.projectedOverrun)}.`
+            : null,
+        ]
+          .filter((line): line is string => Boolean(line))
+          .join('\n'),
+      )
+      .join('\n\n');
+  }
+
+  private safeDailySpend(status: BudgetStatusResponseDto): number {
+    const daysRemaining = Math.max(
+      1,
+      this.daysBetween(new Date(), new Date(`${status.cycle_end}T00:00:00.000Z`)),
+    );
+
+    return Math.max(0, Math.floor(status.remaining_amount / daysRemaining));
+  }
+
+  private projectedCycleSpend(status: BudgetStatusResponseDto): number {
+    const cycleStart = new Date(`${status.cycle_start}T00:00:00.000Z`);
+    const cycleEnd = new Date(`${status.cycle_end}T00:00:00.000Z`);
+    const elapsedDays = Math.max(1, this.daysBetween(cycleStart, new Date()));
+    const cycleDays = Math.max(1, this.daysBetween(cycleStart, cycleEnd));
+
+    return Math.round((status.spent_amount / elapsedDays) * cycleDays);
+  }
+
+  private daysBetween(start: Date, end: Date): number {
+    return Math.ceil((end.getTime() - start.getTime()) / 86_400_000);
+  }
+
+  private toReferenceDateString(value: string | Date | null): string | undefined {
+    if (!value) {
+      return undefined;
+    }
+
+    return value instanceof Date ? value.toISOString() : value;
+  }
+
   periodKeyFromCycleStart(cycleStart: string): string {
     return cycleStart;
   }
@@ -928,6 +1195,10 @@ export class BudgetService {
     remainingAmount: number;
   }): string {
     const severity = {
+      budget_75: 'Budget warning',
+      budget_90: 'Budget warning',
+      budget_100: 'Budget reached',
+      budget_forecast_overrun: 'Budget forecast warning',
       overspend_80: 'Budget warning',
       overspend_100: 'Budget reached',
       overspend_120: 'Budget exceeded',
@@ -1527,6 +1798,7 @@ export class BudgetService {
           created_at
         )
         VALUES ($1, $2, $3, $4, $5, now())
+        ON CONFLICT DO NOTHING
         RETURNING user_id, budget_id, alert_type, threshold_percent, period_key
       `,
       [
@@ -1540,7 +1812,7 @@ export class BudgetService {
     const row = result.rows[0];
 
     if (!row) {
-      throw new Error('Budget alert insert did not return a row');
+      return alertRecord;
     }
 
     return {
@@ -1556,6 +1828,10 @@ export class BudgetService {
     alertType: unknown,
   ): alertType is OverspendingAlertType {
     return (
+      alertType === 'budget_75' ||
+      alertType === 'budget_90' ||
+      alertType === 'budget_100' ||
+      alertType === 'budget_forecast_overrun' ||
       alertType === 'overspend_80' ||
       alertType === 'overspend_100' ||
       alertType === 'overspend_120'
@@ -1564,6 +1840,10 @@ export class BudgetService {
 
   private thresholdPercentForAlertType(alertType: OverspendingAlertType): number {
     return {
+      budget_75: 75,
+      budget_90: 90,
+      budget_100: 100,
+      budget_forecast_overrun: 0,
       overspend_80: 80,
       overspend_100: 100,
       overspend_120: 120,

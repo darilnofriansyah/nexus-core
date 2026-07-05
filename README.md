@@ -510,14 +510,15 @@ Deprecated. Use `POST /api/veyra/budgets/overspending/handle` plus `POST /api/ve
 
 ### `POST /api/veyra/budgets/overspending/handle`
 
-Calculates direct-category current-cycle spending and classifies whether an overspending alert should be sent. This endpoint reads `budget_alerts` to prevent duplicate notifications, returns a Telegram-ready message when an alert is required, and does not insert alert records or send Telegram messages.
+Calculates direct-category current-cycle spending and classifies whether an overspending alert should be sent. When `transactionId` is provided, Core API fetches the transaction, skips pending/rejected/non-expense rows, inserts new `budget_alerts` rows for dedupe, and returns Telegram-ready warning text for n8n to send. Category-only calls remain available for manual/debug checks.
 
 Alert thresholds:
 
 ```txt
-spent_percent >= 120 -> overspend_120
-spent_percent >= 100 -> overspend_100
-spent_percent >= 80  -> overspend_80
+spent_percent >= 100 -> budget_100
+spent_percent >= 90  -> budget_90
+spent_percent >= 75  -> budget_75
+projected overrun    -> budget_forecast_overrun
 otherwise            -> null
 ```
 
@@ -550,22 +551,9 @@ Example `alert_required` response:
     "userId": "1",
     "budgetId": "12",
     "category": "Food",
-    "alertType": "overspend_80",
-    "thresholdPercent": 80,
-    "periodKey": "2026-06-25",
+    "alertType": "budget_75",
     "spentPercent": 85.4,
-    "spentAmount": 854000,
-    "budgetAmount": 1000000,
-    "remainingAmount": 146000,
-    "cycleStart": "2026-06-25",
-    "cycleEnd": "2026-07-25",
-    "alertRecord": {
-      "userId": "1",
-      "budgetId": "12",
-      "alertType": "overspend_80",
-      "thresholdPercent": 80,
-      "periodKey": "2026-06-25"
-    }
+    "remainingAmount": 146000
   }
 }
 ```
@@ -612,7 +600,7 @@ Example `already_alerted` response:
 }
 ```
 
-`alreadyAlerted` is `true` when a row already exists in `budget_alerts` for the same `user_id`, `budget_id`, `alert_type`, and `period_key`. `periodKey` uses the full cycle start date (`YYYY-MM-DD`) to match production data. n8n should send `message` through Telegram Reliable Sender when `status` is `alert_required`, then call `/api/veyra/budgets/overspending/record` with `data.alertRecord` only after successful Telegram delivery.
+`budget_alerts` dedupe uses the same `user_id`, `budget_id`, `alert_type`, and full cycle-start `period_key` (`YYYY-MM-DD`). n8n should send `message` through Telegram Reliable Sender when `status` is `alert_required`; it no longer needs to call this endpoint after every transaction mutation.
 
 ### `POST /api/veyra/budgets/overspending/record`
 
@@ -738,7 +726,12 @@ Example confirmed response:
   "data": {
     "status": "confirmed",
     "transactionId": "123",
-    "message": "\u2705 Recorded: Rp25.000 at Kopi Tuku under Coffee."
+    "message": "\u2705 Recorded: Rp25.000 at Kopi Tuku under Coffee.",
+    "watchdog": {
+      "checked": true,
+      "hasAlert": false,
+      "alerts": []
+    }
   }
 }
 ```
@@ -1248,6 +1241,11 @@ Example confirmed response:
   "editMessage": {
     "text": "Transaction transaction-id confirmed: GoPay 50000",
     "parseMode": null
+  },
+  "watchdog": {
+    "checked": true,
+    "hasAlert": false,
+    "alerts": []
   }
 }
 ```

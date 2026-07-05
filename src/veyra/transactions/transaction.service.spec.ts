@@ -2,9 +2,10 @@ import * as assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { BadRequestException } from '@nestjs/common';
 import { DatabaseService } from '../../database/database.service';
+import { BudgetService } from '../budgets/budget.service';
 import { TransactionService } from './transaction.service';
 
-function createService(rowsByCall: unknown[][] = []) {
+function createService(rowsByCall: unknown[][] = [], budgetService?: BudgetService) {
   const calls: Array<{ text: string; values: unknown[] }> = [];
   const query = async (text: string, values: unknown[] = []) => {
     calls.push({ text, values });
@@ -19,7 +20,7 @@ function createService(rowsByCall: unknown[][] = []) {
 
   return {
     calls,
-    service: new TransactionService(database),
+    service: new TransactionService(database, budgetService),
   };
 }
 
@@ -1023,6 +1024,60 @@ test('confirms a pending transaction row', async () => {
   assert.match(calls[1].text, /UPDATE transactions/);
   assert.match(calls[1].text, /updated_at = now\(\)/);
   assert.deepEqual(calls[1].values, ['confirmed', 'tx-1', 'user-1']);
+});
+
+test('confirmed transaction appends watchdog warning text', async () => {
+  const watchdog = {
+    checked: true,
+    hasAlert: true,
+    alerts: [
+      {
+        type: 'budget_90' as const,
+        budgetId: '12',
+        category: 'Transport',
+        usedPercent: 91,
+        remainingAmount: 90000,
+        safeDailySpend: 12857,
+        projectedCycleSpend: 1200000,
+        projectedOverrun: 200000,
+      },
+    ],
+    message: {
+      text: '<b>Budget warning.</b>\nTransport is now 91% used.',
+      parse_mode: 'HTML' as const,
+      disable_web_page_preview: true as const,
+    },
+  };
+  const budgetService = {
+    evaluateTransaction: async () => watchdog,
+  } as unknown as BudgetService;
+  const { service } = createService(
+    [
+      [
+        {
+          id: 'tx-1',
+          user_id: 'user-1',
+          transaction_type: 'expense',
+          transaction_date: '2026-06-25',
+          amount: '50000',
+          merchant: 'gopay',
+          merchant_normalized: 'GoPay',
+          category: 'Transport',
+          status: 'pending',
+        },
+      ],
+      [],
+    ],
+    budgetService,
+  );
+
+  const result = await service.confirmTransaction({
+    transactionId: 'tx-1',
+    userId: 'user-1',
+  });
+
+  assert.equal(result.watchdog, watchdog);
+  assert.match(result.editMessage?.text ?? '', /Budget warning/);
 });
 
 test('cancels a pending transaction row', async () => {

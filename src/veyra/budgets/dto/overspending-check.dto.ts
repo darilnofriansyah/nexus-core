@@ -1,4 +1,8 @@
 export type OverspendingAlertType =
+  | 'budget_75'
+  | 'budget_90'
+  | 'budget_100'
+  | 'budget_forecast_overrun'
   | 'overspend_80'
   | 'overspend_100'
   | 'overspend_120';
@@ -53,9 +57,35 @@ export interface OverspendingCheckResponseDto {
 
 export interface OverspendingHandleRequestDto {
   userId: string | number;
-  category: string;
+  category?: string | null;
   transactionId?: string | number | null;
   asOfDate?: string | null;
+}
+
+export type BudgetWatchdogSkipReason =
+  | 'transaction_not_found'
+  | 'transaction_not_confirmed'
+  | 'transaction_not_expense'
+  | 'transaction_category_missing'
+  | 'budget_not_found';
+
+export interface BudgetWatchdogAlertDto {
+  type: OverspendingAlertType;
+  budgetId: string;
+  category: string;
+  usedPercent: number;
+  remainingAmount: number;
+  safeDailySpend: number;
+  projectedCycleSpend: number;
+  projectedOverrun: number;
+}
+
+export interface BudgetWatchdogResponseDto {
+  checked: boolean;
+  reason?: BudgetWatchdogSkipReason;
+  hasAlert: boolean;
+  alerts: BudgetWatchdogAlertDto[];
+  message?: OverspendingTelegramMessageDto | null;
 }
 
 export interface OverspendingHandleResponseDto {

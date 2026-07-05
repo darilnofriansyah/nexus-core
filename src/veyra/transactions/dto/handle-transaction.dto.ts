@@ -3,6 +3,7 @@ import {
   NormalizeTransactionResponseDto,
 } from './normalize-transaction.dto';
 import { TelegramReplyMarkupDto } from './confirmation-payload.dto';
+import { BudgetWatchdogResponseDto } from '../../budgets/dto/overspending-check.dto';
 
 export type TransactionSource = 'telegram' | 'email' | 'manual' | 'import';
 export type TransactionStatus = 'pending' | 'confirmed' | 'rejected';
@@ -41,6 +42,7 @@ export interface TransactionHandleResponseDto {
   transactionId: string | null;
   message: string;
   confirmationPayload?: TransactionHandleConfirmationPayloadDto;
+  watchdog?: BudgetWatchdogResponseDto;
   state?: {
     nextState: TransactionHandleStateName;
     payload: ManualTransactionLlmResultDto | Record<string, never>;

@@ -1,7 +1,9 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, Optional } from '@nestjs/common';
 import { convert } from 'html-to-text';
 import { QueryResultRow } from 'pg';
 import { DatabaseService } from '../../database/database.service';
+import { BudgetService } from '../budgets/budget.service';
+import { BudgetWatchdogResponseDto } from '../budgets/dto/overspending-check.dto';
 import {
   NormalizeTransactionRequestDto,
   NormalizeTransactionResponseDto,
@@ -234,7 +236,10 @@ export class TransactionService {
   private readonly emailParsers: EmailTransactionParser[] =
     buildEmailParserRegistry();
 
-  constructor(private readonly database: DatabaseService) {}
+  constructor(
+    private readonly database: DatabaseService,
+    @Optional() private readonly budgetService?: BudgetService,
+  ) {}
 
   placeholderStatus() {
     return {
@@ -393,7 +398,13 @@ export class TransactionService {
     });
     await this.resetConversationState(request.userId, stateStore);
 
-    return this.buildHandleResponse(savedTransaction);
+    const watchdog = await this.evaluateTransactionWatchdog({
+      userId: savedTransaction.userId,
+      transactionId: savedTransaction.id,
+      reason: 'transaction_created',
+    });
+
+    return this.buildHandleResponse(savedTransaction, watchdog);
   }
 
   async handleManagedTransaction(
@@ -627,6 +638,12 @@ export class TransactionService {
       });
     }
 
+    const watchdog = await this.evaluateTransactionWatchdog({
+      userId: transaction.userId,
+      transactionId: transaction.id,
+      reason: 'transaction_created',
+    });
+
     return this.buildEmailResponse({
       status: 'confirmed',
       provider: parsed.provider,
@@ -634,6 +651,7 @@ export class TransactionService {
       reason: null,
       parsed,
       transaction,
+      watchdog,
     });
   }
 
@@ -706,12 +724,18 @@ export class TransactionService {
       merchant: transaction.merchantNormalized,
       category: transaction.category,
     });
+    const watchdog = await this.evaluateTransactionWatchdog({
+      userId: transaction.userId,
+      transactionId: transaction.id,
+      reason: 'transaction_created',
+    });
 
     if (transactionStatus === 'confirmed') {
       return {
         status: 'confirmed',
         transaction,
-        telegramText,
+        telegramText: this.appendWatchdogMessage(telegramText, watchdog),
+        ...(watchdog ? { watchdog } : {}),
       };
     }
 
@@ -719,6 +743,7 @@ export class TransactionService {
       status: 'pending',
       transaction,
       telegramText,
+      ...(watchdog ? { watchdog } : {}),
       actions: this.buildEmailReviewActions(transaction.id),
       replyMarkup: this.buildConfirmationReplyMarkup(
         transaction.id,
@@ -902,17 +927,30 @@ export class TransactionService {
         this.snapshotManageTransaction(transaction),
         stateData.changes ?? {},
       );
+      const watchdog = await this.evaluateTransactionWatchdog({
+        userId,
+        transactionId,
+        reason: 'transaction_edited',
+      });
 
       return this.manageResponse({
         ok: true,
         status: 'completed',
-        message: `Updated.\n\n${this.manageTransactionLine(updated)}`,
+        message: this.appendWatchdogMessage(
+          `Updated.\n\n${this.manageTransactionLine(updated)}`,
+          watchdog,
+        ),
         data: { transaction: updated },
       });
     }
 
     await this.rejectManageTransaction(transactionId, userId);
     await stateStore.resetState({ userId });
+    await this.evaluateTransactionWatchdog({
+      userId,
+      transactionId,
+      reason: 'transaction_rejected',
+    });
     const deleted = this.snapshotManageTransaction({
       ...transaction,
       status: 'rejected',
@@ -2420,6 +2458,7 @@ export class TransactionService {
     reason: string | null;
     parsed?: ParsedEmailTransactionDto;
     transaction?: EmailTransactionHandleResponseDto['transaction'];
+    watchdog?: BudgetWatchdogResponseDto;
   }): EmailTransactionHandleResponseDto {
     return {
       status: input.status,
@@ -2429,9 +2468,13 @@ export class TransactionService {
       transaction: input.transaction,
       parsed: input.parsed,
       telegram: {
-        text: this.buildEmailTelegramText(input),
+        text: this.appendWatchdogMessage(
+          this.buildEmailTelegramText(input),
+          input.watchdog,
+        ),
         parseMode: 'HTML',
       },
+      ...(input.watchdog ? { watchdog: input.watchdog } : {}),
     };
   }
 
@@ -3207,16 +3250,20 @@ export class TransactionService {
 
   private buildHandleResponse(
     transaction: SavedTransactionDto,
+    watchdog?: BudgetWatchdogResponseDto,
   ): TransactionHandleResponseDto {
     if (transaction.status === 'confirmed') {
+      const message = `${String.fromCodePoint(0x2705)} Recorded: ${this.formatCurrency(
+        transaction.amount,
+      )} at ${this.titleCaseWords(
+        transaction.merchantNormalized,
+      )} under ${transaction.category}.`;
+
       return {
         status: transaction.status,
         transactionId: transaction.id,
-        message: `${String.fromCodePoint(0x2705)} Recorded: ${this.formatCurrency(
-          transaction.amount,
-        )} at ${this.titleCaseWords(
-          transaction.merchantNormalized,
-        )} under ${transaction.category}.`,
+        message: this.appendWatchdogMessage(message, watchdog),
+        ...(watchdog ? { watchdog } : {}),
       };
     }
 
@@ -3238,6 +3285,7 @@ export class TransactionService {
       status: transaction.status,
       transactionId: transaction.id,
       message: 'Please confirm this transaction.',
+      ...(watchdog ? { watchdog } : {}),
       confirmationPayload: {
         text: confirmationPayload.text,
         reply_markup: confirmationPayload.replyMarkup,
@@ -3283,6 +3331,25 @@ export class TransactionService {
     }
 
     await stateStore.resetState({ userId });
+  }
+
+  private async evaluateTransactionWatchdog(input: {
+    userId: string | number;
+    transactionId: string | number;
+    reason: string;
+  }): Promise<BudgetWatchdogResponseDto | undefined> {
+    return this.budgetService?.evaluateTransaction(input);
+  }
+
+  private appendWatchdogMessage(
+    message: string,
+    watchdog: BudgetWatchdogResponseDto | undefined,
+  ): string {
+    if (!watchdog?.hasAlert || !watchdog.message?.text) {
+      return message;
+    }
+
+    return `${message}\n\n${watchdog.message.text}`;
   }
 
   private isResetText(value: string | undefined): boolean {
@@ -3397,17 +3464,30 @@ export class TransactionService {
       `,
       [nextStatus, String(transaction.id), String(transaction.user_id)],
     );
+    const watchdog = await this.evaluateTransactionWatchdog({
+      userId: String(transaction.user_id),
+      transactionId: String(transaction.id),
+      reason:
+        nextStatus === 'confirmed'
+          ? 'transaction_confirmed'
+          : 'transaction_rejected',
+    });
+    const editMessage = this.transactionEditMessage(
+      String(transaction.id),
+      summary,
+      nextStatus,
+    );
 
     return {
       status: nextStatus,
       transactionId: String(transaction.id),
       userId: String(transaction.user_id),
       summary,
-      editMessage: this.transactionEditMessage(
-        String(transaction.id),
-        summary,
-        nextStatus,
-      ),
+      editMessage: {
+        ...editMessage,
+        text: this.appendWatchdogMessage(editMessage.text, watchdog),
+      },
+      ...(watchdog ? { watchdog } : {}),
     };
   }
 
@@ -3424,6 +3504,8 @@ export class TransactionService {
           merchant,
           merchant_normalized,
           category,
+          transaction_type,
+          transaction_date,
           status
         FROM transactions
         WHERE id::text = $1
@@ -3945,6 +4027,16 @@ export class TransactionService {
       category: budgetCategory.category,
       status: 'confirmed',
     });
+    const watchdog = await this.evaluateTransactionWatchdog({
+      userId: String(transaction.user_id),
+      transactionId: String(transaction.id),
+      reason: 'transaction_confirmed',
+    });
+    const editMessage = this.transactionEditMessage(
+      String(transaction.id),
+      summary,
+      'confirmed',
+    );
 
     return {
       status: 'updated',
@@ -3952,11 +4044,10 @@ export class TransactionService {
       transactionId: String(transaction.id),
       confirmationPayload: null,
       summary,
-      editMessage: this.transactionEditMessage(
-        String(transaction.id),
-        summary,
-        'confirmed',
-      ),
+      editMessage: {
+        ...editMessage,
+        text: this.appendWatchdogMessage(editMessage.text, watchdog),
+      },
     };
   }
 

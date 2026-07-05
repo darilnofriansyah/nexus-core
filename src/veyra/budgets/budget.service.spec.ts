@@ -1384,8 +1384,18 @@ test('overspending handle returns no_alert without checking alert records below 
   });
 });
 
-test('overspending handle returns Telegram-ready alert without inserting budget_alerts', async () => {
+test('overspending handle fetches transaction and records Telegram-ready watchdog alert', async () => {
   const { calls, service } = createService([
+    [
+      {
+        id: 123,
+        user_id: 1,
+        transaction_type: 'expense',
+        category: 'Food',
+        status: 'confirmed',
+        transaction_date: '2026-06-25',
+      },
+    ],
     [{ cycle_start_day: 25 }],
     [
       {
@@ -1397,6 +1407,25 @@ test('overspending handle returns Telegram-ready alert without inserting budget_
       },
     ],
     [{ exists: false }],
+    [
+      {
+        user_id: 1,
+        budget_id: 12,
+        alert_type: 'budget_75',
+        threshold_percent: 75,
+        period_key: '2026-06-25',
+      },
+    ],
+    [{ exists: false }],
+    [
+      {
+        user_id: 1,
+        budget_id: 12,
+        alert_type: 'budget_forecast_overrun',
+        threshold_percent: 0,
+        period_key: '2026-06-25',
+      },
+    ],
   ]);
 
   const result = await service.handleOverspending({
@@ -1406,89 +1435,60 @@ test('overspending handle returns Telegram-ready alert without inserting budget_
     asOfDate: '2026-06-25',
   });
 
-  assert.equal(calls.length, 3);
-  assert.doesNotMatch(calls[2].text, /INSERT INTO budget_alerts/);
-  assert.deepEqual(calls[2].values, [
+  assert.equal(calls.length, 7);
+  assert.deepEqual(calls[0].values, ['123', '1']);
+  assert.deepEqual(calls[3].values, ['1', '12', 'budget_75', '2026-06-25']);
+  assert.match(calls[4].text, /INSERT INTO budget_alerts/);
+  assert.deepEqual(calls[5].values, [
     '1',
     '12',
-    'overspend_80',
+    'budget_forecast_overrun',
     '2026-06-25',
   ]);
-  assert.deepEqual(result, {
-    ok: true,
-    status: 'alert_required',
-    shouldAlert: true,
-    alreadyAlerted: false,
-    message: {
-      text:
-        '⚠️ <b>Budget Warning</b>\n\n' +
-        'Food has reached 85.4%.\n' +
-        'Spent: Rp854.000\n' +
-        'Budget: Rp1.000.000\n' +
-        'Remaining: Rp146.000',
-      parse_mode: 'HTML',
-      disable_web_page_preview: true,
-    },
-    data: {
-      transactionId: 123,
-      userId: '1',
-      budgetId: '12',
-      category: 'Food',
-      alertType: 'overspend_80',
-      thresholdPercent: 80,
-      periodKey: '2026-06-25',
-      spentPercent: 85.4,
-      spentAmount: 854000,
-      budgetAmount: 1000000,
-      remainingAmount: 146000,
-      cycleStart: '2026-06-25',
-      cycleEnd: '2026-07-25',
-      alertRecord: {
-        userId: '1',
-        budgetId: '12',
-        alertType: 'overspend_80',
-        thresholdPercent: 80,
-        periodKey: '2026-06-25',
-      },
-    },
+  assert.match(calls[6].text, /INSERT INTO budget_alerts/);
+  assert.equal(result.status, 'alert_required');
+  assert.equal(result.shouldAlert, true);
+  assert.match(result.message?.text ?? '', /<b>Budget warning\.<\/b>/);
+  assert.deepEqual(result.data, {
+    transactionId: 123,
+    userId: '1',
+    budgetId: '12',
+    category: 'Food',
+    alertType: 'budget_75',
+    spentPercent: 85.4,
+    remainingAmount: 146000,
   });
 });
 
-test('overspending handle returns already_alerted when duplicate exists', async () => {
+test('overspending handle skips pending transaction alerts', async () => {
   const { service } = createService([
-    [{ cycle_start_day: 25 }],
     [
       {
-        budget_id: '12',
+        id: 123,
+        user_id: 1,
+        transaction_type: 'expense',
         category: 'Food',
-        parent_budget_id: null,
-        budget_amount: '1000000',
-        spent_amount: '1000000',
+        status: 'pending',
+        transaction_date: '2026-06-25',
       },
     ],
-    [{ exists: true }],
   ]);
 
   const result = await service.handleOverspending({
     userId: 1,
-    category: 'Food',
     transactionId: 123,
-    asOfDate: '2026-06-25',
   });
 
   assert.deepEqual(result, {
     ok: true,
-    status: 'already_alerted',
+    status: 'no_alert',
     shouldAlert: false,
-    alreadyAlerted: true,
+    alreadyAlerted: false,
     message: null,
     data: {
       transactionId: 123,
       userId: '1',
-      budgetId: '12',
-      category: 'Food',
-      alertType: 'overspend_100',
-      periodKey: '2026-06-25',
+      category: '',
     },
   });
 });
