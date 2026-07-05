@@ -154,7 +154,7 @@ test('burn_rate_forecast calculates current cycle from cycle_start_day', async (
       llmResult: { intent: 'burn_rate_forecast', period: 'this_month' },
     });
 
-    assert.equal(result.status, 'success');
+    assert.equal(result.status, 'ok');
     assert.equal(result.data.cycleStart, '2026-06-25');
     assert.equal(result.data.cycleEnd, '2026-07-25');
     assert.equal(result.data.elapsedDays, 11);
@@ -179,7 +179,7 @@ test('burn_rate_forecast returns no_data without transactions', async () => {
       llmResult: { intent: 'burn_rate_forecast' },
     });
 
-    assert.equal(result.status, 'success');
+    assert.equal(result.status, 'ok');
     assert.equal(result.data.status, 'no_data');
     assert.equal(result.data.spentSoFar, 0);
     assert.match(result.message.text, /No confirmed spending/);

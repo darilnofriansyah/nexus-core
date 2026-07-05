@@ -1628,7 +1628,7 @@ Example burn-rate response:
 ```json
 {
   "ok": true,
-  "status": "success",
+  "status": "ok",
   "intent": "burn_rate_forecast",
   "message": {
     "text": "<b>Food burn-rate forecast</b>\n• Spent: Rp400.000 of Rp1.000.000.\n• Burn rate: Rp40.000/day. Safe daily spend left: Rp30.000/day.\n• Projected spend: Rp900.000. Still under budget. Barely acceptable.",

@@ -39,7 +39,6 @@ export type ConversationalStatus =
   | 'unsupported_intent'
   | 'user_not_found'
   | 'needs_insight'
-  | 'success'
   | 'error';
 
 export interface ConversationalLlmResultDto {

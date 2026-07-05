@@ -178,7 +178,7 @@ export class ConversationalService {
 
     if (result.status) {
       return this.response(
-        result.status === 'ok' || result.status === 'success',
+        result.status === 'ok',
         result.status,
         intent,
         result.message,
@@ -619,7 +619,7 @@ export class ConversationalService {
       facts: forecast,
       hasData: true,
       message: this.burnRateMessage(forecast),
-      status: 'success',
+      status: 'ok',
     };
   }
 
