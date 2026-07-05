@@ -44,6 +44,7 @@ export interface CashflowSummary {
 export interface BudgetItem {
   category: string;
   amount: number;
+  categories: string[];
 }
 
 interface UserRow extends QueryResultRow {
@@ -87,6 +88,7 @@ interface CashflowRow extends QueryResultRow {
 interface BudgetRow extends QueryResultRow {
   category: string;
   amount: string | number;
+  categories: string[] | string;
 }
 
 @Injectable()
@@ -357,13 +359,27 @@ export class ConversationalRepository {
   ): Promise<BudgetItem[]> {
     const result = await this.database.query<BudgetRow>(
       `
-        SELECT category, amount
-        FROM budgets
-        WHERE user_id::text = $1
-          AND is_active = true
-          AND amount IS NOT NULL
-          AND (($2::text IS NULL AND parent_budget_id IS NULL) OR lower(category) = lower($2))
-        ORDER BY category
+        SELECT
+          b.category,
+          CASE
+            WHEN COUNT(child.id) > 0 THEN COALESCE(SUM(child.amount), 0)
+            ELSE b.amount
+          END AS amount,
+          CASE
+            WHEN COUNT(child.id) > 0 THEN ARRAY_AGG(child.category ORDER BY child.category)
+            ELSE ARRAY[b.category]
+          END AS categories
+        FROM budgets b
+        LEFT JOIN budgets child
+          ON child.parent_budget_id = b.id
+          AND child.is_active = true
+          AND child.amount IS NOT NULL
+        WHERE b.user_id::text = $1
+          AND b.is_active = true
+          AND (($2::text IS NULL AND b.parent_budget_id IS NULL) OR lower(b.category) = lower($2))
+        GROUP BY b.id, b.category, b.amount
+        HAVING b.amount IS NOT NULL OR COUNT(child.id) > 0
+        ORDER BY b.category
       `,
       [userId, category],
     );
@@ -371,6 +387,12 @@ export class ConversationalRepository {
     return result.rows.map((row) => ({
       category: row.category,
       amount: Number(row.amount),
+      categories: Array.isArray(row.categories)
+        ? row.categories
+        : String(row.categories)
+            .replace(/[{}]/g, '')
+            .split(',')
+            .filter(Boolean),
     }));
   }
 

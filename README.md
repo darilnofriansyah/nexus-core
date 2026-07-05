@@ -1600,7 +1600,7 @@ Unsupported for now returns `status: "unsupported_intent"`: `subscription_summar
 
 When `status` is `needs_insight`, n8n should send `insight_payload` to the Insight LLM, then send the LLM result through Telegram Reliable Sender. Otherwise send `message` directly. Keep Telegram trigger, Master Intent Classifier LLM, optional Insight LLM, reliable Telegram sender, and workflow orchestration in n8n.
 
-`burn_rate_forecast` is deterministic and returns a Telegram-ready HTML message from Core API. It counts only confirmed expense transactions in the user's current cycle from `telegram_users.cycle_start_day`; pending, rejected, deleted, income, transfer, and reversal rows are ignored by the existing analytics queries. n8n should classify the intent, pass any explicit `category`, then send `message` directly.
+`burn_rate_forecast` is deterministic and returns a Telegram-ready HTML message from Core API. It counts only confirmed expense transactions in the user's current cycle from `telegram_users.cycle_start_day`; pending, rejected, deleted, income, transfer, and reversal rows are ignored by the existing analytics queries. When `category` is null, Core API compares total spending against the sum of active top-level budgets; parent budgets use active child budget amounts and child category spending. n8n should classify the intent, pass any explicit `category`, then send `message` directly.
 
 Example burn-rate request:
 

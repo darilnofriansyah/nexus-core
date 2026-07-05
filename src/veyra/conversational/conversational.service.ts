@@ -572,16 +572,19 @@ export class ConversationalService {
     now: Date,
     category: string | null,
   ): Promise<IntentResult> {
-    const total = category
-      ? await this.repository.categoryTotal(
-          user.id,
-          category,
-          period.start,
-          period.end,
-        )
-      : await this.repository.expenseTotal(user.id, period.start, period.end);
     const activeBudgets = await this.repository.activeBudgets(user.id, category);
-    const budget = category ? (activeBudgets[0] ?? null) : null;
+    const budget = category
+      ? (activeBudgets[0] ?? null)
+      : activeBudgets.length
+        ? {
+            category: 'Total',
+            amount: activeBudgets.reduce((sum, item) => sum + item.amount, 0),
+            categories: activeBudgets.flatMap((item) => item.categories),
+          }
+        : null;
+    const total = category
+      ? await this.budgetExpenseTotal(user.id, category, period, budget)
+      : await this.repository.expenseTotal(user.id, period.start, period.end);
     const forecast = this.buildBurnRateForecast(
       period,
       timezone,
@@ -594,11 +597,11 @@ export class ConversationalService {
       ? []
       : await Promise.all(
           activeBudgets.map(async (item) => {
-            const budgetTotal = await this.repository.categoryTotal(
+            const budgetTotal = await this.budgetExpenseTotal(
               user.id,
               item.category,
-              period.start,
-              period.end,
+              period,
+              item,
             );
             return this.buildBurnRateForecast(
               period,
@@ -621,6 +624,28 @@ export class ConversationalService {
       message: this.burnRateMessage(forecast),
       status: 'ok',
     };
+  }
+
+  private async budgetExpenseTotal(
+    userId: string,
+    category: string,
+    period: ConversationalPeriodDto,
+    budget: BudgetItem | null,
+  ) {
+    const categories = budget?.categories.length ? budget.categories : [category];
+    const totals = await Promise.all(
+      categories.map((item) =>
+        this.repository.categoryTotal(userId, item, period.start, period.end),
+      ),
+    );
+
+    return totals.reduce(
+      (sum, item) => ({
+        total: sum.total + item.total,
+        count: sum.count + item.count,
+      }),
+      { total: 0, count: 0 },
+    );
   }
 
   private buildBurnRateForecast(

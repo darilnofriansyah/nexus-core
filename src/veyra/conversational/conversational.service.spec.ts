@@ -188,7 +188,7 @@ test('burn_rate_forecast returns no_data without transactions', async () => {
   }
 });
 
-test('burn_rate_forecast does not use a category budget for overall forecast', async () => {
+test('burn_rate_forecast sums top-level budgets for overall forecast', async () => {
   mock.timers.enable({
     apis: ['Date'],
     now: new Date('2026-07-05T02:00:00.000Z'),
@@ -196,8 +196,12 @@ test('burn_rate_forecast does not use a category budget for overall forecast', a
   try {
     const { repo, service } = createService();
     repo.expenseTotals = [{ total: 2500000, count: 10 }];
-    repo.budgets = [{ category: 'Food', amount: 500000 }];
+    repo.budgets = [
+      { category: 'Food', amount: 500000, categories: ['Food'] },
+      { category: 'Transport', amount: 700000, categories: ['Transport'] },
+    ];
     repo.categoryTotals.set('food', { total: 200000, count: 2 });
+    repo.categoryTotals.set('transport', { total: 300000, count: 3 });
 
     const result = await service.handle({
       userId: 1,
@@ -206,8 +210,9 @@ test('burn_rate_forecast does not use a category budget for overall forecast', a
     });
 
     assert.equal(result.data.category, null);
-    assert.equal(result.data.budgetLimit, null);
-    assert.match(result.message.text, /No budget limit found/);
+    assert.equal(result.data.budgetLimit, 1200000);
+    assert.equal(result.data.status, 'already_over_budget');
+    assert.match(result.message.text, /Spent: Rp2.500.000 of Rp1.200.000/);
     assert.deepEqual(result.data.perBudgetForecasts, [
       {
         cycleStart: '2026-06-25',
@@ -228,6 +233,25 @@ test('burn_rate_forecast does not use a category budget for overall forecast', a
         exhaustionDate: '2026-07-23',
         status: 'projected_overrun',
       },
+      {
+        cycleStart: '2026-06-25',
+        cycleEnd: '2026-07-25',
+        today: '2026-07-05',
+        elapsedDays: 11,
+        daysLeft: 19,
+        totalCycleDays: 30,
+        category: 'Transport',
+        spentSoFar: 300000,
+        averageDailySpend: 27272.727272727272,
+        projectedCycleSpend: 818181.8181818181,
+        budgetLimit: 700000,
+        remainingBudget: 400000,
+        safeDailySpend: 21052.63157894737,
+        projectedOverrun: 118181.81818181812,
+        projectedRemaining: 0,
+        exhaustionDate: '2026-07-21',
+        status: 'projected_overrun',
+      },
     ]);
   } finally {
     mock.timers.reset();
@@ -241,7 +265,7 @@ test('burn_rate_forecast reports safe category budget', async () => {
   });
   try {
     const { repo, service } = createService();
-    repo.budgets = [{ category: 'Food', amount: 1200000 }];
+    repo.budgets = [{ category: 'Food', amount: 1200000, categories: ['Food'] }];
     repo.categoryTotals.set('food', { total: 400000, count: 10 });
 
     const result = await service.handle({
@@ -259,6 +283,39 @@ test('burn_rate_forecast reports safe category budget', async () => {
   }
 });
 
+test('burn_rate_forecast uses child budgets for parent budget forecast', async () => {
+  mock.timers.enable({
+    apis: ['Date'],
+    now: new Date('2026-07-04T18:00:00.000Z'),
+  });
+  try {
+    const { repo, service } = createService();
+    repo.budgets = [
+      {
+        category: 'Daily',
+        amount: 1000000,
+        categories: ['Food', 'Transport'],
+      },
+    ];
+    repo.categoryTotals.set('daily', { total: 999999, count: 99 });
+    repo.categoryTotals.set('food', { total: 300000, count: 3 });
+    repo.categoryTotals.set('transport', { total: 200000, count: 2 });
+
+    const result = await service.handle({
+      userId: 1,
+      timezone: 'Asia/Jakarta',
+      llmResult: { intent: 'burn_rate_forecast', category: 'Daily' },
+    });
+
+    assert.equal(result.data.category, 'Daily');
+    assert.equal(result.data.budgetLimit, 1000000);
+    assert.equal(result.data.spentSoFar, 500000);
+    assert.equal(result.data.status, 'projected_overrun');
+  } finally {
+    mock.timers.reset();
+  }
+});
+
 test('burn_rate_forecast reports projected overrun', async () => {
   mock.timers.enable({
     apis: ['Date'],
@@ -266,7 +323,7 @@ test('burn_rate_forecast reports projected overrun', async () => {
   });
   try {
     const { repo, service } = createService();
-    repo.budgets = [{ category: 'Food', amount: 1000000 }];
+    repo.budgets = [{ category: 'Food', amount: 1000000, categories: ['Food'] }];
     repo.categoryTotals.set('food', { total: 800000, count: 10 });
 
     const result = await service.handle({
@@ -290,7 +347,7 @@ test('burn_rate_forecast reports already exceeded budget', async () => {
   });
   try {
     const { repo, service } = createService();
-    repo.budgets = [{ category: 'Food', amount: 1000000 }];
+    repo.budgets = [{ category: 'Food', amount: 1000000, categories: ['Food'] }];
     repo.categoryTotals.set('food', { total: 1200000, count: 10 });
 
     const result = await service.handle({
