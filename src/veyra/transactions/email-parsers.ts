@@ -100,9 +100,11 @@ export class BcaCreditCardTransactionParser implements EmailTransactionParser {
 
   canParse(input: EmailParserInput): boolean {
     const text = input.normalizedText;
+    const subject = input.email.subject;
 
     return (
-      /Notifikasi Transaksi/i.test(text) &&
+      (/Notifikasi Transaksi/i.test(text) ||
+        /Credit Card Transaction Notification/i.test(subject)) &&
       /Merchant\s*\/?\s*ATM/i.test(text) &&
       /Jenis Transaksi/i.test(text) &&
       /Sejumlah/i.test(text)

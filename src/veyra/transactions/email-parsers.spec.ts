@@ -79,6 +79,18 @@ test('parses BCA credit card notification with colon amount label', () => {
   assert.equal(parser.parse(parserInput).amount, 243000);
 });
 
+test('parses BCA credit card notification when html-to-text drops the title', () => {
+  const parser = new BcaCreditCardTransactionParser();
+  const parserInput = input(
+    'Yth. Pemegang Kartu Kredit BCA, Terima kasih telah bertransaksi menggunakan Kartu Kredit BCA: Nomor Customer : 0000000019303946 Nomor Kartu : 455633XXXX1715 Merchant / ATM : GoPayID Jenis Transaksi : E-COMMERCE Otentikasi : TRANSAKSI TANPA OTP Pada Tanggal : 05-07-2026 17:52:40 WIB Sejumlah : Rp51.999,00',
+    { subject: 'Credit Card Transaction Notification' },
+  );
+
+  assert.equal(parser.canParse(parserInput), true);
+  assert.equal(parser.parse(parserInput).merchant, 'GoPayID');
+  assert.equal(parser.parse(parserInput).amount, 51999);
+});
+
 test('parses Mandiri e-money top-up only', () => {
   const parser = new MandiriEmoneyTopupParser();
   const parserInput = input('Top-up e-money berhasil. Nominal Top-up Rp50.000');
