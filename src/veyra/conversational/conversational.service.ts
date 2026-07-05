@@ -580,8 +580,8 @@ export class ConversationalService {
           period.end,
         )
       : await this.repository.expenseTotal(user.id, period.start, period.end);
-    const budget =
-      (await this.repository.activeBudgets(user.id, category))[0] ?? null;
+    const activeBudgets = await this.repository.activeBudgets(user.id, category);
+    const budget = category ? (activeBudgets[0] ?? null) : null;
     const forecast = this.buildBurnRateForecast(
       period,
       timezone,
@@ -593,7 +593,7 @@ export class ConversationalService {
     const perBudgetForecasts = category
       ? []
       : await Promise.all(
-          (await this.repository.activeBudgets(user.id)).map(async (item) => {
+          activeBudgets.map(async (item) => {
             const budgetTotal = await this.repository.categoryTotal(
               user.id,
               item.category,

@@ -188,6 +188,52 @@ test('burn_rate_forecast returns no_data without transactions', async () => {
   }
 });
 
+test('burn_rate_forecast does not use a category budget for overall forecast', async () => {
+  mock.timers.enable({
+    apis: ['Date'],
+    now: new Date('2026-07-05T02:00:00.000Z'),
+  });
+  try {
+    const { repo, service } = createService();
+    repo.expenseTotals = [{ total: 2500000, count: 10 }];
+    repo.budgets = [{ category: 'Food', amount: 500000 }];
+    repo.categoryTotals.set('food', { total: 200000, count: 2 });
+
+    const result = await service.handle({
+      userId: 1,
+      timezone: 'Asia/Jakarta',
+      llmResult: { intent: 'burn_rate_forecast', category: null },
+    });
+
+    assert.equal(result.data.category, null);
+    assert.equal(result.data.budgetLimit, null);
+    assert.match(result.message.text, /No budget limit found/);
+    assert.deepEqual(result.data.perBudgetForecasts, [
+      {
+        cycleStart: '2026-06-25',
+        cycleEnd: '2026-07-25',
+        today: '2026-07-05',
+        elapsedDays: 11,
+        daysLeft: 19,
+        totalCycleDays: 30,
+        category: 'Food',
+        spentSoFar: 200000,
+        averageDailySpend: 18181.81818181818,
+        projectedCycleSpend: 545454.5454545454,
+        budgetLimit: 500000,
+        remainingBudget: 300000,
+        safeDailySpend: 15789.473684210527,
+        projectedOverrun: 45454.54545454541,
+        projectedRemaining: 0,
+        exhaustionDate: '2026-07-23',
+        status: 'projected_overrun',
+      },
+    ]);
+  } finally {
+    mock.timers.reset();
+  }
+});
+
 test('burn_rate_forecast reports safe category budget', async () => {
   mock.timers.enable({
     apis: ['Date'],
