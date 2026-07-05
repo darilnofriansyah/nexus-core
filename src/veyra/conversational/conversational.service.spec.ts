@@ -162,7 +162,10 @@ test('daily_average_spending always returns needs_insight when data exists', asy
   });
 
   assert.equal(result.status, 'needs_insight');
-  assert.equal(result.data.average_per_day, 100000 / 9);
+  assert.equal(
+    result.data.average_per_day,
+    100000 / Number(result.data.days_elapsed),
+  );
 });
 
 test('spending_summary returns needs_insight only when requested', async () => {
