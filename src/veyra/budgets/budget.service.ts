@@ -85,7 +85,6 @@ interface AlertExistsRow extends QueryResultRow {
 }
 
 interface AlertInsertRow extends QueryResultRow {
-  user_id: string | number;
   budget_id: string | number;
   alert_type: OverspendingAlertType;
   threshold_percent: string | number;
@@ -1733,11 +1732,12 @@ export class BudgetService {
       `
         SELECT EXISTS (
           SELECT 1
-          FROM budget_alerts
-          WHERE user_id::text = $1
-            AND budget_id::text = $2
-            AND alert_type = $3
-            AND period_key = $4
+          FROM budget_alerts alert
+          JOIN budgets budget ON budget.id = alert.budget_id
+          WHERE budget.user_id::text = $1
+            AND alert.budget_id::text = $2
+            AND alert.alert_type = $3
+            AND alert.period_key = $4
         ) AS exists
       `,
       [input.userId, input.budgetId, input.alertType, input.periodKey],
@@ -1790,16 +1790,18 @@ export class BudgetService {
     const result = await this.database.query<AlertInsertRow>(
       `
         INSERT INTO budget_alerts (
-          user_id,
           budget_id,
           alert_type,
           threshold_percent,
           period_key,
-          created_at
+          triggered_at
         )
-        VALUES ($1, $2, $3, $4, $5, now())
+        SELECT budget.id, $3, $4, $5, now()
+        FROM budgets budget
+        WHERE budget.user_id::text = $1
+          AND budget.id::text = $2
         ON CONFLICT DO NOTHING
-        RETURNING user_id, budget_id, alert_type, threshold_percent, period_key
+        RETURNING budget_id, alert_type, threshold_percent, period_key
       `,
       [
         alertRecord.userId,
@@ -1816,7 +1818,7 @@ export class BudgetService {
     }
 
     return {
-      userId: String(row.user_id),
+      userId: alertRecord.userId,
       budgetId: String(row.budget_id),
       alertType: row.alert_type,
       thresholdPercent: this.toNumber(row.threshold_percent),

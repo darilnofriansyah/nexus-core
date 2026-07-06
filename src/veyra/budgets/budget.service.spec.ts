@@ -1409,7 +1409,6 @@ test('overspending handle fetches transaction and records Telegram-ready watchdo
     [{ exists: false }],
     [
       {
-        user_id: 1,
         budget_id: 12,
         alert_type: 'budget_75',
         threshold_percent: 75,
@@ -1419,7 +1418,6 @@ test('overspending handle fetches transaction and records Telegram-ready watchdo
     [{ exists: false }],
     [
       {
-        user_id: 1,
         budget_id: 12,
         alert_type: 'budget_forecast_overrun',
         threshold_percent: 0,
@@ -1439,6 +1437,10 @@ test('overspending handle fetches transaction and records Telegram-ready watchdo
   assert.deepEqual(calls[0].values, ['123', '1']);
   assert.deepEqual(calls[3].values, ['1', '12', 'budget_75', '2026-06-25']);
   assert.match(calls[4].text, /INSERT INTO budget_alerts/);
+  assert.doesNotMatch(
+    calls[4].text,
+    /INSERT INTO budget_alerts\s*\(\s*user_id/,
+  );
   assert.deepEqual(calls[5].values, [
     '1',
     '12',
@@ -1446,6 +1448,10 @@ test('overspending handle fetches transaction and records Telegram-ready watchdo
     '2026-06-25',
   ]);
   assert.match(calls[6].text, /INSERT INTO budget_alerts/);
+  assert.doesNotMatch(
+    calls[6].text,
+    /INSERT INTO budget_alerts\s*\(\s*user_id/,
+  );
   assert.equal(result.status, 'alert_required');
   assert.equal(result.shouldAlert, true);
   assert.match(result.message?.text ?? '', /<b>Budget warning\.<\/b>/);
@@ -1498,7 +1504,6 @@ test('records overspending alert after delivery succeeds', async () => {
     [{ exists: false }],
     [
       {
-        user_id: 1,
         budget_id: 12,
         alert_type: 'overspend_80',
         threshold_percent: 80,
@@ -1516,6 +1521,10 @@ test('records overspending alert after delivery succeeds', async () => {
 
   assert.equal(calls.length, 2);
   assert.match(calls[1].text, /INSERT INTO budget_alerts/);
+  assert.doesNotMatch(
+    calls[1].text,
+    /INSERT INTO budget_alerts\s*\(\s*user_id/,
+  );
   assert.deepEqual(calls[1].values, [
     '1',
     '12',

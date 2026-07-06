@@ -97,6 +97,42 @@ Transaction rules:
 * Imported data may be dirty.
 * Normalize and validate before persisting or calculating.
 
+## Veyra Database Schema Rule
+
+Before writing or modifying SQL, repository logic, service logic, DTO mapping, or tests that touch the database, read:
+
+* `docs/veyra-database-schema.md`
+
+This file is the source of truth for database access.
+
+Do not invent:
+
+* table names
+* column names
+* enum values
+* foreign keys
+* unique constraints
+* legacy tables
+
+If the required table or column is not listed in `docs/veyra-database-schema.md` or an actual migration/schema SQL file, stop and ask instead of guessing.
+
+For database work, source priority is:
+
+1. Actual migration/schema SQL files
+2. `docs/veyra-database-schema.md`
+3. Existing repository/service code
+4. README endpoint examples
+
+Known traps:
+
+* Use `budgets.amount`, not `budget_amount`.
+* Use `conversation_states.user_id`, `state_name`, and `state_data`.
+* Use `category_rules.merchant_pattern`, not `merchant_name`.
+* Use `merchant_review_queue.occurrence_count`, not `occurrences`.
+* `budget_alerts` does not have `user_id`.
+* `merchant_aliases` and `merchant_review_queue` do not have `user_id`.
+* `pending_transactions` is not part of the current schema.
+
 ## n8n Integration
 
 n8n calls NestJS through HTTP Request nodes.

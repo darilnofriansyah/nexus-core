@@ -600,7 +600,7 @@ Example `already_alerted` response:
 }
 ```
 
-`budget_alerts` dedupe uses the same `user_id`, `budget_id`, `alert_type`, and full cycle-start `period_key` (`YYYY-MM-DD`). n8n should send `message` through Telegram Reliable Sender when `status` is `alert_required`; it no longer needs to call this endpoint after every transaction mutation.
+`budget_alerts` dedupe uses `budget_id`, `alert_type`, and full cycle-start `period_key` (`YYYY-MM-DD`); Core API checks the budget's `user_id` through `budgets`. n8n should send `message` through Telegram Reliable Sender when `status` is `alert_required`; it no longer needs to call this endpoint after every transaction mutation.
 
 ### `POST /api/veyra/budgets/overspending/record`
 
@@ -638,7 +638,7 @@ If the row already exists, `status` is `already_recorded` with the same `data` s
 
 ```sql
 CREATE UNIQUE INDEX IF NOT EXISTS budget_alerts_unique_period_alert
-ON budget_alerts (user_id, budget_id, alert_type, period_key);
+ON budget_alerts (budget_id, alert_type, period_key);
 ```
 
 ### `POST /api/veyra/transactions/normalize`
