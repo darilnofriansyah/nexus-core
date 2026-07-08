@@ -1,11 +1,12 @@
-import { BudgetWatchdogResponseDto } from '../../budgets/dto/overspending-check.dto';
+import { BudgetWatchdogResponseDto } from "../../budgets/dto/overspending-check.dto";
+import { TransactionWatchdogNotificationDto } from "./transaction-watchdog.dto";
 
 export type ConfirmTransactionStatus =
-  | 'confirmed'
-  | 'rejected'
-  | 'not_found'
-  | 'already_confirmed'
-  | 'already_rejected';
+  | "confirmed"
+  | "rejected"
+  | "not_found"
+  | "already_confirmed"
+  | "already_rejected";
 
 export interface ConfirmTransactionRequestDto {
   transactionId: string;
@@ -20,7 +21,7 @@ export interface ConfirmTransactionSummaryDto {
 
 export interface ConfirmTransactionEditMessageDto {
   text: string;
-  parseMode: null;
+  parseMode: "HTML" | null;
 }
 
 export interface ConfirmTransactionResponseDto {
@@ -29,5 +30,6 @@ export interface ConfirmTransactionResponseDto {
   userId: string;
   summary: ConfirmTransactionSummaryDto | null;
   editMessage: ConfirmTransactionEditMessageDto | null;
+  notifications?: TransactionWatchdogNotificationDto[];
   watchdog?: BudgetWatchdogResponseDto;
 }

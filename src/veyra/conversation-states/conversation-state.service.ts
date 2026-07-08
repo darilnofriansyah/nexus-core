@@ -21,6 +21,7 @@ const STATE_ALIASES: Record<ConversationStateInput, ConversationStateName> = {
   idle: 'idle',
   record_transaction_state: 'record_transaction_state',
   budget_conversation_state: 'budget_conversation_state',
+  veyra_regret_note: 'veyra_regret_note',
   select_transaction: 'select_transaction',
   confirm_action: 'confirm_action',
   '/record': 'record_transaction_state',

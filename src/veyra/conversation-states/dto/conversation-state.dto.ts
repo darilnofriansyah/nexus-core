@@ -2,6 +2,7 @@ export type ConversationStateName =
   | 'idle'
   | 'record_transaction_state'
   | 'budget_conversation_state'
+  | 'veyra_regret_note'
   | 'select_transaction'
   | 'confirm_action';
 

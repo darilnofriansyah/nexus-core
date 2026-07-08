@@ -1080,21 +1080,23 @@ export class BudgetService {
   }
 
   private buildWatchdogTelegramText(alerts: BudgetWatchdogAlertDto[]): string {
-    return alerts
-      .map((alert) =>
-        [
-          '<b>Budget warning.</b>',
-          `${this.escapeTelegramHtml(alert.category)} is now ${alert.usedPercent}% used.`,
-          `Remaining: ${this.formatTelegramCurrency(alert.remainingAmount)}.`,
-          `Safe daily spend: ${this.formatTelegramCurrency(alert.safeDailySpend)}.`,
-          alert.projectedOverrun > 0
-            ? `Projected overrun: ${this.formatTelegramCurrency(alert.projectedOverrun)}.`
-            : null,
-        ]
-          .filter((line): line is string => Boolean(line))
-          .join('\n'),
-      )
-      .join('\n\n');
+    const alert = alerts[0];
+
+    if (!alert) {
+      return '';
+    }
+
+    return [
+      '<b>Budget warning.</b>',
+      `${this.escapeTelegramHtml(alert.category)} is now ${alert.usedPercent}% used.`,
+      `Remaining: ${this.formatTelegramCurrency(alert.remainingAmount)}.`,
+      `Safe daily spend: ${this.formatTelegramCurrency(alert.safeDailySpend)}.`,
+      alert.projectedOverrun > 0
+        ? `Projected overrun: ${this.formatTelegramCurrency(alert.projectedOverrun)}.`
+        : null,
+    ]
+      .filter((line): line is string => Boolean(line))
+      .join('\n');
   }
 
   private safeDailySpend(status: BudgetStatusResponseDto): number {
@@ -1717,9 +1719,11 @@ export class BudgetService {
   }
 
   private formatTelegramCurrency(amount: number): string {
-    return `Rp${new Intl.NumberFormat('id-ID', {
+    const formatted = new Intl.NumberFormat('id-ID', {
       maximumFractionDigits: 0,
-    }).format(amount)}`;
+    }).format(Math.abs(amount));
+
+    return `${amount < 0 ? '-' : ''}Rp${formatted}`;
   }
 
   private async hasBudgetAlert(input: {

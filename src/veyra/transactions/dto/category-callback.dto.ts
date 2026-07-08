@@ -1,23 +1,24 @@
 import {
   ConfirmTransactionEditMessageDto,
   ConfirmTransactionSummaryDto,
-} from './confirm-transaction.dto';
+} from "./confirm-transaction.dto";
+import { TransactionWatchdogNotificationDto } from "./transaction-watchdog.dto";
 import {
   TelegramReplyMarkupDto,
   TransactionCallbackMode,
   TransactionConfirmationPayloadResponseDto,
-} from './confirmation-payload.dto';
+} from "./confirmation-payload.dto";
 
 export type TransactionCategoryOptionStatus =
-  | 'ok'
-  | 'not_found'
-  | 'already_resolved';
+  | "ok"
+  | "not_found"
+  | "already_resolved";
 
 export type TransactionSetCategoryStatus =
-  | 'updated'
-  | 'not_found'
-  | 'already_resolved'
-  | 'unauthorized_budget';
+  | "updated"
+  | "not_found"
+  | "already_resolved"
+  | "unauthorized_budget";
 
 export interface TransactionCategoryOptionsRequestDto {
   pendingTransactionId?: string;
@@ -48,4 +49,5 @@ export interface TransactionSetCategoryResponseDto {
   confirmationPayload: TransactionConfirmationPayloadResponseDto | null;
   summary: ConfirmTransactionSummaryDto | null;
   editMessage: ConfirmTransactionEditMessageDto | null;
+  notifications?: TransactionWatchdogNotificationDto[];
 }

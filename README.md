@@ -695,6 +695,8 @@ Core API normalizes transaction type, amount, transaction date, merchant, mercha
 
 Confidence may be sent as a decimal (`0.94`) or integer (`94`). Core API saves it as an integer from `0` to `100`; values `>= 90` are saved as `confirmed`, and lower values are saved as `pending`.
 
+Confirmed transaction saves run `TransactionService.evaluateTransactionWatchdog(transactionId)` after the insert succeeds. Core API evaluates budget impact and transaction risk, then returns ordered `notifications` for n8n to deliver through Telegram. n8n should not call budget or risk endpoints separately after transaction success.
+
 If the LLM returns `missing_fields`, Core API stores the partial payload in `conversation_states` as `record_transaction_state` and returns a follow-up question instead of a validation error. After a successful manual insert, Core API resets the user's conversation state to `idle`. If the insert fails, the state is preserved so the user can retry. Cancel text (`cancel`, `reset`, `stop`, `exit`, `batal`, or `keluar`) resets the state to `idle` and returns `status: "cancelled"` without inserting a transaction.
 
 Example request body:
@@ -727,6 +729,7 @@ Example confirmed response:
     "status": "confirmed",
     "transactionId": "123",
     "message": "\u2705 Recorded: Rp25.000 at Kopi Tuku under Coffee.",
+    "notifications": [],
     "watchdog": {
       "checked": true,
       "hasAlert": false,
@@ -1217,6 +1220,8 @@ Approves one production pending transaction. Core API finds the matching `transa
 
 This endpoint does not edit or delete transactions, does not handle Telegram callbacks directly, and does not send Telegram messages.
 
+Confirmed updates run the transaction watchdog after the status update succeeds. `notifications` is ordered with `risk_review` before `budget_alert`; it is an empty array when no alert/review is created or watchdog evaluation fails. Cancel/reject flows skip the watchdog.
+
 Example request body:
 
 ```json
@@ -1242,6 +1247,7 @@ Example confirmed response:
     "text": "Transaction transaction-id confirmed: GoPay 50000",
     "parseMode": null
   },
+  "notifications": [],
   "watchdog": {
     "checked": true,
     "hasAlert": false,
@@ -1297,6 +1303,11 @@ save_transaction:{transactionId}
 cancel_transaction:{transactionId}
 change_categories:{transactionId}
 catid:{budgetId}:{transactionId}
+veyra_regret:planned:{reviewId}
+veyra_regret:impulse:{reviewId}
+veyra_regret:wrong_category:{reviewId}
+veyra_regret:add_note:{reviewId}
+veyra_regret:ignore:{reviewId}
 veyra_tx_manage:select:{index}
 veyra_tx_manage:confirm
 veyra_tx_manage:cancel
@@ -1332,7 +1343,9 @@ Example response:
 }
 ```
 
-For `change_categories:{transactionId}`, `telegram.reply_markup` contains `inline_keyboard` buttons using `catid:{budgetId}:{transactionId}`. Unknown or invalid callback data returns `status: "error"` and safe user-facing `telegram.text`.
+For `change_categories:{transactionId}`, `telegram.reply_markup` contains `inline_keyboard` buttons using `catid:{budgetId}:{transactionId}`. For `veyra_regret:wrong_category:{reviewId}`, Core API marks the review as `user_response = "wrong_category"` while keeping it pending, then returns the same category buttons with `catid:{budgetId}:{transactionId}:{reviewId}`; after category selection, Core API resolves the review and reruns transaction watchdog checks. Unknown or invalid callback data returns `status: "error"` and safe user-facing `telegram.text`.
+
+Regret note flow: `veyra_regret:add_note:{reviewId}` stores `conversation_states.state_name = "veyra_regret_note"` and asks for the note. Route that state through the existing record transaction branch and call `POST /api/veyra/transactions/handle`; Core API updates `transactions.notes`, stores `transaction_risk_reviews.note`, sets `user_response = "note_added"`, resolves the review, and resets state.
 
 Manage callback example:
 
@@ -1403,6 +1416,79 @@ Telegram Callback Query Trigger
 ```
 
 This replaces only the transaction callback parsing/routing and per-branch HTTP Request mapping in n8n. Keep Telegram Callback Query triggers, Telegram edit/send execution, callback answer nodes, overspend orchestration, and credentials in n8n.
+
+### `POST /api/veyra/transactions/risk-reviews/regret-detector`
+
+Creates or updates the pending Regret Detector v1 review for one transaction and returns Telegram-safe HTML plus inline keyboard buttons. This stores first-class review metadata in `transaction_risk_reviews`; do not put Regret Detector state into `transactions.raw_payload`.
+
+Example n8n HTTP Request body:
+
+```json
+{
+  "userId": 1,
+  "transactionId": 123,
+  "riskLevel": "high",
+  "riskScore": 82.5,
+  "riskReasons": ["large_purchase", "budget_remaining_spike"],
+  "riskMetrics": {
+    "amount": "Rp850.000",
+    "merchant": "Uniqlo",
+    "budgetCategory": "Shopping",
+    "remainingBudgetPercent": 38
+  }
+}
+```
+
+Example response:
+
+```json
+{
+  "status": "ok",
+  "review": {
+    "id": "7",
+    "userId": "1",
+    "transactionId": "123",
+    "riskType": "regret_detector",
+    "riskLevel": "high",
+    "riskScore": 82.5,
+    "riskReasons": ["large_purchase", "budget_remaining_spike"],
+    "riskMetrics": {
+      "amount": "Rp850.000",
+      "merchant": "Uniqlo",
+      "budgetCategory": "Shopping",
+      "remainingBudgetPercent": 38
+    },
+    "status": "pending",
+    "userResponse": null,
+    "note": null,
+    "createdAt": "2026-07-06T00:00:00.000Z",
+    "updatedAt": "2026-07-06T00:00:00.000Z",
+    "resolvedAt": null
+  },
+  "telegram": {
+    "text": "<b>Explain this.</b>\n\nRp850.000 at Uniqlo used 38% of your remaining Shopping budget.\nThat is not a small purchase.\n\nWas this planned?",
+    "parse_mode": "HTML",
+    "reply_markup": {
+      "inline_keyboard": [
+        [
+          { "text": "Planned", "callback_data": "veyra_regret:planned:7" },
+          { "text": "Impulse", "callback_data": "veyra_regret:impulse:7" }
+        ],
+        [
+          {
+            "text": "Wrong category",
+            "callback_data": "veyra_regret:wrong_category:7"
+          },
+          { "text": "Add note", "callback_data": "veyra_regret:add_note:7" }
+        ],
+        [{ "text": "Ignore", "callback_data": "veyra_regret:ignore:7" }]
+      ]
+    }
+  }
+}
+```
+
+This replaces only long-term Regret Detector review storage and deterministic Telegram response formatting. Keep trigger detection, scheduling, Telegram sending, callback forwarding, and any future LLM insight generation in n8n.
 
 ### `GET /api/veyra/conversation-states/:userId`
 
@@ -1775,6 +1861,8 @@ If the transaction row is missing, `status` is `not_found`. If a legacy pending 
 
 Updates the selected production transaction category, sets `status = confirmed`, and returns Telegram edit-message data. The budget id must belong to the same user and be an active leaf budget.
 
+Category confirmation runs the transaction watchdog after the category/status update succeeds because category changes can affect both budget impact and risk evaluation.
+
 Example request body:
 
 ```json
@@ -1801,7 +1889,8 @@ Example response:
   "editMessage": {
     "text": "Transaction transaction-id confirmed: GoPay 50000",
     "parseMode": null
-  }
+  },
+  "notifications": []
 }
 ```
 

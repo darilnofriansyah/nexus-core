@@ -110,7 +110,10 @@ export class VeyraMessageRouteService {
       return { route: 'budget', reason: 'active_budget_state' };
     }
 
-    if (stateName === 'record_transaction_state') {
+    if (
+      stateName === 'record_transaction_state' ||
+      stateName === 'veyra_regret_note'
+    ) {
       return { route: 'record', reason: 'active_record_state' };
     }
 

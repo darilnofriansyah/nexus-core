@@ -72,6 +72,10 @@ import {
   TransactionCallbackHandleResponseDto,
 } from './transactions/dto/transaction-callback-handle.dto';
 import {
+  CreateRegretReviewRequestDto,
+  CreateRegretReviewResponseDto,
+} from './transactions/dto/transaction-risk-review.dto';
+import {
   TransactionManageHandleRequestDto,
   TransactionManageHandleResponseDto,
 } from './transactions/dto/transaction-manage.dto';
@@ -216,6 +220,13 @@ export class VeyraController {
     return this.transactionService.resolveEmailTransactionReview(body);
   }
 
+  @Post('transactions/risk-reviews/regret-detector')
+  createRegretDetectorReview(
+    @Body() body: CreateRegretReviewRequestDto,
+  ): Promise<CreateRegretReviewResponseDto> {
+    return this.transactionService.createRegretDetectorReview(body);
+  }
+
   @Post('transactions/manage/handle')
   handleManagedTransaction(
     @Body() body: TransactionManageHandleRequestDto,
@@ -267,17 +278,20 @@ export class VeyraController {
       return this.formatManageCallbackResponse(response, body);
     }
 
-    return this.transactionService.handleTransactionCallback({
-      telegramUserId: this.readTelegramUserId(body),
-      userId: this.readNumber(body.userId ?? body.user_id),
-      callbackData,
-      chatId: this.readChatId(
-        body.chatId ?? this.readCallbackQuery(body)?.message?.chat?.id,
-      ),
-      messageId: this.readNumber(
-        body.messageId ?? this.readCallbackQuery(body)?.message?.message_id,
-      ),
-    });
+    return this.transactionService.handleTransactionCallback(
+      {
+        telegramUserId: this.readTelegramUserId(body),
+        userId: this.readNumber(body.userId ?? body.user_id),
+        callbackData,
+        chatId: this.readChatId(
+          body.chatId ?? this.readCallbackQuery(body)?.message?.chat?.id,
+        ),
+        messageId: this.readNumber(
+          body.messageId ?? this.readCallbackQuery(body)?.message?.message_id,
+        ),
+      },
+      this.conversationStateService,
+    );
   }
 
   private formatManageCallbackResponse(

@@ -1466,6 +1466,78 @@ test('overspending handle fetches transaction and records Telegram-ready watchdo
   });
 });
 
+test('watchdog renders one warning block when multiple alert thresholds are crossed', async () => {
+  const { service } = createService([
+    [
+      {
+        id: 123,
+        user_id: 1,
+        transaction_type: 'expense',
+        category: 'Bibit',
+        status: 'confirmed',
+        transaction_date: '2026-06-25',
+      },
+    ],
+    [{ cycle_start_day: 25 }],
+    [
+      {
+        budget_id: '12',
+        category: 'Bibit',
+        parent_budget_id: null,
+        budget_amount: '1000000',
+        spent_amount: '2005500',
+      },
+    ],
+    [{ exists: false }],
+    [
+      {
+        budget_id: 12,
+        alert_type: 'budget_75',
+        threshold_percent: 75,
+        period_key: '2026-06-25',
+      },
+    ],
+    [{ exists: false }],
+    [
+      {
+        budget_id: 12,
+        alert_type: 'budget_90',
+        threshold_percent: 90,
+        period_key: '2026-06-25',
+      },
+    ],
+    [{ exists: false }],
+    [
+      {
+        budget_id: 12,
+        alert_type: 'budget_100',
+        threshold_percent: 100,
+        period_key: '2026-06-25',
+      },
+    ],
+    [{ exists: false }],
+    [
+      {
+        budget_id: 12,
+        alert_type: 'budget_forecast_overrun',
+        threshold_percent: 0,
+        period_key: '2026-06-25',
+      },
+    ],
+  ]);
+
+  const result = await service.evaluateTransaction({
+    userId: 1,
+    transactionId: 123,
+  });
+  const text = result.message?.text ?? '';
+
+  assert.equal(result.alerts.length, 4);
+  assert.equal(text.match(/<b>Budget warning\.<\/b>/g)?.length, 1);
+  assert.match(text, /Remaining: -Rp1\.005\.500\./);
+  assert.doesNotMatch(text, /Rp-/);
+});
+
 test('overspending handle skips pending transaction alerts', async () => {
   const { service } = createService([
     [

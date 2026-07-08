@@ -1,13 +1,17 @@
 import {
   NormalizedTransactionType,
   NormalizeTransactionResponseDto,
-} from './normalize-transaction.dto';
-import { TelegramReplyMarkupDto } from './confirmation-payload.dto';
-import { BudgetWatchdogResponseDto } from '../../budgets/dto/overspending-check.dto';
+} from "./normalize-transaction.dto";
+import { TelegramReplyMarkupDto } from "./confirmation-payload.dto";
+import { BudgetWatchdogResponseDto } from "../../budgets/dto/overspending-check.dto";
+import { TransactionWatchdogNotificationDto } from "./transaction-watchdog.dto";
 
-export type TransactionSource = 'telegram' | 'email' | 'manual' | 'import';
-export type TransactionStatus = 'pending' | 'confirmed' | 'rejected';
-export type TransactionHandleStateName = 'idle' | 'record_transaction_state';
+export type TransactionSource = "telegram" | "email" | "manual" | "import";
+export type TransactionStatus = "pending" | "confirmed" | "rejected";
+export type TransactionHandleStateName =
+  | "idle"
+  | "record_transaction_state"
+  | "veyra_regret_note";
 
 export interface ManualTransactionLlmResultDto {
   transaction_type?: string;
@@ -36,12 +40,14 @@ export interface TransactionHandleConfirmationPayloadDto {
 export interface TransactionHandleResponseDto {
   status:
     | TransactionStatus
-    | 'awaiting_missing_field'
-    | 'cancelled'
-    | 'unsupported_source';
+    | "awaiting_missing_field"
+    | "regret_note_added"
+    | "cancelled"
+    | "unsupported_source";
   transactionId: string | null;
   message: string;
   confirmationPayload?: TransactionHandleConfirmationPayloadDto;
+  notifications?: TransactionWatchdogNotificationDto[];
   watchdog?: BudgetWatchdogResponseDto;
   state?: {
     nextState: TransactionHandleStateName;

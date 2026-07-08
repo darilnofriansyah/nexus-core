@@ -6,6 +6,7 @@ import { IntentService } from './intent/intent.service';
 import { IntentsModule } from './intents/intents.module';
 import { VeyraMessagesModule } from './messages/messages.module';
 import { TelegramResponseFormatterService } from './telegram/telegram-response-formatter.service';
+import { TransactionRiskReviewRepository } from './transactions/transaction-risk-review.repository';
 import { TransactionService } from './transactions/transaction.service';
 import { VeyraController } from './veyra.controller';
 
@@ -21,6 +22,7 @@ import { VeyraController } from './veyra.controller';
   providers: [
     IntentService,
     TelegramResponseFormatterService,
+    TransactionRiskReviewRepository,
     TransactionService,
   ],
 })

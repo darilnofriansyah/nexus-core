@@ -126,6 +126,24 @@ test('active record_transaction_state routes to record', async () => {
   assert.equal(result.reason, 'active_record_state');
 });
 
+test('active veyra_regret_note routes to record', async () => {
+  const { service } = createService({
+    name: 'veyra_regret_note',
+    data: { review_id: '7', transaction_id: '123' },
+    expiresAt: null,
+  });
+
+  const result = await service.routeMessage({
+    userId: 1,
+    text: 'Planned sale',
+    messageType: 'text',
+    callbackQuery: null,
+  });
+
+  assert.equal(result.route, 'record');
+  assert.equal(result.reason, 'active_record_state');
+});
+
 test('active awaiting_confirmation routes to transaction_edit', async () => {
   const { service } = createService({
     name: 'awaiting_confirmation',

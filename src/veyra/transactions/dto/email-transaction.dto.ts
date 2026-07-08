@@ -1,15 +1,16 @@
-import { NormalizedTransactionType } from './normalize-transaction.dto';
-import { TelegramReplyMarkupDto } from './confirmation-payload.dto';
-import { BudgetWatchdogResponseDto } from '../../budgets/dto/overspending-check.dto';
+import { NormalizedTransactionType } from "./normalize-transaction.dto";
+import { TelegramReplyMarkupDto } from "./confirmation-payload.dto";
+import { BudgetWatchdogResponseDto } from "../../budgets/dto/overspending-check.dto";
+import { TransactionWatchdogNotificationDto } from "./transaction-watchdog.dto";
 
 export type EmailTransactionHandleStatus =
-  | 'confirmed'
-  | 'needs_review'
-  | 'duplicate'
-  | 'ignored_non_transaction'
-  | 'unsupported_provider'
-  | 'unsupported_template'
-  | 'parse_failed';
+  | "confirmed"
+  | "needs_review"
+  | "duplicate"
+  | "ignored_non_transaction"
+  | "unsupported_provider"
+  | "unsupported_template"
+  | "parse_failed";
 
 export interface EmailTransactionMessageDto {
   messageId: string;
@@ -24,12 +25,12 @@ export interface EmailTransactionMessageDto {
 export interface EmailTransactionHandleRequestDto {
   telegramUserId: string;
   userId: string | number;
-  source: 'email' | string;
+  source: "email" | string;
   email: EmailTransactionMessageDto;
 }
 
 export interface EmailReviewTransactionCandidateDto {
-  source: 'email' | string;
+  source: "email" | string;
   bank?: string;
   transactionType: NormalizedTransactionType | string;
   amount: number | string;
@@ -80,8 +81,8 @@ export interface EmailTransactionResponseTransactionDto {
   merchantNormalized: string;
   category: string;
   transactionDate: string;
-  source: 'email';
-  status: 'confirmed' | 'pending';
+  source: "email";
+  status: "confirmed" | "pending";
   confidence: number;
 }
 
@@ -94,31 +95,33 @@ export interface EmailTransactionHandleResponseDto {
   parsed?: ParsedEmailTransactionDto;
   telegram: {
     text: string;
-    parseMode: 'HTML';
+    parseMode: "HTML";
   };
+  notifications?: TransactionWatchdogNotificationDto[];
   watchdog?: BudgetWatchdogResponseDto;
 }
 
 export type EmailTransactionResolveReviewStatus =
-  | 'confirmed'
-  | 'pending'
-  | 'needs_review';
+  | "confirmed"
+  | "pending"
+  | "needs_review";
 
 export interface EmailReviewActionDto {
-  action?: 'save_transaction' | 'cancel_transaction' | 'change_categories';
+  action?: "save_transaction" | "cancel_transaction" | "change_categories";
   transactionId?: string;
 }
 
 export interface EmailTransactionResolveReviewResponseDto {
   status: EmailTransactionResolveReviewStatus;
-  reason?: 'user_not_found' | 'category_not_found';
+  reason?: "user_not_found" | "category_not_found";
   message?: string;
   transaction?: EmailTransactionResponseTransactionDto & {
-    status: 'confirmed' | 'pending';
+    status: "confirmed" | "pending";
   };
   transactionCandidate?: EmailReviewTransactionCandidateDto;
   resolution?: EmailReviewResolutionDto;
   telegramText?: string;
+  notifications?: TransactionWatchdogNotificationDto[];
   watchdog?: BudgetWatchdogResponseDto;
   actions?: {
     confirm: EmailReviewActionDto;
