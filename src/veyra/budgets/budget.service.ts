@@ -1040,6 +1040,10 @@ export class BudgetService {
   private resolveBudgetWatchdogAlertTypes(
     status: BudgetStatusResponseDto,
   ): OverspendingAlertType[] {
+    if (status.budget_amount <= 0) {
+      return [];
+    }
+
     const alerts: OverspendingAlertType[] = [];
 
     if (status.spent_percent >= 75) {

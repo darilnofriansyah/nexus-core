@@ -1538,6 +1538,41 @@ test('watchdog renders one warning block when multiple alert thresholds are cros
   assert.doesNotMatch(text, /Rp-/);
 });
 
+test('watchdog skips zero amount budgets', async () => {
+  const { calls, service } = createService([
+    [
+      {
+        id: 123,
+        user_id: 1,
+        transaction_type: 'expense',
+        category: 'Living',
+        status: 'confirmed',
+        transaction_date: '2026-06-25',
+      },
+    ],
+    [{ cycle_start_day: 25 }],
+    [
+      {
+        budget_id: '12',
+        category: 'Living',
+        parent_budget_id: null,
+        budget_amount: '0',
+        spent_amount: '500000',
+      },
+    ],
+  ]);
+
+  const result = await service.evaluateTransaction({
+    userId: 1,
+    transactionId: 123,
+  });
+
+  assert.equal(calls.length, 3);
+  assert.equal(result.hasAlert, false);
+  assert.deepEqual(result.alerts, []);
+  assert.equal(result.message, null);
+});
+
 test('overspending handle skips pending transaction alerts', async () => {
   const { service } = createService([
     [
