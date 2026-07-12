@@ -71,8 +71,10 @@ import {
 } from "./dto/email-transaction.dto";
 import {
   CreatePendingRiskReviewInput,
+  TransactionRiskLevel,
   TransactionRiskReview,
   TransactionRiskReviewRepository,
+  TransactionRiskUserResponse,
 } from "./transaction-risk-review.repository";
 import {
   TransactionWatchdogNotificationDto,
@@ -103,6 +105,26 @@ const TRANSACTION_CATEGORY_OPTIONS = [
 const PRODUCTION_CALLBACK_MODE: TransactionCallbackMode = "production";
 const EXPERIMENTAL_CALLBACK_MODE: TransactionCallbackMode = "experimental";
 const EMPTY_CONFIRMATION_FIELD = "-";
+const LARGE_TRANSACTION_EVALUATOR_VERSION = "large_transaction_v1";
+const LARGE_TRANSACTION_RISK_TYPE = "large_transaction";
+const RISK_HISTORY_WINDOW_DAYS = 90;
+const RISK_MIN_MEDIAN_HISTORY = 5;
+const RISK_BUDGET_SHARE_THRESHOLD = 20;
+const RISK_UNUSUAL_MULTIPLIER_THRESHOLD = 3;
+const RISK_MERCHANT_FREQUENCY_THRESHOLD = 3;
+const RISK_SCORE_CAP = 100;
+const RISK_SIGNAL_SCORES = {
+  highBudgetShare: 40,
+  unusualVsMedian: 30,
+  causesBudgetOverspend: 25,
+  unsafeBurnRate: 20,
+  lowFrequencyMerchant: 10,
+} as const;
+const RISK_LEVEL_BOUNDS = {
+  medium: 30,
+  high: 50,
+  critical: 70,
+} as const;
 
 interface MerchantAliasRow extends QueryResultRow {
   id?: string | number;
@@ -179,6 +201,31 @@ interface ExistingCategoryRow extends QueryResultRow {
   category: string;
 }
 
+interface RiskCycleStartRow extends QueryResultRow {
+  cycle_start_day: number | string | null;
+}
+
+interface RiskBudgetFactsRow extends QueryResultRow {
+  category_budget_id: string | number | null;
+  category_budget_category: string | null;
+  category_budget_amount: string | number | null;
+  category_spend_before: string | number | null;
+  parent_budget_id: string | number | null;
+  parent_budget_category: string | null;
+  parent_budget_amount: string | number | null;
+  parent_spend_before: string | number | null;
+  total_budget_amount: string | number | null;
+  total_spend_before: string | number | null;
+}
+
+interface RiskAmountRow extends QueryResultRow {
+  amount: string | number;
+}
+
+interface RiskCountRow extends QueryResultRow {
+  count: string | number;
+}
+
 interface ValidatedEmailReview {
   userId: string;
   candidate: EmailReviewTransactionCandidateDto & {
@@ -247,13 +294,47 @@ interface ParsedTransactionCallback {
   transactionId?: number;
   budgetId?: number;
   reviewId?: number;
-  regretAction?:
-    | "planned"
-    | "impulse"
-    | "wrong_category"
-    | "add_note"
-    | "ignore";
+  riskAction?: TransactionRiskUserResponse;
   error?: string;
+}
+
+interface RiskReason {
+  code:
+    | "high_budget_share"
+    | "unusual_vs_median"
+    | "causes_budget_overspend"
+    | "unsafe_burn_rate"
+    | "low_frequency_merchant";
+  score: number;
+  message: string;
+}
+
+interface RiskBudgetFacts {
+  categoryBudgetId: string | null;
+  categoryBudgetCategory: string | null;
+  categoryBudgetAmount: number | null;
+  categorySpendBefore: number | null;
+  categorySpendAfter: number | null;
+  parentBudgetId: string | null;
+  parentBudgetCategory: string | null;
+  parentBudgetAmount: number | null;
+  parentSpendBefore: number | null;
+  parentSpendAfter: number | null;
+  transactionBudgetSharePercent: number | null;
+  causedCategoryOverspend: boolean;
+  causedParentOverspend: boolean;
+}
+
+interface RiskTransactionHistory {
+  amounts: number[];
+  merchantPriorCount: number | null;
+}
+
+interface RiskBurnRateFacts {
+  unsafe: boolean;
+  notification: TransactionWatchdogNotificationDto | null;
+  projectedCycleSpend: number | null;
+  budgetAmount: number | null;
 }
 
 @Injectable()
@@ -2647,9 +2728,9 @@ export class TransactionService {
       status: "ok",
       review,
       telegram: {
-        text: this.buildRegretReviewText(review),
+        text: this.buildLargeTransactionReviewText(review),
         parse_mode: "HTML",
-        reply_markup: this.buildRegretReviewReplyMarkup(review.id),
+        reply_markup: this.buildWatchdogRiskReplyMarkup(review.id),
       },
     };
   }
@@ -2665,67 +2746,28 @@ export class TransactionService {
     reviewId: string | number,
     userId: string | number,
   ): Promise<TransactionRiskReview | null> {
-    return this.requireRiskReviewRepository().resolve(
-      reviewId,
-      userId,
-      "planned",
-      "resolved",
-    );
+    return this.resolveRiskReview(reviewId, userId, "planned");
   }
 
-  resolveAsImpulse(
+  resolveRiskReview(
     reviewId: string | number,
     userId: string | number,
+    response: TransactionRiskUserResponse,
+    note?: string | null,
   ): Promise<TransactionRiskReview | null> {
     return this.requireRiskReviewRepository().resolve(
       reviewId,
       userId,
-      "impulse",
-      "resolved",
-    );
-  }
-
-  markWrongCategory(
-    reviewId: string | number,
-    userId: string | number,
-  ): Promise<TransactionRiskReview | null> {
-    return this.requireRiskReviewRepository().markWrongCategory(
-      reviewId,
-      userId,
-    );
-  }
-
-  resolveWithNote(
-    reviewId: string | number,
-    userId: string | number,
-    note: string,
-  ): Promise<TransactionRiskReview | null> {
-    return this.requireRiskReviewRepository().resolve(
-      reviewId,
-      userId,
-      "note_added",
+      response,
       "resolved",
       note,
     );
   }
 
-  ignoreReview(
-    reviewId: string | number,
-    userId: string | number,
-  ): Promise<TransactionRiskReview | null> {
-    return this.requireRiskReviewRepository().resolve(
-      reviewId,
-      userId,
-      "ignored",
-      "ignored",
-    );
-  }
-
   async handleTransactionCallback(
     request: TransactionCallbackHandleRequestDto,
-    stateStore?: TransactionHandleStateStore,
+    _stateStore?: TransactionHandleStateStore,
   ): Promise<TransactionCallbackHandleResponseDto> {
-    const userId = this.normalizePositiveInteger(request.userId);
     const telegramUserId = this.cleanString(request.telegramUserId);
     const parsed = this.parseTransactionCallbackData(request.callbackData);
 
@@ -2737,6 +2779,16 @@ export class TransactionService {
         transactionId: parsed.transactionId,
       });
     }
+
+    const resolvedUserId =
+      this.normalizePositiveInteger(request.userId) ??
+      (telegramUserId
+        ? this.normalizePositiveInteger(
+            Number((await this.findTelegramUserByTelegramId(telegramUserId))?.id),
+          )
+        : undefined);
+
+    const userId = resolvedUserId;
 
     if (!userId) {
       return this.transactionCallbackError({
@@ -2757,16 +2809,15 @@ export class TransactionService {
     }
 
     if (
-      parsed.action === "veyra_regret" &&
+      parsed.action === "veyra_risk" &&
       parsed.reviewId &&
-      parsed.regretAction
+      parsed.riskAction
     ) {
-      return this.handleRegretCallback({
+      return this.handleRiskCallback({
         request,
         reviewId: parsed.reviewId,
         userId,
-        action: parsed.regretAction,
-        stateStore,
+        action: parsed.riskAction,
       });
     }
 
@@ -2864,7 +2915,7 @@ export class TransactionService {
           await this.requireRiskReviewRepository().resolve(
             parsed.reviewId,
             userId,
-            "wrong_category",
+            "regret",
             "resolved",
           );
         }
@@ -3534,7 +3585,7 @@ export class TransactionService {
       `,
       [note, review.transactionId, String(request.userId)],
     );
-    await this.resolveWithNote(reviewId, request.userId, note);
+    await this.resolveRiskReview(reviewId, request.userId, "regret", note);
     await this.resetConversationState(request.userId, stateStore);
 
     return {
@@ -3554,7 +3605,7 @@ export class TransactionService {
     try {
       const transaction = await this.findTransactionById(transactionId);
 
-      if (!transaction || transaction.status !== "confirmed") {
+      if (!transaction) {
         return this.emptyTransactionWatchdogResponse();
       }
 
@@ -3563,15 +3614,17 @@ export class TransactionService {
         transactionId: transaction.id,
       });
       const budgetNotifications = this.toBudgetNotifications(budgetWatchdog);
+      const burnRateFacts = await this.evaluateBurnRateRiskFacts(transaction);
       const riskNotification = await this.evaluateTransactionRisk(
         transaction,
-        budgetNotifications[0],
+        burnRateFacts,
       );
 
       return {
         notifications: [
           ...(riskNotification ? [riskNotification] : []),
           ...budgetNotifications,
+          ...(burnRateFacts.notification ? [burnRateFacts.notification] : []),
         ],
         ...(budgetWatchdog ? { watchdog: budgetWatchdog } : {}),
       };
@@ -3601,36 +3654,598 @@ export class TransactionService {
 
   private async evaluateTransactionRisk(
     transaction: TransactionRow,
-    budgetNotification: TransactionWatchdogNotificationDto | undefined,
+    burnRateFacts: RiskBurnRateFacts,
   ): Promise<TransactionWatchdogNotificationDto | null> {
-    if (
-      !this.riskReviewRepository ||
-      !budgetNotification ||
-      transaction.transaction_type !== "expense"
-    ) {
+    if (!this.riskReviewRepository) {
       return null;
     }
 
-    const review = await this.riskReviewRepository.createPendingReview({
-      userId: transaction.user_id,
-      transactionId: transaction.id,
-      riskLevel: "high",
-      riskReasons: ["budget_alert"],
-      riskMetrics: {
-        amount: this.formatCurrency(Number(transaction.amount)),
-        merchant: transaction.merchant_normalized ?? transaction.merchant,
-        budgetCategory: transaction.category,
-      },
+    if (!this.isLargeTransactionEligible(transaction)) {
+      await this.riskReviewRepository.cancelPendingLargeTransactionReview(
+        transaction.id,
+      );
+      return null;
+    }
+
+    const amount = this.normalizeAmount(transaction.amount);
+    const merchantNormalized = this.meaningfulMerchant(
+      transaction.merchant_normalized,
+    )
+      ? this.cleanString(transaction.merchant_normalized)?.toLowerCase() ?? null
+      : this.meaningfulMerchant(transaction.merchant)
+        ? await this.resolveMerchantNormalized(transaction.merchant ?? "")
+        : null;
+    const cycle = await this.riskCycle(transaction);
+    const [budgetFacts, history] = await Promise.all([
+      this.largeTransactionBudgetFacts(transaction, amount, cycle),
+      this.largeTransactionHistory(transaction, merchantNormalized),
+    ]);
+    const median = this.median(history.amounts);
+    const medianMultiplier = median ? amount / median : null;
+    const reasons = this.largeTransactionReasons({
+      budgetFacts,
+      medianMultiplier,
+      historyCount: history.amounts.length,
+      merchantPriorCount: history.merchantPriorCount,
+      merchantNormalized,
+      burnRateUnsafe: burnRateFacts.unsafe,
     });
+    const score = Math.min(
+      RISK_SCORE_CAP,
+      reasons.reduce((sum, reason) => sum + reason.score, 0),
+    );
+    const riskLevel = this.riskLevel(score);
+    const status = riskLevel === "high" || riskLevel === "critical"
+      ? "pending"
+      : "resolved";
+    const result =
+      await this.riskReviewRepository.saveLargeTransactionEvaluation({
+        userId: transaction.user_id,
+        transactionId: transaction.id,
+        riskLevel,
+        riskScore: score,
+        riskReasons: reasons,
+        riskMetrics: {
+          evaluatorVersion: LARGE_TRANSACTION_EVALUATOR_VERSION,
+          evaluationFingerprint: this.largeTransactionFingerprint(transaction),
+          transactionAmount: amount,
+          transactionDate: this.formatNullableTimestamp(
+            transaction.transaction_date,
+          ),
+          merchant: transaction.merchant ?? null,
+          merchantNormalized,
+          merchantPriorCount: history.merchantPriorCount,
+          historyWindowDays: RISK_HISTORY_WINDOW_DAYS,
+          historyTransactionCount: history.amounts.length,
+          medianTransactionAmount: median,
+          medianMultiplier,
+          ...budgetFacts,
+          burnRateUnsafe: burnRateFacts.unsafe,
+          burnRateProjectedCycleSpend: burnRateFacts.projectedCycleSpend,
+          burnRateBudgetAmount: burnRateFacts.budgetAmount,
+          cycleStart: cycle.cycle_start,
+          cycleEnd: cycle.cycle_end,
+          riskType: LARGE_TRANSACTION_RISK_TYPE,
+        },
+        status,
+      });
+
+    if (!result.shouldNotify || status !== "pending") {
+      return null;
+    }
 
     return {
       type: "risk_review",
       priority: 1,
-      severity: "high",
-      review_id: Number(review.id),
-      message: "Explain this purchase",
-      reply_markup: this.buildWatchdogRiskReplyMarkup(review.id),
+      severity: riskLevel === "critical" ? "high" : "warning",
+      review_id: Number(result.review.id),
+      message: this.buildLargeTransactionReviewText(result.review),
+      reply_markup: this.buildWatchdogRiskReplyMarkup(result.review.id),
     };
+  }
+
+  private isLargeTransactionEligible(transaction: TransactionRow): boolean {
+    return (
+      transaction.status === "confirmed" &&
+      transaction.transaction_type === "expense" &&
+      this.normalizeAmount(transaction.amount) > 0
+    );
+  }
+
+  private async riskCycle(transaction: TransactionRow) {
+    const result = await this.database.query<RiskCycleStartRow>(
+      `
+        SELECT cycle_start_day
+        FROM telegram_users
+        WHERE id::text = $1
+        LIMIT 1
+      `,
+      [String(transaction.user_id)],
+    );
+
+    return typeof this.budgetService?.calculateCurrentCycle === "function"
+      ? this.budgetService.calculateCurrentCycle(
+        this.parseRiskReferenceDate(transaction.transaction_date),
+        result.rows[0]?.cycle_start_day ?? 1,
+      )
+      : this.calculateRiskCycle(
+          this.parseRiskReferenceDate(transaction.transaction_date),
+          result.rows[0]?.cycle_start_day ?? 1,
+        );
+  }
+
+  private parseRiskReferenceDate(value: string | Date | null | undefined): Date {
+    const date = value instanceof Date ? value : new Date(value ?? Date.now());
+    return Number.isNaN(date.getTime()) ? new Date() : date;
+  }
+
+  private async largeTransactionBudgetFacts(
+    transaction: TransactionRow,
+    amount: number,
+    cycle: { cycle_start: string; cycle_end: string },
+  ): Promise<RiskBudgetFacts> {
+    const result = await this.database.query<RiskBudgetFactsRow>(
+      `
+        WITH category_budget AS (
+          SELECT b.id, b.category, b.amount, b.parent_budget_id
+          FROM budgets b
+          WHERE b.user_id::text = $1
+            AND lower(b.category) = lower($2)
+            AND COALESCE(b.is_active, true) = true
+          ORDER BY CASE WHEN b.parent_budget_id IS NOT NULL THEN 0 ELSE 1 END
+          LIMIT 1
+        ),
+        parent_budget AS (
+          SELECT p.id, p.category, COALESCE(p.amount, SUM(c.amount)) AS amount
+          FROM category_budget cb
+          JOIN budgets p ON p.id = COALESCE(cb.parent_budget_id, cb.id)
+          LEFT JOIN budgets c ON c.parent_budget_id = p.id AND COALESCE(c.is_active, true) = true
+          GROUP BY p.id, p.category, p.amount
+        ),
+        category_spend AS (
+          SELECT COALESCE(SUM(t.amount), 0) AS amount
+          FROM transactions t
+          JOIN category_budget cb ON lower(t.category) = lower(cb.category)
+          WHERE t.user_id::text = $1
+            AND t.id::text <> $3
+            AND t.status = 'confirmed'
+            AND t.transaction_type = 'expense'
+            AND t.transaction_date >= $4::date
+            AND t.transaction_date < $5::date
+        ),
+        parent_categories AS (
+          SELECT cb.category FROM category_budget cb
+          UNION
+          SELECT c.category
+          FROM parent_budget pb
+          JOIN budgets c ON c.parent_budget_id = pb.id
+          WHERE COALESCE(c.is_active, true) = true
+        ),
+        parent_spend AS (
+          SELECT COALESCE(SUM(t.amount), 0) AS amount
+          FROM transactions t
+          WHERE t.user_id::text = $1
+            AND t.id::text <> $3
+            AND t.status = 'confirmed'
+            AND t.transaction_type = 'expense'
+            AND t.transaction_date >= $4::date
+            AND t.transaction_date < $5::date
+            AND lower(t.category) IN (SELECT lower(category) FROM parent_categories)
+        ),
+        total_budget AS (
+          SELECT COALESCE(SUM(amount), 0) AS amount
+          FROM budgets
+          WHERE user_id::text = $1
+            AND parent_budget_id IS NULL
+            AND COALESCE(is_active, true) = true
+            AND amount IS NOT NULL
+        ),
+        total_spend AS (
+          SELECT COALESCE(SUM(t.amount), 0) AS amount
+          FROM transactions t
+          WHERE t.user_id::text = $1
+            AND t.id::text <> $3
+            AND t.status = 'confirmed'
+            AND t.transaction_type = 'expense'
+            AND t.transaction_date >= $4::date
+            AND t.transaction_date < $5::date
+        )
+        SELECT
+          cb.id AS category_budget_id,
+          cb.category AS category_budget_category,
+          cb.amount AS category_budget_amount,
+          cs.amount AS category_spend_before,
+          pb.id AS parent_budget_id,
+          pb.category AS parent_budget_category,
+          pb.amount AS parent_budget_amount,
+          ps.amount AS parent_spend_before,
+          tb.amount AS total_budget_amount,
+          ts.amount AS total_spend_before
+        FROM total_budget tb
+        CROSS JOIN total_spend ts
+        LEFT JOIN category_budget cb ON true
+        LEFT JOIN parent_budget pb ON true
+        LEFT JOIN category_spend cs ON true
+        LEFT JOIN parent_spend ps ON true
+      `,
+      [
+        String(transaction.user_id),
+        transaction.category ?? "",
+        String(transaction.id),
+        cycle.cycle_start,
+        cycle.cycle_end,
+      ],
+    );
+    const row = result.rows[0];
+    const categoryBudgetAmount = this.nullableNumber(
+      row?.category_budget_amount,
+    );
+    const categorySpendBefore = this.nullableNumber(
+      row?.category_spend_before,
+    );
+    const parentAmount =
+      this.nullableNumber(row?.parent_budget_amount) ??
+      this.nullableNumber(row?.total_budget_amount);
+    const parentSpendBefore =
+      this.nullableNumber(row?.parent_spend_before) ??
+      this.nullableNumber(row?.total_spend_before);
+
+    return {
+      categoryBudgetId:
+        row?.category_budget_id === null || row?.category_budget_id === undefined
+          ? null
+          : String(row.category_budget_id),
+      categoryBudgetCategory: row?.category_budget_category ?? null,
+      categoryBudgetAmount,
+      categorySpendBefore,
+      categorySpendAfter:
+        categorySpendBefore === null ? null : categorySpendBefore + amount,
+      parentBudgetId:
+        row?.parent_budget_id === null || row?.parent_budget_id === undefined
+          ? null
+          : String(row.parent_budget_id),
+      parentBudgetCategory: row?.parent_budget_category ?? null,
+      parentBudgetAmount: parentAmount,
+      parentSpendBefore,
+      parentSpendAfter:
+        parentSpendBefore === null ? null : parentSpendBefore + amount,
+      transactionBudgetSharePercent:
+        parentAmount && parentAmount > 0 ? (amount / parentAmount) * 100 : null,
+      causedCategoryOverspend:
+        categoryBudgetAmount !== null &&
+        categorySpendBefore !== null &&
+        categorySpendBefore <= categoryBudgetAmount &&
+        categorySpendBefore + amount > categoryBudgetAmount,
+      causedParentOverspend:
+        parentAmount !== null &&
+        parentSpendBefore !== null &&
+        parentSpendBefore <= parentAmount &&
+        parentSpendBefore + amount > parentAmount,
+    };
+  }
+
+  private async largeTransactionHistory(
+    transaction: TransactionRow,
+    merchantNormalized: string | null,
+  ): Promise<RiskTransactionHistory> {
+    const transactionDate =
+      this.formatNullableTimestamp(transaction.transaction_date) ??
+      new Date().toISOString();
+    const since = new Date(
+      new Date(transactionDate).getTime() - RISK_HISTORY_WINDOW_DAYS * 86_400_000,
+    ).toISOString();
+    const amounts = await this.database.query<RiskAmountRow>(
+      `
+        SELECT amount
+        FROM transactions
+        WHERE user_id::text = $1
+          AND id::text <> $2
+          AND status = 'confirmed'
+          AND transaction_type = 'expense'
+          AND amount > 0
+          AND transaction_date >= $3::timestamptz
+          AND transaction_date < $4::timestamptz
+      `,
+      [String(transaction.user_id), String(transaction.id), since, transactionDate],
+    );
+    const merchantCount = merchantNormalized
+      ? await this.database.query<RiskCountRow>(
+          `
+            SELECT COUNT(*) AS count
+            FROM transactions
+            WHERE user_id::text = $1
+              AND id::text <> $2
+              AND status = 'confirmed'
+              AND transaction_type = 'expense'
+              AND transaction_date >= $3::timestamptz
+              AND transaction_date < $4::timestamptz
+              AND lower(COALESCE(merchant_normalized, merchant)) = lower($5)
+          `,
+          [
+            String(transaction.user_id),
+            String(transaction.id),
+            since,
+            transactionDate,
+            merchantNormalized,
+          ],
+        )
+      : null;
+
+    return {
+      amounts: amounts.rows
+        .map((row) => this.normalizeAmount(row.amount))
+        .filter((value) => value > 0),
+      merchantPriorCount: merchantCount
+        ? this.normalizeAmount(merchantCount.rows[0]?.count ?? 0)
+        : null,
+    };
+  }
+
+  private largeTransactionReasons(input: {
+    budgetFacts: RiskBudgetFacts;
+    medianMultiplier: number | null;
+    historyCount: number;
+    merchantPriorCount: number | null;
+    merchantNormalized: string | null;
+    burnRateUnsafe: boolean;
+  }): RiskReason[] {
+    const reasons: RiskReason[] = [];
+
+    if (
+      input.budgetFacts.transactionBudgetSharePercent !== null &&
+      input.budgetFacts.transactionBudgetSharePercent >=
+        RISK_BUDGET_SHARE_THRESHOLD
+    ) {
+      reasons.push({
+        code: "high_budget_share",
+        score: RISK_SIGNAL_SCORES.highBudgetShare,
+        message: `Transaction is ${this.round1(input.budgetFacts.transactionBudgetSharePercent)}% of the active monthly budget`,
+      });
+    }
+
+    if (
+      input.historyCount >= RISK_MIN_MEDIAN_HISTORY &&
+      input.medianMultiplier !== null &&
+      input.medianMultiplier >= RISK_UNUSUAL_MULTIPLIER_THRESHOLD
+    ) {
+      reasons.push({
+        code: "unusual_vs_median",
+        score: RISK_SIGNAL_SCORES.unusualVsMedian,
+        message: `Transaction is ${this.round1(input.medianMultiplier)}x larger than the recent median`,
+      });
+    }
+
+    if (
+      input.budgetFacts.causedCategoryOverspend ||
+      input.budgetFacts.causedParentOverspend
+    ) {
+      reasons.push({
+        code: "causes_budget_overspend",
+        score: RISK_SIGNAL_SCORES.causesBudgetOverspend,
+        message: "Transaction pushed a budget over 100%",
+      });
+    }
+
+    if (input.burnRateUnsafe) {
+      reasons.push({
+        code: "unsafe_burn_rate",
+        score: RISK_SIGNAL_SCORES.unsafeBurnRate,
+        message: "Projected cycle spending exceeds the active budget",
+      });
+    }
+
+    if (
+      input.merchantNormalized &&
+      input.merchantPriorCount !== null &&
+      input.merchantPriorCount < RISK_MERCHANT_FREQUENCY_THRESHOLD
+    ) {
+      reasons.push({
+        code: "low_frequency_merchant",
+        score: RISK_SIGNAL_SCORES.lowFrequencyMerchant,
+        message: "Merchant is uncommon in recent spending",
+      });
+    }
+
+    return reasons;
+  }
+
+  private async evaluateBurnRateRiskFacts(
+    transaction: TransactionRow,
+  ): Promise<RiskBurnRateFacts> {
+    if (!this.isLargeTransactionEligible(transaction)) {
+      return {
+        unsafe: false,
+        notification: null,
+        projectedCycleSpend: null,
+        budgetAmount: null,
+      };
+    }
+
+    const amount = this.normalizeAmount(transaction.amount);
+    const cycle = await this.riskCycle(transaction);
+    const facts = await this.largeTransactionBudgetFacts(transaction, amount, cycle);
+    const spent = facts.parentSpendAfter ?? 0;
+    const budgetAmount = facts.parentBudgetAmount;
+    const cycleStart = new Date(`${cycle.cycle_start}T00:00:00.000Z`);
+    const cycleEnd = new Date(`${cycle.cycle_end}T00:00:00.000Z`);
+    const elapsedDays = Math.max(1, this.daysBetween(cycleStart, new Date()));
+    const cycleDays = Math.max(1, this.daysBetween(cycleStart, cycleEnd));
+    const projectedCycleSpend = (spent / elapsedDays) * cycleDays;
+    const unsafe = budgetAmount !== null && projectedCycleSpend > budgetAmount;
+
+    return {
+      unsafe,
+      projectedCycleSpend,
+      budgetAmount,
+      notification: unsafe
+        ? {
+            type: "burn_rate",
+            priority: 3,
+            severity: "warning",
+            message: `Burn-rate projected spend ${this.formatCurrency(projectedCycleSpend)} exceeds ${this.formatCurrency(budgetAmount ?? 0)}`,
+          }
+        : null,
+    };
+  }
+
+  private median(values: number[]): number | null {
+    if (values.length === 0) return null;
+    const sorted = [...values].sort((left, right) => left - right);
+    const middle = Math.floor(sorted.length / 2);
+    return sorted.length % 2
+      ? sorted[middle]
+      : (sorted[middle - 1] + sorted[middle]) / 2;
+  }
+
+  private riskLevel(score: number): TransactionRiskLevel {
+    if (score >= RISK_LEVEL_BOUNDS.critical) return "critical";
+    if (score >= RISK_LEVEL_BOUNDS.high) return "high";
+    if (score >= RISK_LEVEL_BOUNDS.medium) return "medium";
+    return "low";
+  }
+
+  private largeTransactionFingerprint(transaction: TransactionRow): string {
+    return [
+      LARGE_TRANSACTION_EVALUATOR_VERSION,
+      transaction.id,
+      this.normalizeAmount(transaction.amount),
+      transaction.category ?? "",
+      transaction.merchant_normalized ?? "",
+      this.formatNullableTimestamp(transaction.transaction_date) ?? "",
+      transaction.status ?? "",
+      transaction.transaction_type ?? "",
+    ].join("|");
+  }
+
+  private buildLargeTransactionReviewText(
+    review: TransactionRiskReview,
+  ): string {
+    const metrics = review.riskMetrics;
+    const amount = this.formatCurrency(this.numberMetric(metrics.transactionAmount));
+    const merchant =
+      this.cleanString(metrics.merchantNormalized) ??
+      this.cleanString(metrics.merchant) ??
+      "Unknown";
+    const reasonLines = this.topRiskReasons(review.riskReasons).map(
+      (reason) => `• ${this.humanRiskReason(reason, metrics)}`,
+    );
+
+    return [
+      "<b>⚠️ Large transaction detected</b>",
+      "",
+      `${amount} at ${this.escapeTelegramHtml(this.titleCaseWords(merchant))}`,
+      ...reasonLines,
+      "",
+      "Was this purchase planned?",
+    ].join("\n");
+  }
+
+  private topRiskReasons(reasons: unknown[]): RiskReason[] {
+    const priority: Record<RiskReason["code"], number> = {
+      high_budget_share: 1,
+      unusual_vs_median: 2,
+      causes_budget_overspend: 3,
+      unsafe_burn_rate: 4,
+      low_frequency_merchant: 5,
+    };
+
+    return reasons
+      .filter((reason): reason is RiskReason => this.isRiskReason(reason))
+      .sort(
+        (left, right) =>
+          right.score - left.score || priority[left.code] - priority[right.code],
+      )
+      .slice(0, 3);
+  }
+
+  private isRiskReason(reason: unknown): reason is RiskReason {
+    if (!reason || typeof reason !== "object") return false;
+    const value = reason as Partial<RiskReason>;
+    return typeof value.code === "string" && typeof value.score === "number";
+  }
+
+  private humanRiskReason(
+    reason: RiskReason,
+    metrics: Record<string, unknown>,
+  ): string {
+    if (reason.code === "high_budget_share") {
+      return `${this.round1(this.numberMetric(metrics.transactionBudgetSharePercent))}% of your monthly budget`;
+    }
+
+    if (reason.code === "unusual_vs_median") {
+      return `${this.round1(this.numberMetric(metrics.medianMultiplier))}x larger than your recent median`;
+    }
+
+    if (reason.code === "causes_budget_overspend") {
+      const category = this.cleanString(metrics.categoryBudgetCategory);
+      return category
+        ? `This pushed ${this.escapeTelegramHtml(category)} over budget`
+        : "This pushed a budget over 100%";
+    }
+
+    if (reason.code === "unsafe_burn_rate") {
+      return "Your burn rate is projected to exceed budget";
+    }
+
+    return "This merchant is uncommon for you";
+  }
+
+  private nullableNumber(value: unknown): number | null {
+    if (value === null || value === undefined) return null;
+    const numberValue = Number(value);
+    return Number.isFinite(numberValue) ? numberValue : null;
+  }
+
+  private numberMetric(value: unknown): number {
+    return this.nullableNumber(value) ?? 0;
+  }
+
+  private round1(value: number): number {
+    return Math.round(value * 10) / 10;
+  }
+
+  private meaningfulMerchant(value: string | null | undefined): boolean {
+    const merchant = this.cleanString(value ?? undefined);
+    return Boolean(merchant && !this.isUnknownMerchant(merchant));
+  }
+
+  private daysBetween(start: Date, end: Date): number {
+    return Math.ceil((end.getTime() - start.getTime()) / 86_400_000);
+  }
+
+  private calculateRiskCycle(
+    referenceDate: Date,
+    cycleStartDay: number | string | null | undefined,
+  ): { cycle_start: string; cycle_end: string } {
+    const day = Math.min(Math.max(Math.trunc(Number(cycleStartDay ?? 1)), 1), 31);
+    const startThisMonth = this.utcRiskCycleDate(
+      referenceDate.getUTCFullYear(),
+      referenceDate.getUTCMonth(),
+      day,
+    );
+    const start =
+      referenceDate.getTime() >= startThisMonth.getTime()
+        ? startThisMonth
+        : this.utcRiskCycleDate(
+            referenceDate.getUTCFullYear(),
+            referenceDate.getUTCMonth() - 1,
+            day,
+          );
+    const end = this.utcRiskCycleDate(
+      start.getUTCFullYear(),
+      start.getUTCMonth() + 1,
+      day,
+    );
+
+    return {
+      cycle_start: start.toISOString().slice(0, 10),
+      cycle_end: end.toISOString().slice(0, 10),
+    };
+  }
+
+  private utcRiskCycleDate(year: number, month: number, day: number): Date {
+    const daysInMonth = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+    return new Date(Date.UTC(year, month, Math.min(day, daysInMonth)));
   }
 
   private buildWatchdogRiskReplyMarkup(
@@ -3641,21 +4256,21 @@ export class TransactionService {
         [
           {
             text: "Planned",
-            callback_data: `veyra_regret:planned:${reviewId}`,
+            callback_data: `veyra_risk:${reviewId}:planned`,
           },
           {
-            text: "Impulse",
-            callback_data: `veyra_regret:impulse:${reviewId}`,
+            text: "Necessary",
+            callback_data: `veyra_risk:${reviewId}:necessary`,
           },
         ],
         [
           {
-            text: "Wrong category",
-            callback_data: `veyra_regret:wrong_category:${reviewId}`,
+            text: "Regret it",
+            callback_data: `veyra_risk:${reviewId}:regret`,
           },
           {
-            text: "Add note",
-            callback_data: `veyra_regret:add_note:${reviewId}`,
+            text: "Ignore",
+            callback_data: `veyra_risk:${reviewId}:ignore`,
           },
         ],
       ],
@@ -3666,11 +4281,18 @@ export class TransactionService {
     message: string,
     watchdog: TransactionWatchdogResponseDto | undefined,
   ): string {
-    if (!watchdog?.watchdog?.hasAlert || !watchdog.watchdog.message?.text) {
+    const sections = [
+      ...(watchdog?.notifications ?? [])
+        .filter((notification) => notification.message.includes("\n"))
+        .map((notification) => notification.message),
+      watchdog?.watchdog?.hasAlert ? watchdog.watchdog.message?.text : null,
+    ].filter((section): section is string => Boolean(section));
+
+    if (sections.length === 0) {
       return message;
     }
 
-    return `${message}\n\n${watchdog.watchdog.message.text}`;
+    return `${message}\n\n${sections.join("\n\n")}`;
   }
 
   private isResetText(value: string | undefined): boolean {
@@ -4025,39 +4647,34 @@ export class TransactionService {
       };
     }
 
-    if (action === "veyra_regret") {
+    if (action === "veyra_risk") {
       if (parts.length !== 3) {
         return {
-          action: "veyra_regret",
-          error: "Invalid regret callback.",
+          action: "veyra_risk",
+          error: "Invalid risk review callback.",
         };
       }
 
-      const regretAction =
-        parts[1] as ParsedTransactionCallback["regretAction"];
-      const reviewId = this.normalizeCallbackId(parts[2]);
+      const reviewId = this.normalizeCallbackId(parts[1]);
+      const riskAction = parts[2] as ParsedTransactionCallback["riskAction"];
 
       if (
         !reviewId ||
-        ![
-          "planned",
-          "impulse",
-          "wrong_category",
-          "add_note",
-          "ignore",
-        ].includes(regretAction ?? "")
+        !["planned", "necessary", "regret", "ignore"].includes(
+          riskAction ?? "",
+        )
       ) {
         return {
-          action: "veyra_regret",
+          action: "veyra_risk",
           reviewId,
-          error: "Invalid regret callback.",
+          error: "Invalid risk review callback.",
         };
       }
 
       return {
-        action: "veyra_regret",
+        action: "veyra_risk",
         reviewId,
-        regretAction,
+        riskAction,
       };
     }
 
@@ -4132,99 +4749,62 @@ export class TransactionService {
     };
   }
 
-  private async handleRegretCallback(input: {
+  private async handleRiskCallback(input: {
     request: TransactionCallbackHandleRequestDto;
     reviewId: number;
     userId: number;
-    action: NonNullable<ParsedTransactionCallback["regretAction"]>;
-    stateStore?: TransactionHandleStateStore;
+    action: NonNullable<ParsedTransactionCallback["riskAction"]>;
   }): Promise<TransactionCallbackHandleResponseDto> {
     const review = await this.getReviewById(input.reviewId, input.userId);
 
     if (!review) {
       return this.transactionCallbackError({
-        action: "veyra_regret",
-        text: "Regret review was not found.",
+        action: "veyra_risk",
+        text: "Transaction review was not found.",
         request: input.request,
       });
     }
 
-    if (input.action === "planned") {
-      await this.resolveAsPlanned(input.reviewId, input.userId);
+    if (review.status !== "pending") {
       return this.transactionCallbackOk({
-        action: "veyra_regret",
-        text: "Marked as planned.",
+        action: "veyra_risk",
+        text: "This transaction review was already answered.",
         request: input.request,
         transactionId: Number(review.transactionId),
         replyMarkup: null,
       });
     }
 
-    if (input.action === "impulse") {
-      await this.resolveAsImpulse(input.reviewId, input.userId);
+    const resolved = await this.resolveRiskReview(
+      input.reviewId,
+      input.userId,
+      input.action,
+    );
+
+    if (!resolved) {
       return this.transactionCallbackOk({
-        action: "veyra_regret",
-        text: "Marked as impulse.",
+        action: "veyra_risk",
+        text: "This transaction review was already answered.",
         request: input.request,
         transactionId: Number(review.transactionId),
         replyMarkup: null,
-      });
-    }
-
-    if (input.action === "ignore") {
-      await this.ignoreReview(input.reviewId, input.userId);
-      return this.transactionCallbackOk({
-        action: "veyra_regret",
-        text: "Ignored for this purchase.",
-        request: input.request,
-        transactionId: Number(review.transactionId),
-        replyMarkup: null,
-      });
-    }
-
-    if (input.action === "add_note") {
-      await input.stateStore?.upsertState?.({
-        userId: String(input.userId),
-        stateName: "veyra_regret_note",
-        stateData: {
-          review_id: String(input.reviewId),
-          transaction_id: review.transactionId,
-        },
-      });
-      return this.transactionCallbackOk({
-        action: "veyra_regret",
-        text: "What note should I add?",
-        request: input.request,
-        transactionId: Number(review.transactionId),
-        replyMarkup: null,
-      });
-    }
-
-    await this.markWrongCategory(input.reviewId, input.userId);
-    const result = await this.buildCategoryOptions({
-      transactionId: review.transactionId,
-      userId: String(input.userId),
-    });
-
-    if (result.status !== "ok") {
-      return this.transactionCallbackError({
-        action: "veyra_regret",
-        text: this.categoryOptionsStatusText(result.status),
-        request: input.request,
-        transactionId: Number(review.transactionId),
       });
     }
 
     return this.transactionCallbackOk({
-      action: "veyra_regret",
-      text: result.text ?? "Choose transaction category",
+      action: "veyra_risk",
+      text: this.riskResponseText(input.action),
       request: input.request,
       transactionId: Number(review.transactionId),
-      replyMarkup: this.attachReviewIdToCategoryButtons(
-        result.replyMarkup,
-        input.reviewId,
-      ),
+      replyMarkup: null,
     });
+  }
+
+  private riskResponseText(response: TransactionRiskUserResponse): string {
+    if (response === "planned") return "Noted. This purchase was planned.";
+    if (response === "necessary") return "Noted. This purchase was necessary.";
+    if (response === "regret") return "Recorded as a regretted purchase.";
+    return "Ignored.";
   }
 
   private buildCallbackTelegramPayload(input: {
@@ -4248,81 +4828,6 @@ export class TransactionService {
     }
 
     return telegram;
-  }
-
-  private buildRegretReviewText(review: TransactionRiskReview): string {
-    const metrics = review.riskMetrics;
-    const amount = this.cleanString(metrics.amount) ?? "This purchase";
-    const merchant = this.cleanString(metrics.merchant) ?? "this merchant";
-    const budget = this.cleanString(metrics.budgetCategory) ?? "your budget";
-    const percent = this.cleanString(metrics.remainingBudgetPercent);
-    const fact = percent
-      ? `${amount} at ${merchant} used ${percent}% of your remaining ${budget} budget.`
-      : `${amount} at ${merchant} may need a quick review.`;
-
-    return [
-      "<b>Explain this.</b>",
-      "",
-      this.escapeTelegramHtml(fact),
-      "That is not a small purchase.",
-      "",
-      "Was this planned?",
-    ].join("\n");
-  }
-
-  private buildRegretReviewReplyMarkup(
-    reviewId: string,
-  ): TelegramReplyMarkupDto {
-    return {
-      inline_keyboard: [
-        [
-          {
-            text: "Planned",
-            callback_data: `veyra_regret:planned:${reviewId}`,
-          },
-          {
-            text: "Impulse",
-            callback_data: `veyra_regret:impulse:${reviewId}`,
-          },
-        ],
-        [
-          {
-            text: "Wrong category",
-            callback_data: `veyra_regret:wrong_category:${reviewId}`,
-          },
-          {
-            text: "Add note",
-            callback_data: `veyra_regret:add_note:${reviewId}`,
-          },
-        ],
-        [{ text: "Ignore", callback_data: `veyra_regret:ignore:${reviewId}` }],
-      ],
-    };
-  }
-
-  private attachReviewIdToCategoryButtons(
-    replyMarkup: object | null | undefined,
-    reviewId: number,
-  ): object | null {
-    const markup = this.readRecord(replyMarkup);
-    const keyboard = Array.isArray(markup.inline_keyboard)
-      ? markup.inline_keyboard
-      : [];
-
-    return {
-      inline_keyboard: keyboard.map((row) =>
-        Array.isArray(row)
-          ? row.map((button) => {
-              const record = this.readRecord(button);
-              const callbackData = this.cleanString(record.callback_data);
-
-              return callbackData?.startsWith("catid:")
-                ? { ...record, callback_data: `${callbackData}:${reviewId}` }
-                : record;
-            })
-          : row,
-      ),
-    };
   }
 
   private requireRiskReviewRepository(): TransactionRiskReviewRepository {

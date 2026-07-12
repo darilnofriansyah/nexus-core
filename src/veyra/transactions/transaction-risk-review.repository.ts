@@ -2,20 +2,18 @@ import { Injectable } from '@nestjs/common';
 import { QueryResultRow } from 'pg';
 import { DatabaseService } from '../../database/database.service';
 
-export const REGRET_DETECTOR_RISK_TYPE = 'regret_detector';
+export const LARGE_TRANSACTION_RISK_TYPE = 'large_transaction';
 
 export type TransactionRiskLevel = 'low' | 'medium' | 'high' | 'critical';
 export type TransactionRiskReviewStatus =
   | 'pending'
   | 'resolved'
-  | 'ignored'
   | 'cancelled';
 export type TransactionRiskUserResponse =
   | 'planned'
-  | 'impulse'
-  | 'wrong_category'
-  | 'note_added'
-  | 'ignored';
+  | 'necessary'
+  | 'regret'
+  | 'ignore';
 
 export interface TransactionRiskReview {
   id: string;
@@ -41,6 +39,12 @@ export interface CreatePendingRiskReviewInput {
   riskScore?: number | null;
   riskReasons: unknown[];
   riskMetrics?: Record<string, unknown>;
+  status?: Extract<TransactionRiskReviewStatus, 'pending' | 'resolved'>;
+}
+
+export interface SaveRiskEvaluationResult {
+  review: TransactionRiskReview;
+  shouldNotify: boolean;
 }
 
 interface TransactionRiskReviewRow extends QueryResultRow {
@@ -67,6 +71,23 @@ export class TransactionRiskReviewRepository {
   async createPendingReview(
     input: CreatePendingRiskReviewInput,
   ): Promise<TransactionRiskReview> {
+    return (await this.saveLargeTransactionEvaluation(input)).review;
+  }
+
+  async saveLargeTransactionEvaluation(
+    input: CreatePendingRiskReviewInput,
+  ): Promise<SaveRiskEvaluationResult> {
+    const fingerprint = this.fingerprintFromMetrics(input.riskMetrics);
+    const existing = fingerprint
+      ? await this.findByFingerprint(input.transactionId, fingerprint)
+      : null;
+
+    if (existing) {
+      return { review: existing, shouldNotify: false };
+    }
+
+    await this.cancelPendingLargeTransactionReview(input.transactionId);
+
     const result = await this.database.query<TransactionRiskReviewRow>(
       `
         INSERT INTO transaction_risk_reviews (
@@ -79,29 +100,27 @@ export class TransactionRiskReviewRepository {
           risk_metrics,
           status
         )
-        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, 'pending')
-        ON CONFLICT (transaction_id, risk_type)
-          WHERE status = 'pending'
-        DO UPDATE SET
-          risk_level = EXCLUDED.risk_level,
-          risk_score = EXCLUDED.risk_score,
-          risk_reasons = EXCLUDED.risk_reasons,
-          risk_metrics = EXCLUDED.risk_metrics,
-          updated_at = now()
+        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8)
         RETURNING *
       `,
       [
         String(input.userId),
         String(input.transactionId),
-        REGRET_DETECTOR_RISK_TYPE,
+        LARGE_TRANSACTION_RISK_TYPE,
         input.riskLevel,
         input.riskScore ?? null,
         JSON.stringify(input.riskReasons),
         JSON.stringify(input.riskMetrics ?? {}),
+        input.status ?? 'pending',
       ],
     );
 
-    return this.mapRow(result.rows[0]);
+    const review = this.mapRow(result.rows[0]);
+
+    return {
+      review,
+      shouldNotify: review.status === 'pending',
+    };
   }
 
   async findById(
@@ -114,9 +133,10 @@ export class TransactionRiskReviewRepository {
         FROM transaction_risk_reviews
         WHERE id::text = $1
           AND user_id::text = $2
+          AND risk_type = $3
         LIMIT 1
       `,
-      [String(reviewId), String(userId)],
+      [String(reviewId), String(userId), LARGE_TRANSACTION_RISK_TYPE],
     );
 
     return result.rows[0] ? this.mapRow(result.rows[0]) : null;
@@ -126,7 +146,7 @@ export class TransactionRiskReviewRepository {
     reviewId: string | number,
     userId: string | number,
     userResponse: TransactionRiskUserResponse,
-    status: Extract<TransactionRiskReviewStatus, 'resolved' | 'ignored'>,
+    status: Extract<TransactionRiskReviewStatus, 'resolved'>,
     note?: string | null,
   ): Promise<TransactionRiskReview | null> {
     const result = await this.database.query<TransactionRiskReviewRow>(
@@ -139,31 +159,86 @@ export class TransactionRiskReviewRepository {
             updated_at = now()
         WHERE id::text = $1
           AND user_id::text = $2
+          AND risk_type = $6
+          AND status = 'pending'
         RETURNING *
       `,
-      [String(reviewId), String(userId), status, userResponse, note ?? null],
+      [
+        String(reviewId),
+        String(userId),
+        status,
+        userResponse,
+        note ?? null,
+        LARGE_TRANSACTION_RISK_TYPE,
+      ],
     );
 
     return result.rows[0] ? this.mapRow(result.rows[0]) : null;
   }
 
-  async markWrongCategory(
+  async cancelPendingLargeTransactionReview(
+    transactionId: string | number,
+  ): Promise<void> {
+    await this.database.query(
+      `
+        UPDATE transaction_risk_reviews
+        SET status = 'cancelled',
+            resolved_at = COALESCE(resolved_at, now()),
+            updated_at = now()
+        WHERE transaction_id::text = $1
+          AND risk_type = $2
+          AND status = 'pending'
+      `,
+      [String(transactionId), LARGE_TRANSACTION_RISK_TYPE],
+    );
+  }
+
+  async findPendingById(
     reviewId: string | number,
     userId: string | number,
   ): Promise<TransactionRiskReview | null> {
     const result = await this.database.query<TransactionRiskReviewRow>(
       `
-        UPDATE transaction_risk_reviews
-        SET user_response = 'wrong_category',
-            updated_at = now()
+        SELECT *
+        FROM transaction_risk_reviews
         WHERE id::text = $1
           AND user_id::text = $2
-        RETURNING *
+          AND risk_type = $3
+          AND status = 'pending'
+        LIMIT 1
       `,
-      [String(reviewId), String(userId)],
+      [String(reviewId), String(userId), LARGE_TRANSACTION_RISK_TYPE],
     );
 
     return result.rows[0] ? this.mapRow(result.rows[0]) : null;
+  }
+
+  private async findByFingerprint(
+    transactionId: string | number,
+    fingerprint: string,
+  ): Promise<TransactionRiskReview | null> {
+    const result = await this.database.query<TransactionRiskReviewRow>(
+      `
+        SELECT *
+        FROM transaction_risk_reviews
+        WHERE transaction_id::text = $1
+          AND risk_type = $2
+          AND risk_metrics->>'evaluationFingerprint' = $3
+        ORDER BY created_at DESC
+        LIMIT 1
+      `,
+      [String(transactionId), LARGE_TRANSACTION_RISK_TYPE, fingerprint],
+    );
+
+    return result.rows[0] ? this.mapRow(result.rows[0]) : null;
+  }
+
+  private fingerprintFromMetrics(
+    metrics: Record<string, unknown> | undefined,
+  ): string | null {
+    const value = metrics?.evaluationFingerprint;
+
+    return typeof value === 'string' && value ? value : null;
   }
 
   private mapRow(row: TransactionRiskReviewRow): TransactionRiskReview {

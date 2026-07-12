@@ -1303,11 +1303,10 @@ save_transaction:{transactionId}
 cancel_transaction:{transactionId}
 change_categories:{transactionId}
 catid:{budgetId}:{transactionId}
-veyra_regret:planned:{reviewId}
-veyra_regret:impulse:{reviewId}
-veyra_regret:wrong_category:{reviewId}
-veyra_regret:add_note:{reviewId}
-veyra_regret:ignore:{reviewId}
+veyra_risk:{reviewId}:planned
+veyra_risk:{reviewId}:necessary
+veyra_risk:{reviewId}:regret
+veyra_risk:{reviewId}:ignore
 veyra_tx_manage:select:{index}
 veyra_tx_manage:confirm
 veyra_tx_manage:cancel
@@ -1343,9 +1342,7 @@ Example response:
 }
 ```
 
-For `change_categories:{transactionId}`, `telegram.reply_markup` contains `inline_keyboard` buttons using `catid:{budgetId}:{transactionId}`. For `veyra_regret:wrong_category:{reviewId}`, Core API marks the review as `user_response = "wrong_category"` while keeping it pending, then returns the same category buttons with `catid:{budgetId}:{transactionId}:{reviewId}`; after category selection, Core API resolves the review and reruns transaction watchdog checks. Unknown or invalid callback data returns `status: "error"` and safe user-facing `telegram.text`.
-
-Regret note flow: `veyra_regret:add_note:{reviewId}` stores `conversation_states.state_name = "veyra_regret_note"` and asks for the note. Route that state through the existing record transaction branch and call `POST /api/veyra/transactions/handle`; Core API updates `transactions.notes`, stores `transaction_risk_reviews.note`, sets `user_response = "note_added"`, resolves the review, and resets state.
+For `change_categories:{transactionId}`, `telegram.reply_markup` contains `inline_keyboard` buttons using `catid:{budgetId}:{transactionId}`. For `veyra_risk:{reviewId}:{response}`, Core API validates ownership, requires a pending `large_transaction` review, stores `user_response` as `planned`, `necessary`, `regret`, or `ignore`, sets `status = "resolved"`, clears the inline keyboard, and returns Telegram-safe text. Duplicate risk callbacks return `This transaction review was already answered.` and do not overwrite the first response. Unknown or invalid callback data returns `status: "error"` and safe user-facing `telegram.text`.
 
 Manage callback example:
 
@@ -1417,78 +1414,77 @@ Telegram Callback Query Trigger
 
 This replaces only the transaction callback parsing/routing and per-branch HTTP Request mapping in n8n. Keep Telegram Callback Query triggers, Telegram edit/send execution, callback answer nodes, overspend orchestration, and credentials in n8n.
 
-### `POST /api/veyra/transactions/risk-reviews/regret-detector`
+### Large Transaction / Regret Detector v1
 
-Creates or updates the pending Regret Detector v1 review for one transaction and returns Telegram-safe HTML plus inline keyboard buttons. This stores first-class review metadata in `transaction_risk_reviews`; do not put Regret Detector state into `transactions.raw_payload`.
+The transaction Watchdog evaluates confirmed expense transactions after create, confirm, category confirmation, email review confirmation, and managed edits. It skips pending, rejected, non-expense, missing, and zero-value transactions. Core API is deterministic and does not call an LLM; n8n only forwards callback data and sends/edits Telegram messages.
 
-Example n8n HTTP Request body:
+Scoring defaults:
+
+```txt
++40 amount >= 20% of active parent or total monthly budget
++30 amount >= 3x the 90-day median confirmed expense, with at least 5 history rows
++25 transaction causally crosses category or parent budget over 100%
++20 shared Watchdog burn-rate projection exceeds active parent/total budget
++10 normalized merchant has fewer than 3 prior confirmed expense rows in 90 days
+```
+
+Scores cap at `100`. Levels are `low` (`0-29`), `medium` (`30-49`), `high` (`50-69`), and `critical` (`70-100`). Only high and critical reviews notify the user. Low and medium evaluations are persisted as resolved for audit/idempotency but add no Telegram section.
+
+Persistence uses `transaction_risk_reviews` with `risk_type = "large_transaction"`, structured `risk_reasons`, structured `risk_metrics`, and `risk_metrics.evaluationFingerprint`. The fingerprint includes evaluator version `large_transaction_v1`, transaction id, amount, category, normalized merchant, transaction date, status, and transaction type. Re-running Watchdog for the same fingerprint reuses the stored review and does not notify again. A material transaction edit cancels stale pending reviews and stores a new evaluation; resolved historical responses are preserved.
+
+Watchdog aggregation returns one response. If budget alert, burn-rate warning, and large-transaction risk all trigger, the transaction response appends the Telegram-safe sections into one message and exposes ordered `notifications` (`risk_review`, `budget_alert`, `burn_rate`).
+
+Example pending high-risk review:
 
 ```json
 {
-  "userId": 1,
-  "transactionId": 123,
-  "riskLevel": "high",
-  "riskScore": 82.5,
-  "riskReasons": ["large_purchase", "budget_remaining_spike"],
-  "riskMetrics": {
-    "amount": "Rp850.000",
-    "merchant": "Uniqlo",
-    "budgetCategory": "Shopping",
-    "remainingBudgetPercent": 38
+  "type": "risk_review",
+  "priority": 1,
+  "severity": "high",
+  "review_id": 42,
+  "message": "<b>⚠️ Large transaction detected</b>\n\nRp1.850.000 at Electronic City\n• 23.1% of your monthly budget\n• 4.2x larger than your recent median\n• This pushed Shopping over budget\n\nWas this purchase planned?",
+  "reply_markup": {
+    "inline_keyboard": [
+      [
+        { "text": "Planned", "callback_data": "veyra_risk:42:planned" },
+        { "text": "Necessary", "callback_data": "veyra_risk:42:necessary" }
+      ],
+      [
+        { "text": "Regret it", "callback_data": "veyra_risk:42:regret" },
+        { "text": "Ignore", "callback_data": "veyra_risk:42:ignore" }
+      ]
+    ]
   }
 }
 ```
 
-Example response:
+Risk callback example:
+
+```json
+{
+  "telegramUserId": "976684739",
+  "userId": 1,
+  "callbackData": "veyra_risk:42:regret"
+}
+```
+
+Risk callback response:
 
 ```json
 {
   "status": "ok",
-  "review": {
-    "id": "7",
-    "userId": "1",
-    "transactionId": "123",
-    "riskType": "regret_detector",
-    "riskLevel": "high",
-    "riskScore": 82.5,
-    "riskReasons": ["large_purchase", "budget_remaining_spike"],
-    "riskMetrics": {
-      "amount": "Rp850.000",
-      "merchant": "Uniqlo",
-      "budgetCategory": "Shopping",
-      "remainingBudgetPercent": 38
-    },
-    "status": "pending",
-    "userResponse": null,
-    "note": null,
-    "createdAt": "2026-07-06T00:00:00.000Z",
-    "updatedAt": "2026-07-06T00:00:00.000Z",
-    "resolvedAt": null
-  },
+  "action": "veyra_risk",
+  "transactionId": 123,
   "telegram": {
-    "text": "<b>Explain this.</b>\n\nRp850.000 at Uniqlo used 38% of your remaining Shopping budget.\nThat is not a small purchase.\n\nWas this planned?",
+    "method": "editMessageText",
+    "text": "Recorded as a regretted purchase.",
     "parse_mode": "HTML",
-    "reply_markup": {
-      "inline_keyboard": [
-        [
-          { "text": "Planned", "callback_data": "veyra_regret:planned:7" },
-          { "text": "Impulse", "callback_data": "veyra_regret:impulse:7" }
-        ],
-        [
-          {
-            "text": "Wrong category",
-            "callback_data": "veyra_regret:wrong_category:7"
-          },
-          { "text": "Add note", "callback_data": "veyra_regret:add_note:7" }
-        ],
-        [{ "text": "Ignore", "callback_data": "veyra_regret:ignore:7" }]
-      ]
-    }
+    "reply_markup": null
   }
 }
 ```
 
-This replaces only long-term Regret Detector review storage and deterministic Telegram response formatting. Keep trigger detection, scheduling, Telegram sending, callback forwarding, and any future LLM insight generation in n8n.
+This replaces only deterministic large-transaction risk evaluation, review storage, and callback resolution. Keep Telegram triggers, callback answering, Telegram sending/editing, credentials, retries, and workflow orchestration in n8n.
 
 ### `GET /api/veyra/conversation-states/:userId`
 

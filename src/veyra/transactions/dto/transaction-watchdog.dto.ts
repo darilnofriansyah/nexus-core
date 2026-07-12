@@ -3,7 +3,8 @@ import { BudgetWatchdogResponseDto } from "../../budgets/dto/overspending-check.
 
 export type TransactionWatchdogNotificationType =
   | "risk_review"
-  | "budget_alert";
+  | "budget_alert"
+  | "burn_rate";
 
 export interface TransactionWatchdogNotificationDto {
   type: TransactionWatchdogNotificationType;

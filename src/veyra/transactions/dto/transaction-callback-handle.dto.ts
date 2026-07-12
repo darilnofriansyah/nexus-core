@@ -5,7 +5,7 @@ export type TransactionCallbackHandleAction =
   | 'cancel_transaction'
   | 'change_categories'
   | 'catid'
-  | 'veyra_regret'
+  | 'veyra_risk'
   | 'veyra_tx_manage'
   | 'invalid_callback'
   | 'unknown_callback';

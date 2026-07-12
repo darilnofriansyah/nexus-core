@@ -130,18 +130,18 @@ const riskReview = {
   id: "7",
   userId: "1",
   transactionId: "123",
-  riskType: "regret_detector",
+  riskType: "large_transaction",
   riskLevel: "high" as const,
   riskScore: 82.5,
-  riskReasons: ["large_purchase"],
+  riskReasons: [{ code: "high_budget_share", score: 40 }],
   riskMetrics: {
-    amount: "Rp850.000",
+    transactionAmount: 850000,
     merchant: "Uniqlo",
-    budgetCategory: "Shopping",
-    remainingBudgetPercent: 38,
+    transactionBudgetSharePercent: 38,
+    evaluationFingerprint: "fp-1",
   },
-  status: "pending" as const,
-  userResponse: null,
+  status: "pending" as "pending" | "resolved" | "cancelled",
+  userResponse: null as string | null,
   note: null,
   createdAt: "2026-07-06T00:00:00.000Z",
   updatedAt: "2026-07-06T00:00:00.000Z",
@@ -158,6 +158,13 @@ function createRiskReviewRepository(review = riskReview) {
         calls.push({ method: "createPendingReview", args });
         return review;
       },
+      saveLargeTransactionEvaluation: async (...args: unknown[]) => {
+        calls.push({ method: "saveLargeTransactionEvaluation", args });
+        return { review, shouldNotify: true };
+      },
+      cancelPendingLargeTransactionReview: async (...args: unknown[]) => {
+        calls.push({ method: "cancelPendingLargeTransactionReview", args });
+      },
       findById: async (...args: unknown[]) => {
         calls.push({ method: "findById", args });
         return review;
@@ -165,10 +172,6 @@ function createRiskReviewRepository(review = riskReview) {
       resolve: async (...args: unknown[]) => {
         calls.push({ method: "resolve", args });
         return { ...review, status: args[3], userResponse: args[2] };
-      },
-      markWrongCategory: async (...args: unknown[]) => {
-        calls.push({ method: "markWrongCategory", args });
-        return { ...review, userResponse: "wrong_category" };
       },
     } as unknown as TransactionRiskReviewRepository,
   };
@@ -1614,7 +1617,7 @@ test("handles catid callback by setting category and confirming transaction", as
   assert.deepEqual(calls[2].values, ["Food", "123", "1"]);
 });
 
-test("creates regret detector review with Telegram-safe keyboard", async () => {
+test("creates large transaction review with Telegram-safe keyboard", async () => {
   const riskReviews = createRiskReviewRepository();
   const { service } = createService([], undefined, riskReviews.repository);
 
@@ -1628,123 +1631,85 @@ test("creates regret detector review with Telegram-safe keyboard", async () => {
   });
 
   assert.equal(result.status, "ok");
-  assert.match(result.telegram.text, /<b>Explain this\.<\/b>/);
-  assert.match(result.telegram.text, /Rp850\.000 at Uniqlo used 38%/);
+  assert.match(result.telegram.text, /<b>⚠️ Large transaction detected<\/b>/);
+  assert.match(result.telegram.text, /Rp850\.000 at Uniqlo/);
+  assert.match(result.telegram.text, /38% of your monthly budget/);
   assert.deepEqual(result.telegram.reply_markup, {
     inline_keyboard: [
       [
-        { text: "Planned", callback_data: "veyra_regret:planned:7" },
-        { text: "Impulse", callback_data: "veyra_regret:impulse:7" },
+        { text: "Planned", callback_data: "veyra_risk:7:planned" },
+        { text: "Necessary", callback_data: "veyra_risk:7:necessary" },
       ],
       [
-        {
-          text: "Wrong category",
-          callback_data: "veyra_regret:wrong_category:7",
-        },
-        { text: "Add note", callback_data: "veyra_regret:add_note:7" },
+        { text: "Regret it", callback_data: "veyra_risk:7:regret" },
+        { text: "Ignore", callback_data: "veyra_risk:7:ignore" },
       ],
-      [{ text: "Ignore", callback_data: "veyra_regret:ignore:7" }],
     ],
   });
 });
 
-test("handles regret planned callback by resolving review", async () => {
+test("handles risk planned callback by resolving review", async () => {
   const riskReviews = createRiskReviewRepository();
   const { service } = createService([], undefined, riskReviews.repository);
 
   const result = await service.handleTransactionCallback({
     telegramUserId: "976684739",
     userId: 1,
-    callbackData: "veyra_regret:planned:7",
+    callbackData: "veyra_risk:7:planned",
   });
 
   assert.equal(result.status, "ok");
-  assert.equal(result.action, "veyra_regret");
+  assert.equal(result.action, "veyra_risk");
   assert.equal(result.transactionId, 123);
-  assert.equal(result.telegram.text, "Marked as planned.");
+  assert.equal(result.telegram.text, "Noted. This purchase was planned.");
   assert.deepEqual(riskReviews.calls[1], {
     method: "resolve",
-    args: [7, 1, "planned", "resolved"],
+    args: [7, 1, "planned", "resolved", undefined],
   });
 });
 
-test("handles regret wrong category with category buttons carrying review id", async () => {
+test("handles risk necessary, regret, and ignore callbacks", async () => {
   const riskReviews = createRiskReviewRepository();
-  const { service } = createService(
-    [
-      [{ ...transaction, id: "123", user_id: "1" }],
-      [{ id: "10", category: "Food", parent_category: null }],
-    ],
-    undefined,
-    riskReviews.repository,
-  );
-
-  const result = await service.handleTransactionCallback({
-    telegramUserId: "976684739",
-    userId: 1,
-    callbackData: "veyra_regret:wrong_category:7",
-  });
-
-  assert.equal(result.status, "ok");
-  assert.equal(result.action, "veyra_regret");
-  assert.deepEqual(result.telegram.reply_markup, {
-    inline_keyboard: [[{ text: "Food", callback_data: "catid:10:123:7" }]],
-  });
-  assert.deepEqual(riskReviews.calls[1], {
-    method: "markWrongCategory",
-    args: [7, 1],
-  });
-});
-
-test("catid callback with review id resolves wrong-category review", async () => {
-  const riskReviews = createRiskReviewRepository();
-  const { service } = createService(
-    [
-      [{ ...transaction, id: "123", user_id: "1" }],
-      [{ id: "10", category: "Food", parent_category: null }],
-      [],
-    ],
-    undefined,
-    riskReviews.repository,
-  );
-
-  const result = await service.handleTransactionCallback({
-    telegramUserId: "976684739",
-    userId: 1,
-    callbackData: "catid:10:123:7",
-  });
-
-  assert.equal(result.status, "ok");
-  assert.equal(result.transactionId, 123);
-  assert.deepEqual(riskReviews.calls, [
-    { method: "resolve", args: [7, 1, "wrong_category", "resolved"] },
-  ]);
-});
-
-test("regret add note callback stores note-taking state", async () => {
-  const riskReviews = createRiskReviewRepository();
-  const state = createStateStore();
   const { service } = createService([], undefined, riskReviews.repository);
+  const cases = [
+    ["necessary", "Noted. This purchase was necessary."],
+    ["regret", "Recorded as a regretted purchase."],
+    ["ignore", "Ignored."],
+  ] as const;
 
-  const result = await service.handleTransactionCallback(
-    {
+  for (const [response, text] of cases) {
+    const result = await service.handleTransactionCallback({
       telegramUserId: "976684739",
       userId: 1,
-      callbackData: "veyra_regret:add_note:7",
-    },
-    state.store,
-  );
+      callbackData: `veyra_risk:7:${response}`,
+    });
+
+    assert.equal(result.status, "ok");
+    assert.equal(result.action, "veyra_risk");
+    assert.equal(result.telegram.text, text);
+  }
+});
+
+test("duplicate risk callback is safe and does not overwrite response", async () => {
+  const riskReviews = createRiskReviewRepository({
+    ...riskReview,
+    status: "resolved" as const,
+    userResponse: "planned",
+  });
+  const { service } = createService([], undefined, riskReviews.repository);
+
+  const result = await service.handleTransactionCallback({
+    telegramUserId: "976684739",
+    userId: 1,
+    callbackData: "veyra_risk:7:regret",
+  });
 
   assert.equal(result.status, "ok");
-  assert.equal(result.telegram.text, "What note should I add?");
-  assert.deepEqual(state.calls[0], {
-    method: "upsertState",
-    request: {
-      userId: "1",
-      stateName: "veyra_regret_note",
-      stateData: { review_id: "7", transaction_id: "123" },
-    },
-  });
+  assert.equal(result.telegram.text, "This transaction review was already answered.");
+  assert.equal(
+    riskReviews.calls.some((call) => call.method === "resolve"),
+    false,
+  );
 });
 
 test("regret note state updates transaction note and resolves review", async () => {
@@ -1779,7 +1744,7 @@ test("regret note state updates transaction note and resolves review", async () 
   });
   assert.deepEqual(riskReviews.calls[1], {
     method: "resolve",
-    args: ["7", 1, "note_added", "resolved", "Planned during payday sale"],
+    args: ["7", 1, "regret", "resolved", "Planned during payday sale"],
   });
   assert.deepEqual(state.calls.at(-1), {
     method: "resetState",
@@ -3125,6 +3090,38 @@ test("budget alert and risk review can return together", async () => {
           status: "confirmed",
         },
       ],
+      [{ cycle_start_day: 25 }],
+      [
+        {
+          category_budget_id: "12",
+          category_budget_category: "Shopping",
+          category_budget_amount: "100000",
+          category_spend_before: "0",
+          parent_budget_id: "12",
+          parent_budget_category: "Shopping",
+          parent_budget_amount: "200000",
+          parent_spend_before: "0",
+          total_budget_amount: "200000",
+          total_spend_before: "0",
+        },
+      ],
+      [{ cycle_start_day: 25 }],
+      [
+        {
+          category_budget_id: "12",
+          category_budget_category: "Shopping",
+          category_budget_amount: "100000",
+          category_spend_before: "0",
+          parent_budget_id: "12",
+          parent_budget_category: "Shopping",
+          parent_budget_amount: "200000",
+          parent_spend_before: "0",
+          total_budget_amount: "200000",
+          total_spend_before: "0",
+        },
+      ],
+      [],
+      [{ count: "0" }],
     ],
     budgetService,
     riskReviews.repository,

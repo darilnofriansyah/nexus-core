@@ -21,6 +21,9 @@ CREATE TABLE public.transaction_risk_reviews (
     CHECK (
       user_response IS NULL OR user_response IN (
         'planned',
+        'necessary',
+        'regret',
+        'ignore',
         'impulse',
         'wrong_category',
         'note_added',
@@ -37,6 +40,9 @@ ON public.transaction_risk_reviews (transaction_id);
 
 CREATE INDEX idx_transaction_risk_reviews_status
 ON public.transaction_risk_reviews (status);
+
+CREATE INDEX idx_transaction_risk_reviews_risk_type
+ON public.transaction_risk_reviews (risk_type);
 
 CREATE INDEX idx_transaction_risk_reviews_user_status
 ON public.transaction_risk_reviews (user_id, status);

@@ -436,6 +436,9 @@ CREATE TABLE public.transaction_risk_reviews (
     CHECK (
       user_response IS NULL OR user_response IN (
         'planned',
+        'necessary',
+        'regret',
+        'ignore',
         'impulse',
         'wrong_category',
         'note_added',
@@ -456,6 +459,13 @@ ON public.transaction_risk_reviews (transaction_id);
 
 CREATE INDEX idx_transaction_risk_reviews_status
 ON public.transaction_risk_reviews (status);
+
+CREATE INDEX idx_transaction_risk_reviews_risk_type
+ON public.transaction_risk_reviews (risk_type);
+
+CREATE INDEX idx_transaction_risk_reviews_fingerprint
+ON public.transaction_risk_reviews ((risk_metrics->>'evaluationFingerprint'))
+WHERE risk_type = 'large_transaction';
 
 CREATE INDEX idx_transaction_risk_reviews_user_status
 ON public.transaction_risk_reviews (user_id, status);
@@ -482,6 +492,9 @@ Allowed `status`:
 Allowed `user_response`:
 
 * `planned`
+* `necessary`
+* `regret`
+* `ignore`
 * `impulse`
 * `wrong_category`
 * `note_added`
@@ -489,10 +502,10 @@ Allowed `user_response`:
 
 Important:
 
-* Regret Detector v1 uses `risk_type = 'regret_detector'`.
+* Large Transaction / Regret Detector v1 uses `risk_type = 'large_transaction'`.
 * Trigger details belong in `risk_reasons`; numeric/context facts belong in `risk_metrics`.
-* Pending review idempotency is `(transaction_id, risk_type) WHERE status = 'pending'`.
-* `ignore` resolves only the current review as `status = 'ignored'`; it does not suppress future alerts globally.
+* Pending review idempotency is `(transaction_id, risk_type) WHERE status = 'pending'`; v1 also stores `risk_metrics.evaluationFingerprint` to avoid repeated notifications for unchanged transaction state.
+* `ignore` resolves only the current review as `status = 'resolved'` with `user_response = 'ignore'`; it does not suppress future alerts globally.
 
 ---
 
