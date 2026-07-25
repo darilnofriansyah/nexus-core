@@ -1,5 +1,5 @@
 import * as assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { mock, test } from 'node:test';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { DatabaseService } from '../../database/database.service';
 import { BudgetService } from './budget.service';
@@ -1385,85 +1385,93 @@ test('overspending handle returns no_alert without checking alert records below 
 });
 
 test('overspending handle fetches transaction and records Telegram-ready watchdog alert', async () => {
-  const { calls, service } = createService([
-    [
-      {
-        id: 123,
-        user_id: 1,
-        transaction_type: 'expense',
-        category: 'Food',
-        status: 'confirmed',
-        transaction_date: '2026-06-25',
-      },
-    ],
-    [{ cycle_start_day: 25 }],
-    [
-      {
-        budget_id: '12',
-        category: 'Food',
-        parent_budget_id: null,
-        budget_amount: '1000000',
-        spent_amount: '854000',
-      },
-    ],
-    [{ exists: false }],
-    [
-      {
-        budget_id: 12,
-        alert_type: 'budget_75',
-        threshold_percent: 75,
-        period_key: '2026-06-25',
-      },
-    ],
-    [{ exists: false }],
-    [
-      {
-        budget_id: 12,
-        alert_type: 'budget_forecast_overrun',
-        threshold_percent: 0,
-        period_key: '2026-06-25',
-      },
-    ],
-  ]);
-
-  const result = await service.handleOverspending({
-    userId: 1,
-    category: 'Food',
-    transactionId: 123,
-    asOfDate: '2026-06-25',
+  mock.timers.enable({
+    apis: ['Date'],
+    now: new Date('2026-07-05T02:00:00.000Z'),
   });
+  try {
+    const { calls, service } = createService([
+      [
+        {
+          id: 123,
+          user_id: 1,
+          transaction_type: 'expense',
+          category: 'Food',
+          status: 'confirmed',
+          transaction_date: '2026-06-25',
+        },
+      ],
+      [{ cycle_start_day: 25 }],
+      [
+        {
+          budget_id: '12',
+          category: 'Food',
+          parent_budget_id: null,
+          budget_amount: '1000000',
+          spent_amount: '854000',
+        },
+      ],
+      [{ exists: false }],
+      [
+        {
+          budget_id: 12,
+          alert_type: 'budget_75',
+          threshold_percent: 75,
+          period_key: '2026-06-25',
+        },
+      ],
+      [{ exists: false }],
+      [
+        {
+          budget_id: 12,
+          alert_type: 'budget_forecast_overrun',
+          threshold_percent: 0,
+          period_key: '2026-06-25',
+        },
+      ],
+    ]);
 
-  assert.equal(calls.length, 7);
-  assert.deepEqual(calls[0].values, ['123', '1']);
-  assert.deepEqual(calls[3].values, ['1', '12', 'budget_75', '2026-06-25']);
-  assert.match(calls[4].text, /INSERT INTO budget_alerts/);
-  assert.doesNotMatch(
-    calls[4].text,
-    /INSERT INTO budget_alerts\s*\(\s*user_id/,
-  );
-  assert.deepEqual(calls[5].values, [
-    '1',
-    '12',
-    'budget_forecast_overrun',
-    '2026-06-25',
-  ]);
-  assert.match(calls[6].text, /INSERT INTO budget_alerts/);
-  assert.doesNotMatch(
-    calls[6].text,
-    /INSERT INTO budget_alerts\s*\(\s*user_id/,
-  );
-  assert.equal(result.status, 'alert_required');
-  assert.equal(result.shouldAlert, true);
-  assert.match(result.message?.text ?? '', /<b>Budget warning\.<\/b>/);
-  assert.deepEqual(result.data, {
-    transactionId: 123,
-    userId: '1',
-    budgetId: '12',
-    category: 'Food',
-    alertType: 'budget_75',
-    spentPercent: 85.4,
-    remainingAmount: 146000,
-  });
+    const result = await service.handleOverspending({
+      userId: 1,
+      category: 'Food',
+      transactionId: 123,
+      asOfDate: '2026-06-25',
+    });
+
+    assert.equal(calls.length, 7);
+    assert.deepEqual(calls[0].values, ['123', '1']);
+    assert.deepEqual(calls[3].values, ['1', '12', 'budget_75', '2026-06-25']);
+    assert.match(calls[4].text, /INSERT INTO budget_alerts/);
+    assert.doesNotMatch(
+      calls[4].text,
+      /INSERT INTO budget_alerts\s*\(\s*user_id/,
+    );
+    assert.deepEqual(calls[5].values, [
+      '1',
+      '12',
+      'budget_forecast_overrun',
+      '2026-06-25',
+    ]);
+    assert.match(calls[6].text, /INSERT INTO budget_alerts/);
+    assert.doesNotMatch(
+      calls[6].text,
+      /INSERT INTO budget_alerts\s*\(\s*user_id/,
+    );
+    assert.equal(result.status, 'alert_required');
+    assert.equal(result.shouldAlert, true);
+    assert.match(result.message?.text ?? '', /<b>Budget warning\.<\/b>/);
+    assert.deepEqual(result.data, {
+      transactionId: 123,
+      userId: '1',
+      budgetId: '12',
+      category: 'Food',
+      alertType: 'budget_75',
+      spentPercent: 85.4,
+      remainingAmount: 146000,
+    });
+  } finally {
+    mock.timers.reset();
+  }
 });
 
 test('watchdog renders one warning block when multiple alert thresholds are crossed', async () => {
