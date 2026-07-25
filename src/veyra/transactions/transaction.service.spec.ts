@@ -249,6 +249,22 @@ test("normalizes uppercase transaction type", async () => {
   assert.equal(result.transactionType, "income");
 });
 
+test("normalizes income without merchant or category", async () => {
+  const { calls, service } = createService();
+
+  const result = await service.normalizeTransaction({
+    userId: "user-1",
+    transactionType: "income",
+    amount: 19_828_000,
+    merchant: "",
+  });
+
+  assert.equal(result.merchant, null);
+  assert.equal(result.merchantNormalized, null);
+  assert.equal(result.category, null);
+  assert.equal(calls.length, 0);
+});
+
 test("maps refund cashback and reversal cases safely", async () => {
   const { service } = createService([[], [], [], []]);
 
@@ -440,6 +456,95 @@ test("handles manual transaction with decimal confidence as confirmed", async ()
       },
     },
   ]);
+});
+
+test("records confirmed income without merchant or category", async () => {
+  const { calls, service } = createService([[{ id: "income-1" }], []]);
+
+  const result = await service.handleManualTransaction({
+    userId: 1,
+    source: "manual",
+    text: "I got my salary income with amount of 19828k",
+    llmResult: {
+      transaction_type: "income",
+      amount: 19_828_000,
+      confidence: 95,
+    },
+  });
+
+  assert.equal(result.status, "confirmed");
+  assert.equal(result.message, "✅ Recorded income: Rp19.828.000.");
+  assert.match(calls[0].text, /INSERT INTO transactions/);
+  assert.deepEqual(calls[0].values.slice(0, 6), [
+    "1",
+    "income",
+    19_828_000,
+    null,
+    null,
+    null,
+  ]);
+});
+
+test("records income with an optional merchant and no category", async () => {
+  const { calls, service } = createService([
+    [],
+    [],
+    [{ id: "income-office" }],
+    [],
+  ]);
+
+  const result = await service.handleManualTransaction({
+    userId: 1,
+    source: "manual",
+    llmResult: {
+      transaction_type: "income",
+      amount: 19_828_000,
+      merchant: "Office",
+      confidence: 95,
+    },
+  });
+
+  assert.equal(result.status, "confirmed");
+  assert.equal(result.message, "✅ Recorded income: Rp19.828.000 from Office.");
+  assert.equal(calls[2].values[5], null);
+});
+
+test("builds pending income confirmation without merchant or category", async () => {
+  const { service } = createService([[{ id: "income-pending" }], []]);
+
+  const result = await service.handleManualTransaction({
+    userId: 1,
+    source: "manual",
+    llmResult: {
+      transaction_type: "income",
+      amount: 19_828_000,
+      confidence: 80,
+    },
+  });
+
+  assert.equal(result.status, "pending");
+  assert.match(result.confirmationPayload?.text ?? "", /Type: Income/);
+  assert.match(result.confirmationPayload?.text ?? "", /Amount: Rp19\.828\.000/);
+  assert.doesNotMatch(result.confirmationPayload?.text ?? "", /Merchant:/);
+  assert.doesNotMatch(result.confirmationPayload?.text ?? "", /Category:/);
+});
+
+test("ignores merchant and category missing fields for income", async () => {
+  const { calls, service } = createService([[{ id: "income-2" }], []]);
+
+  const result = await service.handleManualTransaction({
+    userId: 1,
+    source: "manual",
+    llmResult: {
+      transaction_type: "income",
+      amount: 19_828_000,
+      confidence: 95,
+      missing_fields: ["merchant", "category"],
+    },
+  });
+
+  assert.equal(result.status, "confirmed");
+  assert.match(calls[0].text, /INSERT INTO transactions/);
 });
 
 test("confirmed manual transaction resets state after insert", async () => {

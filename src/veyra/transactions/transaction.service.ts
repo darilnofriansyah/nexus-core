@@ -385,29 +385,26 @@ export class TransactionService {
       throw new BadRequestException("amount must be positive");
     }
 
-    if (
-      (transactionType === "expense" || transactionType === "income") &&
-      !merchant
-    ) {
-      throw new BadRequestException(
-        "merchant is required for expense and income",
-      );
+    if (transactionType === "expense" && !merchant) {
+      throw new BadRequestException("merchant is required for expense");
     }
 
     const merchantNormalized = merchant
       ? await this.resolveMerchantNormalized(merchant)
-      : (merchant ?? "");
+      : transactionType === "income"
+        ? null
+        : (merchant ?? "");
     const category =
       providedCategory ??
       (merchant
-        ? await this.resolveCategory(merchantNormalized, merchant)
+        ? await this.resolveCategory(merchantNormalized ?? merchant, merchant)
         : null);
 
     return {
       userId,
       transactionType,
       amount,
-      merchant: merchant ?? "",
+      merchant: merchant ?? (transactionType === "income" ? null : ""),
       merchantNormalized,
       category,
       transactionDate,
@@ -477,7 +474,14 @@ export class TransactionService {
       };
     }
 
-    this.requireHandleMerchant(llmResult.merchant);
+    const transactionType = this.cleanString(
+      llmResult.transaction_type,
+    )?.toLowerCase();
+
+    if (transactionType !== "income") {
+      this.requireHandleMerchant(llmResult.merchant);
+    }
+
     const confidence = this.normalizeConfidence(llmResult.confidence);
     const normalized = await this.normalizeTransaction({
       userId: String(request.userId ?? ""),
@@ -491,7 +495,10 @@ export class TransactionService {
       rawPayload: llmResult,
     });
 
-    if (!normalized.category) {
+    if (
+      normalized.transactionType !== "income" &&
+      !normalized.category
+    ) {
       throw new BadRequestException("category is required");
     }
 
@@ -2636,11 +2643,13 @@ export class TransactionService {
       pendingTransactionId,
       transactionId,
     });
+    const income = request.transactionType === "income";
     const merchant =
       this.cleanString(request.merchantNormalized) ??
       this.cleanString(request.merchant) ??
-      "Unknown";
-    const category = this.cleanString(request.category) ?? "Uncategorized";
+      (income ? null : "Unknown");
+    const category =
+      this.cleanString(request.category) ?? (income ? null : "Uncategorized");
     const wallet = this.cleanString(request.wallet) ?? EMPTY_CONFIRMATION_FIELD;
     const notes =
       this.cleanString(request.notes ?? undefined) ?? EMPTY_CONFIRMATION_FIELD;
@@ -3313,7 +3322,20 @@ export class TransactionService {
   private firstMissingLlmField(
     llmResult: NonNullable<TransactionHandleRequestDto["llmResult"]>,
   ): string | null {
-    return this.cleanString(llmResult.missing_fields?.[0]) ?? null;
+    const income =
+      this.cleanString(llmResult.transaction_type)?.toLowerCase() === "income";
+
+    return (
+      llmResult.missing_fields
+        ?.map((field) => this.cleanString(field))
+        .find(
+          (field) =>
+            field &&
+            (!income ||
+              (field.toLowerCase() !== "merchant" &&
+                field.toLowerCase() !== "category")),
+        ) ?? null
+    );
   }
 
   private buildPendingTransactionPayload(
@@ -3382,7 +3404,10 @@ export class TransactionService {
   private async saveTransaction(
     input: SaveTransactionInputDto,
   ): Promise<SavedTransactionDto> {
-    if (!input.normalized.category) {
+    if (
+      input.normalized.transactionType !== "income" &&
+      !input.normalized.category
+    ) {
       throw new BadRequestException("category is required");
     }
 
@@ -3447,11 +3472,20 @@ export class TransactionService {
     watchdog?: TransactionWatchdogResponseDto,
   ): TransactionHandleResponseDto {
     if (transaction.status === "confirmed") {
-      const message = `${String.fromCodePoint(0x2705)} Recorded: ${this.formatCurrency(
-        transaction.amount,
-      )} at ${this.titleCaseWords(
-        transaction.merchantNormalized,
-      )} under ${transaction.category}.`;
+      const message =
+        transaction.transactionType === "income"
+          ? `${String.fromCodePoint(0x2705)} Recorded income: ${this.formatCurrency(
+              transaction.amount,
+            )}${
+              transaction.merchantNormalized
+                ? ` from ${this.titleCaseWords(transaction.merchantNormalized)}`
+                : ""
+            }.`
+          : `${String.fromCodePoint(0x2705)} Recorded: ${this.formatCurrency(
+              transaction.amount,
+            )} at ${this.titleCaseWords(
+              transaction.merchantNormalized ?? "",
+            )} under ${transaction.category}.`;
 
       return {
         status: transaction.status,
@@ -4541,8 +4575,8 @@ export class TransactionService {
   private buildConfirmationTextLines(input: {
     transactionType: NormalizedTransactionType;
     amount: number;
-    merchant: string;
-    category: string;
+    merchant: string | null;
+    category: string | null;
     wallet: string;
     notes: string;
     warningLines: string[];
@@ -4552,8 +4586,8 @@ export class TransactionService {
       "",
       `Type: ${this.titleCase(input.transactionType)}`,
       `Amount: ${this.formatCurrency(input.amount)}`,
-      `Merchant: ${input.merchant}`,
-      `Category: ${input.category}`,
+      ...(input.merchant ? [`Merchant: ${input.merchant}`] : []),
+      ...(input.category ? [`Category: ${input.category}`] : []),
       `Wallet: ${input.wallet}`,
       `Notes: ${input.notes}`,
       ...input.warningLines,
@@ -5256,8 +5290,8 @@ export class TransactionService {
   }
 
   private calculateConfidence(input: {
-    merchant: string | undefined;
-    merchantNormalized: string;
+    merchant: string | null | undefined;
+    merchantNormalized: string | null;
     category: string | null;
     warnings: string[];
   }): number {

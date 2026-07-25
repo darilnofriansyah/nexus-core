@@ -11,9 +11,9 @@ export interface TransactionConfirmationPayloadRequestDto {
   userId: string;
   transactionType: NormalizedTransactionType;
   amount: number;
-  merchant: string;
-  merchantNormalized?: string;
-  category: string;
+  merchant?: string | null;
+  merchantNormalized?: string | null;
+  category?: string | null;
   wallet?: string;
   notes?: string | null;
   transactionDate: string;
@@ -33,8 +33,8 @@ export interface TelegramReplyMarkupDto {
 
 export interface TransactionConfirmationSummaryDto {
   amount: number;
-  merchant: string;
-  category: string;
+  merchant: string | null;
+  category: string | null;
   wallet: string;
   notes: string;
 }

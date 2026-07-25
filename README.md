@@ -643,7 +643,7 @@ ON budget_alerts (budget_id, alert_type, period_key);
 
 ### `POST /api/veyra/transactions/normalize`
 
-Normalizes one transaction candidate without inserting it. This endpoint trims and validates input, maps transaction type to the database-safe values `expense`, `income`, `transfer`, or `reversal`, resolves `merchantNormalized` from production `merchant_aliases.alias_name` to `canonical_name` using the active `LIKE` matching behavior, and resolves `category` from `category_rules.merchant_pattern` using priority order when available.
+Normalizes one transaction candidate without inserting it. This endpoint trims and validates input, maps transaction type to the database-safe values `expense`, `income`, `transfer`, or `reversal`, resolves `merchantNormalized` from production `merchant_aliases.alias_name` to `canonical_name` using the active `LIKE` matching behavior, and resolves `category` from `category_rules.merchant_pattern` using priority order when available. Income may omit merchant and category; expenses still require merchant.
 
 Refund and cashback-like inputs are mapped to `income`; reversal, void, and chargeback-like inputs are mapped to `reversal`. Missing `transactionDate` defaults to the current timestamp, and missing `source` defaults to `manual`.
 
@@ -691,7 +691,9 @@ Handles one structured manual transaction result from the existing LLM parser. T
 
 The MVP supports `source: "manual"` only. `source: "email"` and other sources intentionally return `status: "unsupported_source"` for now; email transaction handling will be implemented later.
 
-Core API normalizes transaction type, amount, transaction date, merchant, merchant alias, category, and confidence, then inserts directly into the production `transactions` table. It does not write to `pending_transactions`, does not create merchant aliases or category rules, and does not send Telegram messages. If `llmResult.category` is provided, Core API accepts it even when it does not exist in `budgets`; if category is missing, Core API tries the existing `category_rules` lookup and rejects the request if no category can be resolved because `transactions.category` is required.
+Core API normalizes transaction type, amount, transaction date, merchant, merchant alias, category, and confidence, then inserts directly into the production `transactions` table. It does not write to `pending_transactions`, does not create merchant aliases or category rules, and does not send Telegram messages. Expenses require merchant and category; if `llmResult.category` is missing, Core API tries the existing `category_rules` lookup and rejects the request when no category resolves. Income may omit merchant and category, which are persisted as `NULL`.
+
+Apply `docs/migration/2026-07-24-income-nullable-category.sql` before deploying this compatible API version.
 
 Confidence may be sent as a decimal (`0.94`) or integer (`94`). Core API saves it as an integer from `0` to `100`; values `>= 90` are saved as `confirmed`, and lower values are saved as `pending`.
 
@@ -715,6 +717,23 @@ Example request body:
     "confidence": 0.94,
     "transaction_date": null,
     "notes": null,
+    "missing_fields": []
+  }
+}
+```
+
+Income request without merchant or category:
+
+```json
+{
+  "telegramUserId": "976684739",
+  "userId": 1,
+  "source": "manual",
+  "text": "I got my salary income with amount of 19828k",
+  "llmResult": {
+    "transaction_type": "income",
+    "amount": 19828000,
+    "confidence": 0.8,
     "missing_fields": []
   }
 }
@@ -825,7 +844,7 @@ Missing-field follow-up response:
 }
 ```
 
-Validation errors include missing `llmResult`, missing required transaction fields not reported through `llmResult.missing_fields`, invalid amount, missing merchant, missing or unresolved category, unsupported transaction type, and confidence outside `0` to `100` after normalization.
+Validation errors include missing `llmResult`, missing required transaction fields not reported through `llmResult.missing_fields`, invalid amount, missing expense merchant, missing or unresolved expense category, unsupported transaction type, and confidence outside `0` to `100` after normalization.
 
 ### `POST /api/veyra/transactions/manage/handle`
 
@@ -2106,7 +2125,7 @@ Body:
 }
 ```
 
-Use this after the existing manual transaction LLM parser. If the parser returns `missing_fields`, Core API persists `record_transaction_state`; n8n should send `data.message` to Telegram as the follow-up question and route the next message back through the record flow. If the user sends cancel/reset text while in transaction state, n8n can call this same endpoint with `source: "manual"` and `text`; Core API returns `data.status = "cancelled"` and clears the conversation state without inserting. For `data.status = "confirmed"`, send `data.message` to Telegram. For `data.status = "pending"`, send `data.confirmationPayload.text` with `data.confirmationPayload.reply_markup`; the buttons use the existing production callbacks `save_transaction:{transactionId}`, `cancel_transaction:{transactionId}`, and `change_categories:{transactionId}`. This replaces only the manual transaction normalize/insert/confirmation decision logic. Keep Telegram triggers, LLM parsing, Telegram sending, callback routing, email transaction handling, and credentials in n8n for now.
+Use this after the existing manual transaction LLM parser. If the parser returns `missing_fields`, Core API persists `record_transaction_state`; n8n should send `data.message` to Telegram as the follow-up question and route the next message back through the record flow. Merchant and category are optional for income: n8n should not report them as missing, and Core API ignores those two entries if they are present in an income `missing_fields` array. If the user sends cancel/reset text while in transaction state, n8n can call this same endpoint with `source: "manual"` and `text`; Core API returns `data.status = "cancelled"` and clears the conversation state without inserting. For `data.status = "confirmed"`, send `data.message` to Telegram. For `data.status = "pending"`, send `data.confirmationPayload.text` with `data.confirmationPayload.reply_markup`; the buttons use the existing production callbacks `save_transaction:{transactionId}`, `cancel_transaction:{transactionId}`, and `change_categories:{transactionId}`. This replaces only the manual transaction normalize/insert/confirmation decision logic. Keep Telegram triggers, LLM parsing, Telegram sending, callback routing, email transaction handling, and credentials in n8n for now.
 
 Recommended Veyra transaction confirmation payload node settings:
 

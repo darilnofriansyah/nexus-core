@@ -8,8 +8,8 @@ export interface NormalizeTransactionRequestDto {
   userId: string;
   transactionType: string;
   amount: number | string;
-  merchant: string;
-  category?: string;
+  merchant?: string | null;
+  category?: string | null;
   transactionDate?: string;
   source?: string;
   notes?: string | null;
@@ -20,8 +20,8 @@ export interface NormalizeTransactionResponseDto {
   userId: string;
   transactionType: NormalizedTransactionType;
   amount: number;
-  merchant: string;
-  merchantNormalized: string;
+  merchant: string | null;
+  merchantNormalized: string | null;
   category: string | null;
   transactionDate: string;
   source: string;

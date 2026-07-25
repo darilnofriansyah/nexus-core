@@ -67,9 +67,9 @@ export interface SavedTransactionDto {
   userId: string;
   transactionType: NormalizedTransactionType;
   amount: number;
-  merchant: string;
-  merchantNormalized: string;
-  category: string;
+  merchant: string | null;
+  merchantNormalized: string | null;
+  category: string | null;
   transactionDate: string;
   source: string;
   notes: string | null;

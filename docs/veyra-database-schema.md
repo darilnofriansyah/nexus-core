@@ -70,7 +70,7 @@ CREATE TABLE public.transactions (
   amount numeric(15, 2) NOT NULL,
   merchant text NULL,
   merchant_normalized text NULL,
-  category text NOT NULL,
+  category text NULL,
   transaction_date timestamptz NOT NULL,
   "source" varchar(30) NOT NULL,
   notes text NULL,
@@ -102,6 +102,10 @@ Allowed `transaction_type`:
 * `income`
 * `transfer`
 * `reversal`
+
+Income transactions may have null `merchant`, `merchant_normalized`, and
+`category` values. Application validation still requires merchant and category
+for expense transactions.
 
 Allowed `source`:
 
