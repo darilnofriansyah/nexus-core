@@ -32,6 +32,8 @@ const SUPPORTED = new Set<ConversationalIntent>([
   'spending_trend',
   'cashflow_summary',
   'burn_rate_forecast',
+  'daily_spending_review',
+  'weekly_spending_review',
 ]);
 
 const OPTIONAL_INSIGHT = new Set<ConversationalIntent>([
@@ -46,6 +48,7 @@ const ALWAYS_INSIGHT = new Set<ConversationalIntent>([
   'spending_trend',
   'cashflow_summary',
   'daily_average_spending',
+  'weekly_spending_review',
 ]);
 
 const NEVER_INSIGHT = new Set<ConversationalIntent>([
@@ -54,6 +57,7 @@ const NEVER_INSIGHT = new Set<ConversationalIntent>([
   'recent_transactions',
   'transaction_count',
   'burn_rate_forecast',
+  'daily_spending_review',
 ]);
 
 const DEFAULT_PERIODS: Partial<
@@ -68,6 +72,8 @@ const DEFAULT_PERIODS: Partial<
   largest_transactions: 'current_cycle',
   spending_trend: 'current_cycle',
   burn_rate_forecast: 'current_cycle',
+  daily_spending_review: 'today',
+  weekly_spending_review: 'this_week',
 };
 
 const INSIGHT_RULES = [
@@ -299,6 +305,14 @@ export class ConversationalService {
         hasData: total.count > 0,
         message: `${this.escape(category)}: <b>${this.formatRupiah(total.total)}</b> from ${total.count} transactions.`,
       };
+    }
+
+    if (intent === 'daily_spending_review') {
+      return this.dailySpendingReview(user, period);
+    }
+
+    if (intent === 'weekly_spending_review') {
+      return this.weeklySpendingReview(request, user, period, timezone, now);
     }
 
     if (intent === 'merchant_spending') {
@@ -549,6 +563,106 @@ export class ConversationalService {
       facts,
       hasData: current.count > 0 || previous.count > 0,
       message: `Current spending is <b>${this.formatRupiah(current.total)}</b>, ${direction} ${this.formatRupiah(Math.abs(changeAmount))} vs comparison.`,
+      comparisonPeriod,
+    };
+  }
+
+  private async dailySpendingReview(
+    user: ConversationalUser,
+    period: ConversationalPeriodDto,
+  ): Promise<IntentResult> {
+    const [summary, categories] = await Promise.all([
+      this.repository.expenseTotal(user.id, period.start, period.end),
+      this.repository.topCategories(user.id, period.start, period.end, 10),
+    ]);
+
+    return {
+      data: {
+        period,
+        total: summary.total,
+        count: summary.count,
+        categories,
+      },
+      facts: {
+        total: summary.total,
+        count: summary.count,
+        categories,
+      },
+      hasData: summary.count > 0,
+      message: this.dailyReviewMessage(summary.total, categories),
+    };
+  }
+
+  private async weeklySpendingReview(
+    request: ConversationalHandleRequestDto,
+    user: ConversationalUser,
+    period: ConversationalPeriodDto,
+    timezone: string,
+    now: Date,
+  ): Promise<IntentResult> {
+    const comparisonPeriod = this.resolvePeriod(
+      this.normalizePeriod(request.llmResult?.comparisonPeriod, 'last_week'),
+      user.cycleStartDay,
+      timezone,
+      now,
+    );
+    const [summary, previous, categories, merchants, weekparts] =
+      await Promise.all([
+        this.repository.expenseTotal(user.id, period.start, period.end),
+        this.repository.expenseTotal(
+          user.id,
+          comparisonPeriod.start,
+          comparisonPeriod.end,
+        ),
+        this.repository.topCategories(user.id, period.start, period.end, 5),
+        this.repository.topMerchants(user.id, period.start, period.end, 5),
+        this.repository.spendingByWeekpart(
+          user.id,
+          period.start,
+          period.end,
+          timezone,
+        ),
+      ]);
+    const categoriesWithShare = this.withShare(categories, summary.total);
+    const merchantsWithShare = this.withShare(merchants, summary.total);
+    const difference = summary.total - previous.total;
+    const pctChange =
+      previous.total === 0
+        ? null
+        : Math.round((difference / previous.total) * 1000) / 10;
+    const facts = {
+      weekly_spending: summary.total,
+      transaction_count: summary.count,
+      week_comparison: {
+        current_week: summary.total,
+        previous_week: previous.total,
+        difference,
+        pct_change: pctChange,
+      },
+      weekend_weekday_spending: weekparts,
+      top_categories: categoriesWithShare.map((item) => ({
+        category: item.name,
+        total: item.amount,
+        percentage: item.share_percent,
+        transactions: item.count,
+      })),
+      top_merchants: merchantsWithShare.map((item) => ({
+        merchant: item.name,
+        total: item.amount,
+        percentage: item.share_percent,
+        transactions: item.count,
+      })),
+    };
+
+    return {
+      data: { period, comparison_period: comparisonPeriod, ...facts },
+      facts,
+      hasData: summary.count > 0,
+      message: this.weeklyReviewMessage(
+        summary.total,
+        categoriesWithShare,
+        merchantsWithShare,
+      ),
       comparisonPeriod,
     };
   }
@@ -817,6 +931,66 @@ export class ConversationalService {
     };
   }
 
+  private dailyReviewMessage(total: number, categories: BreakdownItem[]): string {
+    const lines = [
+      '📊 Daily Summary',
+      '',
+      "Here's your daily report. Nothing was missed.",
+      '',
+      '💸 Total spent today:',
+      this.formatRupiah(total),
+    ];
+
+    if (categories.length) {
+      lines.push(
+        '',
+        ...categories.map(
+          (item) =>
+            `• ${this.escape(item.name)} — ${this.formatRupiah(item.amount)}`,
+        ),
+      );
+    }
+
+    return lines.join('\n');
+  }
+
+  private weeklyReviewMessage(
+    total: number,
+    categories: Array<BreakdownItem & { share_percent: number }>,
+    merchants: Array<BreakdownItem & { share_percent: number }>,
+  ): string {
+    const lines = [
+      '📊 Weekly Spending Review',
+      '',
+      '💸 Total Spending',
+      this.formatRupiah(total),
+    ];
+
+    if (categories.length) {
+      lines.push(
+        '',
+        '📂 Top Categories',
+        ...categories.map(
+          (item) =>
+            `• ${this.escape(item.name)}: ${this.formatRupiah(item.amount)} (${this.formatPercent(item.share_percent)})`,
+        ),
+      );
+    }
+
+    if (merchants.length) {
+      lines.push(
+        '',
+        '🏪 Top Merchants',
+        ...merchants.map(
+          (item) =>
+            `• ${this.escape(item.name)}: ${this.formatRupiah(item.amount)}`,
+        ),
+      );
+    }
+
+    return lines.join('\n');
+  }
+
   private needsInsight(
     intent: ConversationalIntent,
     requested: boolean,
@@ -889,6 +1063,10 @@ export class ConversationalService {
       share_percent:
         total === 0 ? 0 : Math.round((item.amount / total) * 1000) / 10,
     }));
+  }
+
+  private formatPercent(value: number): string {
+    return Number.isInteger(value) ? `${value}%` : `${value.toFixed(1)}%`;
   }
 
   private localParts(date: Date, timezone: string): PeriodParts {

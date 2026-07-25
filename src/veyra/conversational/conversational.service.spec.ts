@@ -9,6 +9,7 @@ import {
   ConversationalUser,
   DailyItem,
   TransactionItem,
+  WeekpartItem,
 } from './conversational.repository';
 import { clampLimit, ConversationalService } from './conversational.service';
 
@@ -35,6 +36,10 @@ class FakeRepository {
     },
   ];
   days: DailyItem[] = [{ date: '2026-07-01', amount: 50000, count: 1 }];
+  weekparts: WeekpartItem[] = [
+    { period: 'weekday', amount: 70000, count: 1 },
+    { period: 'weekend', amount: 30000, count: 1 },
+  ];
   budgets: BudgetItem[] = [];
   categoryTotals = new Map<string, AmountCount>([
     ['food', { total: 400000, count: 10 }],
@@ -90,6 +95,10 @@ class FakeRepository {
 
   async spendingByDay() {
     return this.days;
+  }
+
+  async spendingByWeekpart() {
+    return this.weekparts;
   }
 
   async cashflowSummary() {
@@ -411,6 +420,86 @@ test('spending_trend always returns needs_insight when data exists', async () =>
 
   assert.equal(result.status, 'needs_insight');
   assert.equal(result.insight_payload?.facts.change_percent, null);
+});
+
+test('daily_spending_review returns Telegram-ready summary without insight', async () => {
+  mock.timers.enable({
+    apis: ['Date'],
+    now: new Date('2026-07-05T02:00:00.000Z'),
+  });
+  try {
+    const { repo, service } = createService();
+    repo.expenseTotals = [{ total: 912125, count: 4 }];
+    repo.categories = [
+      { name: 'Gas', amount: 457125, count: 1 },
+      { name: 'Food', amount: 110000, count: 1 },
+    ];
+
+    const result = await service.handle({
+      userId: 1,
+      timezone: 'Asia/Jakarta',
+      llmResult: { intent: 'daily_spending_review' },
+    });
+
+    assert.equal(result.status, 'ok');
+    assert.equal(result.insight_payload, null);
+    assert.deepEqual(result.data.period, {
+      label: 'today',
+      start: '2026-07-05',
+      end: '2026-07-06',
+    });
+    assert.match(result.message.text, /Daily Summary/);
+    assert.match(result.message.text, /Rp912\.125/);
+    assert.match(result.message.text, /Gas — Rp457\.125/);
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test('weekly_spending_review returns deterministic facts for n8n insight LLM', async () => {
+  mock.timers.enable({
+    apis: ['Date'],
+    now: new Date('2026-07-05T02:00:00.000Z'),
+  });
+  try {
+    const { repo, service } = createService();
+    repo.expenseTotals = [
+      { total: 3941794, count: 7 },
+      { total: 3000000, count: 5 },
+    ];
+    repo.categories = [
+      { name: 'Bibit', amount: 1000000, count: 1 },
+      { name: 'Bills', amount: 650000, count: 1 },
+    ];
+    repo.merchants = [
+      { name: 'M-PASPOR', amount: 650000, count: 1 },
+      { name: 'Shopee', amount: 584939, count: 2 },
+    ];
+
+    const result = await service.handle({
+      userId: 1,
+      timezone: 'Asia/Jakarta',
+      text: 'weekly spending review',
+      llmResult: { intent: 'weekly_spending_review' },
+    });
+    const facts = result.insight_payload?.facts as {
+      week_comparison?: { current_week?: unknown; pct_change?: unknown };
+      weekend_weekday_spending?: unknown;
+    };
+
+    assert.equal(result.status, 'needs_insight');
+    assert.match(result.message.text, /Weekly Spending Review/);
+    assert.match(result.message.text, /Bibit: Rp1\.000\.000 \(25\.4%\)/);
+    assert.doesNotMatch(result.message.text, /Insights|Verdict/);
+    assert.equal(facts.week_comparison?.current_week, 3941794);
+    assert.equal(facts.week_comparison?.pct_change, 31.4);
+    assert.deepEqual(facts.weekend_weekday_spending, [
+      { period: 'weekday', amount: 70000, count: 1 },
+      { period: 'weekend', amount: 30000, count: 1 },
+    ]);
+  } finally {
+    mock.timers.reset();
+  }
 });
 
 test('cashflow_summary always returns needs_insight when data exists', async () => {

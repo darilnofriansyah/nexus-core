@@ -2,7 +2,10 @@ import { Injectable } from "@nestjs/common";
 import {
   AegisN8nErrorAlertDto,
   AegisN8nErrorPayloadDto,
+  AegisRetryCallbackRequestDto,
+  AegisRetryCallbackResponseDto,
   AegisSeverity,
+  AegisTelegramReplyMarkupDto,
   N8nErrorReferenceDto,
   N8nErrorResponseReferenceDto,
   N8nExecutionReferenceDto,
@@ -12,8 +15,11 @@ import {
 const AEGIS_BOT_TOKEN_ENV = "AEGIS_TOKEN";
 const TELEGRAM_HTML_PARSE_MODE = "HTML";
 const TELEGRAM_SAFE_TEXT_LIMIT = 3900;
+const TELEGRAM_CALLBACK_DATA_LIMIT = 64;
 const UNKNOWN_VALUE = "Unknown";
 const REDACTED_VALUE = "[redacted]";
+const RETRY_CALLBACK_PREFIX = "aegis_retry";
+const RETRY_ANYWAY_CALLBACK_PREFIX = "aegis_retry_anyway";
 const SENSITIVE_KEY_PARTS = [
   "api_key",
   "api-key",
@@ -22,6 +28,29 @@ const SENSITIVE_KEY_PARTS = [
   "password",
   "secret",
   "cookie",
+];
+const RETRYABLE_HTTP_STATUSES = new Set([408, 409, 425, 429]);
+const NON_RETRYABLE_HTTP_STATUSES = new Set([400, 401, 403, 404, 422]);
+const RETRYABLE_ERROR_PATTERNS = [
+  "timeout",
+  "timed out",
+  "econnreset",
+  "etimedout",
+  "enotfound",
+  "eai_again",
+  "socket hang up",
+  "connection reset",
+  "fetch failed",
+];
+const NON_RETRYABLE_ERROR_PATTERNS = [
+  "missing required fields",
+  "bad request",
+  "invalid credentials",
+  "unauthorized",
+  "forbidden",
+  "validation",
+  "invalid parameter",
+  "invalid params",
 ];
 
 interface NormalizedIncident {
@@ -37,6 +66,14 @@ interface NormalizedIncident {
   errorMessage: string;
   httpFailure: HttpFailureSummary | null;
   requestSummary: RequestSummary | null;
+}
+
+interface RetryClassification {
+  eligible: boolean;
+  mode: "retryable" | "retry_anyway" | "not_retryable";
+  reason: string;
+  workflowId: string | null;
+  executionId: string | null;
 }
 
 interface HttpFailureSummary {
@@ -64,6 +101,8 @@ export class AegisAlertFormatterService {
   formatN8nErrorAlert(payload: AegisFormatterInput): AegisN8nErrorAlertDto {
     const incident = this.normalizeIncident(payload);
     const text = this.truncateTelegramText(this.renderIncident(incident));
+    const retry = this.classifyRetry(incident);
+    const replyMarkup = this.retryReplyMarkup(retry);
 
     return {
       chatText: text,
@@ -72,11 +111,66 @@ export class AegisAlertFormatterService {
       parse_mode: TELEGRAM_HTML_PARSE_MODE,
       disable_web_page_preview: true,
       bot_token_env: AEGIS_BOT_TOKEN_ENV,
+      ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+      retry,
       severity: incident.severity,
       workflowId: incident.workflowId,
       executionId: incident.executionId,
       executionUrl: incident.executionUrl,
     };
+  }
+
+  handleRetryCallback(
+    request: AegisRetryCallbackRequestDto,
+  ): AegisRetryCallbackResponseDto {
+    const callbackData = this.cleanString(
+      request.callbackData ?? request.data ?? request.callback_query?.data,
+    );
+    const chatId =
+      this.cleanString(request.chatId) ??
+      this.cleanString(request.callback_query?.message?.chat?.id) ??
+      null;
+    const messageId =
+      this.cleanString(request.messageId) ??
+      this.cleanString(request.callback_query?.message?.message_id) ??
+      null;
+    const adminChatId = this.cleanString(process.env.ADMIN_TELEGRAM_ID);
+
+    if (adminChatId && chatId !== adminChatId) {
+      return this.retryCallbackResponse(
+        "unauthorized",
+        "none",
+        null,
+        null,
+        chatId,
+        messageId,
+        "Retry rejected: this Aegis action is admin-only.",
+      );
+    }
+
+    const parsed = this.parseRetryCallbackData(callbackData);
+
+    if (!parsed) {
+      return this.retryCallbackResponse(
+        "invalid",
+        "none",
+        null,
+        null,
+        chatId,
+        messageId,
+        "Retry rejected: unsupported Aegis callback.",
+      );
+    }
+
+    return this.retryCallbackResponse(
+      "ready",
+      "retry_execution",
+      parsed.workflowId,
+      parsed.executionId,
+      chatId,
+      messageId,
+      `Retry requested for execution ${this.escapeHtml(parsed.executionId)}.`,
+    );
   }
 
   private normalizeIncident(payload: AegisFormatterInput): NormalizedIncident {
@@ -198,6 +292,177 @@ export class AegisAlertFormatterService {
     return `${summary.telegramUserId ?? UNKNOWN_VALUE} / ${
       summary.userId ?? UNKNOWN_VALUE
     }`;
+  }
+
+  private classifyRetry(incident: NormalizedIncident): RetryClassification {
+    const base = {
+      workflowId: incident.workflowId,
+      executionId: incident.executionId,
+    };
+
+    if (!incident.workflowId || !incident.executionId) {
+      return {
+        ...base,
+        eligible: false,
+        mode: "not_retryable",
+        reason: "missing_retry_target",
+      };
+    }
+
+    const status = this.httpStatusCode(incident.httpFailure?.status);
+    const haystack = [
+      incident.errorMessage,
+      incident.httpFailure?.response,
+      incident.httpFailure?.endpoint,
+      incident.failedNode,
+      incident.lastNode,
+    ]
+      .filter((value): value is string => Boolean(value))
+      .join(" ")
+      .toLowerCase();
+
+    if (status !== null && NON_RETRYABLE_HTTP_STATUSES.has(status)) {
+      return {
+        ...base,
+        eligible: false,
+        mode: "not_retryable",
+        reason: "non_retryable_http_status",
+      };
+    }
+
+    if (
+      NON_RETRYABLE_ERROR_PATTERNS.some((pattern) =>
+        haystack.includes(pattern),
+      )
+    ) {
+      return {
+        ...base,
+        eligible: false,
+        mode: "not_retryable",
+        reason: "non_retryable_error",
+      };
+    }
+
+    if (
+      status !== null &&
+      (RETRYABLE_HTTP_STATUSES.has(status) || status >= 500)
+    ) {
+      return {
+        ...base,
+        eligible: true,
+        mode: "retryable",
+        reason: "transient_http_failure",
+      };
+    }
+
+    if (
+      RETRYABLE_ERROR_PATTERNS.some((pattern) => haystack.includes(pattern))
+    ) {
+      return {
+        ...base,
+        eligible: true,
+        mode: "retryable",
+        reason: "transient_error_message",
+      };
+    }
+
+    return {
+      ...base,
+      eligible: true,
+      mode: "retry_anyway",
+      reason: incident.httpFailure
+        ? "unclassified_error"
+        : "missing_http_details",
+    };
+  }
+
+  private retryReplyMarkup(
+    retry: RetryClassification,
+  ): AegisTelegramReplyMarkupDto | null {
+    if (!retry.eligible || !retry.workflowId || !retry.executionId) {
+      return null;
+    }
+
+    const prefix =
+      retry.mode === "retryable"
+        ? RETRY_CALLBACK_PREFIX
+        : RETRY_ANYWAY_CALLBACK_PREFIX;
+    const callbackData = `${prefix}:${retry.workflowId}:${retry.executionId}`;
+
+    if (callbackData.length > TELEGRAM_CALLBACK_DATA_LIMIT) {
+      return null;
+    }
+
+    return {
+      inline_keyboard: [
+        [
+          {
+            text:
+              retry.mode === "retryable" ? "Retry workflow" : "Retry anyway",
+            callback_data: callbackData,
+          },
+        ],
+      ],
+    };
+  }
+
+  private parseRetryCallbackData(
+    callbackData: string | undefined,
+  ): { workflowId: string; executionId: string } | null {
+    if (!callbackData) {
+      return null;
+    }
+
+    const parts = callbackData.split(":");
+    const prefix = parts[0];
+
+    if (
+      parts.length !== 3 ||
+      (prefix !== RETRY_CALLBACK_PREFIX &&
+        prefix !== RETRY_ANYWAY_CALLBACK_PREFIX)
+    ) {
+      return null;
+    }
+
+    const workflowId = this.cleanString(parts[1]);
+    const executionId = this.cleanString(parts[2]);
+
+    return workflowId && executionId ? { workflowId, executionId } : null;
+  }
+
+  private retryCallbackResponse(
+    status: AegisRetryCallbackResponseDto["status"],
+    action: AegisRetryCallbackResponseDto["action"],
+    workflowId: string | null,
+    executionId: string | null,
+    chatId: string | null,
+    messageId: string | null,
+    text: string,
+  ): AegisRetryCallbackResponseDto {
+    return {
+      status,
+      action,
+      workflowId,
+      executionId,
+      telegram: {
+        editMessageText: {
+          chat_id: chatId,
+          message_id: messageId,
+          text,
+          parse_mode: TELEGRAM_HTML_PARSE_MODE,
+          reply_markup: null,
+        },
+      },
+    };
+  }
+
+  private httpStatusCode(status: string | null | undefined): number | null {
+    if (!status) {
+      return null;
+    }
+
+    const match = status.match(/\d{3}/);
+    return match ? Number(match[0]) : null;
   }
 
   private normalizeSeverity(severity?: string): AegisSeverity {

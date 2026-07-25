@@ -44,6 +44,36 @@ test('category totals keep the same confirmed expense filter', async () => {
   ]);
 });
 
+test('weekpart spending uses user-scoped confirmed expense transaction dates', async () => {
+  const { calls, repository } = createRepository([
+    [{ period: 'weekday', amount: '120000', count: '2' }],
+  ]);
+
+  const result = await repository.spendingByWeekpart(
+    '1',
+    '2026-06-29',
+    '2026-07-06',
+    'Asia/Jakarta',
+  );
+
+  assert.match(calls[0].text, /user_id::text = \$1/);
+  assert.match(calls[0].text, /status = 'confirmed'/);
+  assert.match(calls[0].text, /transaction_type = 'expense'/);
+  assert.match(calls[0].text, /transaction_date >= \$2::date/);
+  assert.match(calls[0].text, /transaction_date < \$3::date/);
+  assert.match(calls[0].text, /AT TIME ZONE \$4/);
+  assert.doesNotMatch(calls[0].text, /created_at/);
+  assert.deepEqual(calls[0].values, [
+    '1',
+    '2026-06-29',
+    '2026-07-06',
+    'Asia/Jakarta',
+  ]);
+  assert.deepEqual(result, [
+    { period: 'weekday', amount: 120000, count: 2 },
+  ]);
+});
+
 test('active budgets aggregate child budget amounts and categories', async () => {
   const { calls, repository } = createRepository([
     [

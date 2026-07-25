@@ -33,6 +33,12 @@ export interface DailyItem {
   count: number;
 }
 
+export interface WeekpartItem {
+  period: 'weekday' | 'weekend';
+  amount: number;
+  count: number;
+}
+
 export interface CashflowSummary {
   incomeTotal: number;
   expenseTotal: number;
@@ -74,6 +80,12 @@ interface TransactionRow extends QueryResultRow {
 
 interface DailyRow extends QueryResultRow {
   day: string | Date;
+  amount: string | number | null;
+  count: string | number;
+}
+
+interface WeekpartRow extends QueryResultRow {
+  period: 'weekday' | 'weekend';
   amount: string | number | null;
   count: string | number;
 }
@@ -314,6 +326,41 @@ export class ConversationalRepository {
 
     return result.rows.map((row) => ({
       date: this.formatDate(row.day),
+      amount: Number(row.amount ?? 0),
+      count: Number(row.count),
+    }));
+  }
+
+  async spendingByWeekpart(
+    userId: string,
+    start: string,
+    end: string,
+    timezone: string,
+  ): Promise<WeekpartItem[]> {
+    const result = await this.database.query<WeekpartRow>(
+      `
+        SELECT
+          CASE
+            WHEN EXTRACT(ISODOW FROM transaction_date AT TIME ZONE $4) IN (6, 7)
+              THEN 'weekend'
+            ELSE 'weekday'
+          END AS period,
+          COALESCE(SUM(amount), 0) AS amount,
+          COUNT(*) AS count
+        FROM transactions
+        WHERE user_id::text = $1
+          AND status = 'confirmed'
+          AND transaction_type = 'expense'
+          AND transaction_date >= $2::date
+          AND transaction_date < $3::date
+        GROUP BY period
+        ORDER BY period
+      `,
+      [userId, start, end, timezone],
+    );
+
+    return result.rows.map((row) => ({
+      period: row.period,
       amount: Number(row.amount ?? 0),
       count: Number(row.count),
     }));

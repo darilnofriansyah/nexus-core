@@ -124,6 +124,13 @@ Example response:
   "parse_mode": "HTML",
   "disable_web_page_preview": true,
   "bot_token_env": "AEGIS_TOKEN",
+  "retry": {
+    "eligible": false,
+    "mode": "not_retryable",
+    "reason": "non_retryable_http_status",
+    "workflowId": "z4ZSHXh84SMSt8MR",
+    "executionId": "2212"
+  },
   "severity": "ERROR",
   "workflowId": "z4ZSHXh84SMSt8MR",
   "executionId": "2212",
@@ -132,6 +139,70 @@ Example response:
 ```
 
 The formatter reads nested HTTP Request failures from `execution.error.errorResponse` when n8n provides them, including status code, response messages, request method, request URI, and a safe request-body summary. Embedded JSON inside `errorResponse.messages` is summarized when possible. Sensitive keys such as tokens, authorization headers, cookies, passwords, API keys, and secrets are redacted; stack traces, headers, full raw payloads, and full request bodies are not included in Telegram text.
+
+Retry buttons are included only when Core API has a workflow id and execution id. `Retry workflow` is returned for likely transient failures such as HTTP `408`, `409`, `425`, `429`, HTTP `5xx`, timeouts, DNS/network failures, connection resets, and fetch failures. `Retry anyway` is returned when n8n does not provide enough HTTP details to classify the failure. No retry button is returned for known client/auth/validation failures such as HTTP `400`, `401`, `403`, `404`, `422`, bad request, missing required fields, unauthorized, forbidden, invalid credentials, or validation errors.
+
+Retryable alert response shape:
+
+```json
+{
+  "text": "🚨 <b>Aegis Incident</b>...",
+  "parse_mode": "HTML",
+  "reply_markup": {
+    "inline_keyboard": [
+      [
+        {
+          "text": "Retry workflow",
+          "callback_data": "aegis_retry:z4ZSHXh84SMSt8MR:2212"
+        }
+      ]
+    ]
+  },
+  "retry": {
+    "eligible": true,
+    "mode": "retryable",
+    "reason": "transient_http_failure",
+    "workflowId": "z4ZSHXh84SMSt8MR",
+    "executionId": "2212"
+  }
+}
+```
+
+### `POST /api/aegis/retry/handle`
+
+Normalizes an Aegis Telegram retry callback and returns the instruction n8n should execute. Core API does not call n8n directly and does not own n8n credentials.
+
+Example request body:
+
+```json
+{
+  "callbackData": "aegis_retry:z4ZSHXh84SMSt8MR:2212",
+  "chatId": "-1001234567890",
+  "messageId": "77"
+}
+```
+
+Example response:
+
+```json
+{
+  "status": "ready",
+  "action": "retry_execution",
+  "workflowId": "z4ZSHXh84SMSt8MR",
+  "executionId": "2212",
+  "telegram": {
+    "editMessageText": {
+      "chat_id": "-1001234567890",
+      "message_id": "77",
+      "text": "Retry requested for execution 2212.",
+      "parse_mode": "HTML",
+      "reply_markup": null
+    }
+  }
+}
+```
+
+n8n should answer the Telegram callback query first, call this endpoint, then call n8n's failed-execution retry API when `action` is `retry_execution`. After the retry call, n8n should edit the original Telegram message and keep `reply_markup: null` so the retry buttons are cleared. If `ADMIN_TELEGRAM_ID` is configured, callbacks from other chats return `status: "unauthorized"`.
 
 ### `POST /api/veyra/telegram/messages`
 
@@ -1695,13 +1766,52 @@ Response shape:
 }
 ```
 
-Supported MVP intents: `spending_summary`, `category_spending`, `merchant_spending`, `top_merchants`, `top_categories`, `largest_transactions`, `recent_transactions`, `transaction_count`, `spending_by_day`, `daily_average_spending`, `spending_trend`, `cashflow_summary`, `burn_rate_forecast`.
+Supported MVP intents: `spending_summary`, `category_spending`, `merchant_spending`, `top_merchants`, `top_categories`, `largest_transactions`, `recent_transactions`, `transaction_count`, `spending_by_day`, `daily_average_spending`, `spending_trend`, `cashflow_summary`, `burn_rate_forecast`, `daily_spending_review`, `weekly_spending_review`.
 
 Unsupported for now returns `status: "unsupported_intent"`: `subscription_summary`, `subscription_detail`, `spending_comparison`, `merchant_comparison`, `category_comparison`, `weekday_analysis`, `most_frequent_merchant`, `unknown`.
 
 When `status` is `needs_insight`, n8n should send `insight_payload` to the Insight LLM, then send the LLM result through Telegram Reliable Sender. Otherwise send `message` directly. Keep Telegram trigger, Master Intent Classifier LLM, optional Insight LLM, reliable Telegram sender, and workflow orchestration in n8n.
 
 `burn_rate_forecast` is deterministic and returns a Telegram-ready HTML message from Core API. It counts only confirmed expense transactions in the user's current cycle from `telegram_users.cycle_start_day`; pending, rejected, deleted, income, transfer, and reversal rows are ignored by the existing analytics queries. When `category` is null, Core API compares total spending against the sum of active top-level budgets; parent budgets use active child budget amounts and child category spending. n8n should classify the intent, pass any explicit `category`, then send `message` directly.
+
+Scheduled spending reviews use the same endpoint. n8n keeps the Schedule Trigger, optional weekly Insight LLM, Telegram Reliable Sender, credentials, and workflow orchestration. Core API replaces the n8n SQL and deterministic text-formatting nodes.
+
+Daily scheduled request:
+
+```json
+{
+  "telegramUserId": "976684739",
+  "userId": 1,
+  "timezone": "Asia/Jakarta",
+  "text": "daily spending review",
+  "llmResult": {
+    "intent": "daily_spending_review",
+    "period": "today",
+    "needs_insight": false
+  }
+}
+```
+
+Daily returns `status: "ok"` with `message.text` ready for Telegram. Core API does not request or call an LLM for this intent.
+
+Weekly scheduled request:
+
+```json
+{
+  "telegramUserId": "976684739",
+  "userId": 1,
+  "timezone": "Asia/Jakarta",
+  "text": "weekly spending review",
+  "llmResult": {
+    "intent": "weekly_spending_review",
+    "period": "this_week",
+    "comparisonPeriod": "last_week",
+    "needs_insight": true
+  }
+}
+```
+
+Weekly returns `status: "needs_insight"` when there is spending data. `message.text` contains deterministic total/category/merchant sections, while `insight_payload.facts` contains the week comparison, weekday/weekend split, top categories, and top merchants for n8n's Insight LLM to produce only the `Insights` and `Veyra's Verdict` sections.
 
 Example burn-rate request:
 
@@ -1938,6 +2048,7 @@ Then keep the existing reliable sender workflow and map the Core API response di
 chat_id = {{$json.chat_id}}
 text = {{$json.text}}
 parse_mode = {{$json.parse_mode}}
+reply_markup = {{$json.reply_markup}}
 disable_web_page_preview = {{$json.disable_web_page_preview}}
 bot_token_env = {{$json.bot_token_env}}
 ```

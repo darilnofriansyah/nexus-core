@@ -107,6 +107,10 @@ test("formats a raw n8n error trigger payload with nested HTTP request failure",
   );
   assert.match(alert.text, /<b>Missing:<\/b> wallet/);
   assert.match(alert.text, /<b>Confidence:<\/b> 0\.6/);
+  assert.equal(alert.retry.eligible, false);
+  assert.equal(alert.retry.mode, "not_retryable");
+  assert.equal(alert.retry.reason, "non_retryable_http_status");
+  assert.equal(alert.reply_markup, undefined);
 });
 
 test("formats an array-shaped raw n8n error payload", () => {
@@ -137,6 +141,23 @@ test("formats an array-shaped raw n8n error payload", () => {
   assert.match(alert.text, /<b>Workflow:<\/b> Aegis Watchdog/);
   assert.match(alert.text, /<b>Failed Node:<\/b> HTTP Request/);
   assert.match(alert.text, /<b>Error:<\/b> Request timed out/);
+  assert.deepEqual(alert.retry, {
+    eligible: true,
+    mode: "retryable",
+    reason: "transient_error_message",
+    workflowId: "workflow-array",
+    executionId: "exec-array",
+  });
+  assert.deepEqual(alert.reply_markup, {
+    inline_keyboard: [
+      [
+        {
+          text: "Retry workflow",
+          callback_data: "aegis_retry:workflow-array:exec-array",
+        },
+      ],
+    ],
+  });
 });
 
 test("formats flattened mapped fields from n8n", () => {
@@ -170,6 +191,8 @@ test("formats flattened mapped fields from n8n", () => {
   assert.match(alert.text, /<b>Error:<\/b> Bad Request: chat not found/);
   assert.match(alert.text, /<b>Failed Node:<\/b> Telegram/);
   assert.match(alert.text, /<b>Mode:<\/b> integrated/);
+  assert.equal(alert.retry.eligible, false);
+  assert.equal(alert.reply_markup, undefined);
 });
 
 test("uses stable defaults for sparse payloads", () => {
@@ -188,6 +211,14 @@ test("uses stable defaults for sparse payloads", () => {
   assert.equal(alert.workflowId, null);
   assert.equal(alert.executionId, null);
   assert.equal(alert.executionUrl, null);
+  assert.deepEqual(alert.retry, {
+    eligible: false,
+    mode: "not_retryable",
+    reason: "missing_retry_target",
+    workflowId: null,
+    executionId: null,
+  });
+  assert.equal(alert.reply_markup, undefined);
   assert.match(alert.text, /<b>Workflow:<\/b> Unknown workflow/);
   assert.match(alert.text, /<b>Execution:<\/b> Unknown/);
   assert.match(alert.text, /<b>Trigger:<\/b> Unknown/);
@@ -276,4 +307,169 @@ test("truncates generated text to the production-safe Telegram limit", () => {
 
   assert.equal(alert.text.length, 3900);
   assert.equal(alert.text.endsWith("..."), true);
+});
+
+test("adds retry workflow button for transient HTTP statuses and network errors", () => {
+  process.env.ADMIN_TELEGRAM_ID = "-1001234567890";
+  const service = new AegisAlertFormatterService();
+  const cases = [
+    {
+      httpCode: 500,
+      message: "Internal Server Error",
+      reason: "transient_http_failure",
+    },
+    {
+      httpCode: 429,
+      message: "Too Many Requests",
+      reason: "transient_http_failure",
+    },
+    {
+      httpCode: undefined,
+      message: "ECONNRESET connection reset",
+      reason: "transient_error_message",
+    },
+  ];
+
+  for (const item of cases) {
+    const alert = service.formatN8nErrorAlert({
+      workflow: { id: "workflow-retry", name: "Retryable Workflow" },
+      execution: {
+        id: "exec-retry",
+        error: {
+          message: item.message,
+          errorResponse: item.httpCode
+            ? { httpCode: item.httpCode, messages: item.message }
+            : undefined,
+        },
+      },
+    });
+
+    assert.deepEqual(alert.retry, {
+      eligible: true,
+      mode: "retryable",
+      reason: item.reason,
+      workflowId: "workflow-retry",
+      executionId: "exec-retry",
+    });
+    assert.equal(
+      alert.reply_markup?.inline_keyboard[0]?.[0]?.callback_data,
+      "aegis_retry:workflow-retry:exec-retry",
+    );
+  }
+});
+
+test("adds retry anyway button when HTTP details are missing", () => {
+  process.env.ADMIN_TELEGRAM_ID = "-1001234567890";
+  const service = new AegisAlertFormatterService();
+
+  const alert = service.formatN8nErrorAlert({
+    workflow: { id: "workflow-unknown", name: "Unknown Failure Workflow" },
+    execution: {
+      id: "exec-unknown",
+      error: {
+        message: "Workflow failed",
+      },
+    },
+  });
+
+  assert.deepEqual(alert.retry, {
+    eligible: true,
+    mode: "retry_anyway",
+    reason: "missing_http_details",
+    workflowId: "workflow-unknown",
+    executionId: "exec-unknown",
+  });
+  assert.deepEqual(alert.reply_markup, {
+    inline_keyboard: [
+      [
+        {
+          text: "Retry anyway",
+          callback_data: "aegis_retry_anyway:workflow-unknown:exec-unknown",
+        },
+      ],
+    ],
+  });
+});
+
+test("does not add retry button for non-retryable HTTP statuses and validation errors", () => {
+  process.env.ADMIN_TELEGRAM_ID = "-1001234567890";
+  const service = new AegisAlertFormatterService();
+  const cases = [
+    { httpCode: 401, message: "Unauthorized" },
+    { httpCode: 403, message: "Forbidden" },
+    { httpCode: 404, message: "Not found" },
+    { httpCode: 422, message: "Validation failed" },
+    { httpCode: undefined, message: "missing required fields" },
+  ];
+
+  for (const item of cases) {
+    const alert = service.formatN8nErrorAlert({
+      workflow: { id: "workflow-no-retry", name: "No Retry Workflow" },
+      execution: {
+        id: "exec-no-retry",
+        error: {
+          message: item.message,
+          errorResponse: item.httpCode
+            ? { httpCode: item.httpCode, messages: item.message }
+            : undefined,
+        },
+      },
+    });
+
+    assert.equal(alert.retry.eligible, false);
+    assert.equal(alert.retry.mode, "not_retryable");
+    assert.equal(alert.reply_markup, undefined);
+  }
+});
+
+test("returns retry instruction for Aegis retry callbacks", () => {
+  process.env.ADMIN_TELEGRAM_ID = "-1001234567890";
+  const service = new AegisAlertFormatterService();
+
+  const retry = service.handleRetryCallback({
+    callbackData: "aegis_retry:workflow-1:exec-1",
+    chatId: "-1001234567890",
+    messageId: 77,
+  });
+  const retryAnyway = service.handleRetryCallback({
+    callbackData: "aegis_retry_anyway:workflow-2:exec-2",
+    chatId: "-1001234567890",
+    messageId: "78",
+  });
+
+  assert.equal(retry.status, "ready");
+  assert.equal(retry.action, "retry_execution");
+  assert.equal(retry.workflowId, "workflow-1");
+  assert.equal(retry.executionId, "exec-1");
+  assert.equal(retry.telegram.editMessageText.reply_markup, null);
+  assert.equal(retry.telegram.editMessageText.chat_id, "-1001234567890");
+  assert.equal(retry.telegram.editMessageText.message_id, "77");
+  assert.equal(retryAnyway.status, "ready");
+  assert.equal(retryAnyway.action, "retry_execution");
+  assert.equal(retryAnyway.workflowId, "workflow-2");
+  assert.equal(retryAnyway.executionId, "exec-2");
+});
+
+test("rejects malformed and non-admin Aegis retry callbacks safely", () => {
+  process.env.ADMIN_TELEGRAM_ID = "-1001234567890";
+  const service = new AegisAlertFormatterService();
+
+  const invalid = service.handleRetryCallback({
+    callbackData: "veyra_tx_manage:confirm",
+    chatId: "-1001234567890",
+    messageId: 77,
+  });
+  const unauthorized = service.handleRetryCallback({
+    callbackData: "aegis_retry:workflow-1:exec-1",
+    chatId: "-100999",
+    messageId: 78,
+  });
+
+  assert.equal(invalid.status, "invalid");
+  assert.equal(invalid.action, "none");
+  assert.equal(invalid.telegram.editMessageText.reply_markup, null);
+  assert.equal(unauthorized.status, "unauthorized");
+  assert.equal(unauthorized.action, "none");
+  assert.equal(unauthorized.workflowId, null);
+  assert.equal(unauthorized.executionId, null);
 });

@@ -3,6 +3,8 @@ import { AegisAlertFormatterService } from "./aegis-alert-formatter.service";
 import {
   AegisN8nErrorAlertDto,
   AegisN8nErrorPayloadDto,
+  AegisRetryCallbackRequestDto,
+  AegisRetryCallbackResponseDto,
 } from "./dto/aegis-error-alert.dto";
 
 @Controller("aegis")
@@ -14,5 +16,12 @@ export class AegisController {
     @Body() body: AegisN8nErrorPayloadDto | AegisN8nErrorPayloadDto[],
   ): AegisN8nErrorAlertDto {
     return this.formatter.formatN8nErrorAlert(body);
+  }
+
+  @Post("retry/handle")
+  handleRetryCallback(
+    @Body() body: AegisRetryCallbackRequestDto,
+  ): AegisRetryCallbackResponseDto {
+    return this.formatter.handleRetryCallback(body);
   }
 }

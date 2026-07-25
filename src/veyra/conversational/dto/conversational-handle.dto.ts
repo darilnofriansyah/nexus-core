@@ -12,6 +12,8 @@ export type ConversationalIntent =
   | 'spending_trend'
   | 'cashflow_summary'
   | 'burn_rate_forecast'
+  | 'daily_spending_review'
+  | 'weekly_spending_review'
   | 'subscription_summary'
   | 'subscription_detail'
   | 'spending_comparison'
