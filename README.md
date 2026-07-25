@@ -221,6 +221,137 @@ Example request body:
 }
 ```
 
+### `POST /api/veyra/dashboard/overview`
+
+Returns the structured financial overview used by `veyra-dashboard`. This
+endpoint is read-only: it does not call an LLM, format Telegram text, send
+Telegram messages, or modify financial data.
+
+Send the Core API key through the global guard:
+
+```txt
+x-core-api-key: <CORE_API_KEY>
+```
+
+At least one identifier is required. When both are supplied, they must resolve
+to the same `telegram_users` row. Identifiers are normalized to strings.
+`asOfDate` defaults to today in `timezone`; `timezone` defaults to
+`Asia/Jakarta`.
+
+Example request:
+
+```json
+{
+  "telegramUserId": "976684739",
+  "userId": 1,
+  "asOfDate": "2026-07-25",
+  "timezone": "Asia/Jakarta"
+}
+```
+
+Example response:
+
+```json
+{
+  "user": {
+    "id": "1",
+    "telegramUserId": "976684739"
+  },
+  "current": {
+    "period": {
+      "label": "current_cycle",
+      "start": "2026-07-01",
+      "end": "2026-08-01"
+    },
+    "hasTransactions": true,
+    "totals": {
+      "income": 10000000,
+      "spent": 4200000,
+      "netCashflow": 5800000,
+      "dailyAverage": 168000
+    },
+    "comparison": {
+      "income": 10000000,
+      "spent": 3900000,
+      "netCashflow": 6100000,
+      "dailyAverage": 156000
+    },
+    "dailySpend": [
+      {
+        "date": "2026-07-02",
+        "amount": 25000
+      }
+    ],
+    "categories": [
+      {
+        "category": "Food",
+        "amount": 750000,
+        "percent": 18,
+        "transactionCount": 9
+      }
+    ],
+    "budgets": [
+      {
+        "category": "Food",
+        "limit": 1500000,
+        "spent": 750000,
+        "percent": 50,
+        "status": "on-track"
+      }
+    ],
+    "recentTransactions": [
+      {
+        "id": "123",
+        "date": "2026-07-24",
+        "merchant": "TUKU",
+        "category": "Food",
+        "amount": 25000,
+        "type": "expense"
+      }
+    ]
+  },
+  "previous": {
+    "period": {
+      "label": "previous_cycle",
+      "start": "2026-06-01",
+      "end": "2026-07-01"
+    },
+    "hasTransactions": true,
+    "totals": {
+      "income": 10000000,
+      "spent": 4500000,
+      "netCashflow": 5500000,
+      "dailyAverage": 150000
+    },
+    "comparison": {
+      "income": 9000000,
+      "spent": 4000000,
+      "netCashflow": 5000000,
+      "dailyAverage": 129032
+    },
+    "dailySpend": [],
+    "categories": [],
+    "budgets": [],
+    "recentTransactions": []
+  }
+}
+```
+
+`current` includes the current financial cycle through `asOfDate`.
+`current.comparison` uses the same elapsed-day count from the previous cycle.
+`previous` is the complete previous cycle, and `previous.comparison` is the
+complete cycle before that. Only confirmed income and expense transactions are
+included. A valid user without activity receives zero totals and empty arrays.
+
+Curl:
+
+```bash
+curl -X POST "$CORE_API_URL/api/veyra/dashboard/overview" \
+  -H "content-type: application/json" \
+  -H "x-core-api-key: $CORE_API_KEY" \
+  -d '{"telegramUserId":"976684739","userId":1,"asOfDate":"2026-07-25","timezone":"Asia/Jakarta"}'
+```
+
 ### `POST /api/veyra/messages/route`
 
 Selects the Veyra sub-workflow route for one Telegram update. This endpoint only resolves the user, checks active `conversation_states`, and returns a route for n8n; it does not classify intent, call an LLM, execute budget/transaction logic, update conversation state, or send Telegram messages.
