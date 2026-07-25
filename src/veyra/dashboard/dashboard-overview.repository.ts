@@ -62,7 +62,8 @@ export class DashboardOverviewRepository {
       `
         SELECT id, telegram_id, cycle_start_day
         FROM telegram_users
-        WHERE ($1::text IS NULL OR id::text = $1)
+        WHERE is_active IS TRUE
+          AND ($1::text IS NULL OR id::text = $1)
           AND ($2::text IS NULL OR telegram_id::text = $2)
         LIMIT 1
       `,

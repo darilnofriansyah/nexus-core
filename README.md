@@ -233,17 +233,22 @@ Send the Core API key through the global guard:
 x-core-api-key: <CORE_API_KEY>
 ```
 
-At least one identifier is required. When both are supplied, they must resolve
-to the same `telegram_users` row. Identifiers are normalized to strings.
-`asOfDate` defaults to today in `timezone`; `timezone` defaults to
-`Asia/Jakarta`.
+At least one identifier is required, and only users with
+`telegram_users.is_active IS TRUE` can access dashboard data. Unknown and
+inactive Telegram identities return the same `404` response. When both
+identifiers are supplied, they must resolve to the same active
+`telegram_users` row. Identifiers are normalized to strings.
+
+Veyra should send the server-verified Telegram identity as `telegramUserId`.
+Browser-controlled clients must not supply an internal `userId`; that
+identifier remains available only to trusted internal callers. `asOfDate`
+defaults to today in `timezone`; `timezone` defaults to `Asia/Jakarta`.
 
 Example request:
 
 ```json
 {
   "telegramUserId": "976684739",
-  "userId": 1,
   "asOfDate": "2026-07-25",
   "timezone": "Asia/Jakarta"
 }
@@ -349,7 +354,7 @@ Curl:
 curl -X POST "$CORE_API_URL/api/veyra/dashboard/overview" \
   -H "content-type: application/json" \
   -H "x-core-api-key: $CORE_API_KEY" \
-  -d '{"telegramUserId":"976684739","userId":1,"asOfDate":"2026-07-25","timezone":"Asia/Jakarta"}'
+  -d '{"telegramUserId":"976684739","asOfDate":"2026-07-25","timezone":"Asia/Jakarta"}'
 ```
 
 ### `POST /api/veyra/messages/route`

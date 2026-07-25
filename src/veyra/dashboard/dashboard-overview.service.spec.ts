@@ -120,6 +120,20 @@ test('returns not found when supplied identifiers do not resolve one user', asyn
   );
 });
 
+test('returns not found when Telegram user lookup is missing or inactive', async () => {
+  const { repository, service } = createService();
+  repository.user = null;
+
+  await assert.rejects(
+    () =>
+      service.getOverview({
+        telegramUserId: 976684739,
+        asOfDate: '2026-07-25',
+      }),
+    NotFoundException,
+  );
+});
+
 test('rejects invalid dates and timezones', async () => {
   const { service } = createService();
 

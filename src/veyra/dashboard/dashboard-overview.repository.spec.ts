@@ -18,25 +18,26 @@ function createRepository(rowsByCall: unknown[][] = []) {
   };
 }
 
-test('findUser resolves either identifier and requires both when supplied', async () => {
+test('findUser resolves an active Telegram user with string-safe identifiers', async () => {
   const { calls, repository } = createRepository([
     [{ id: '1', telegram_id: '976684739', cycle_start_day: '31' }],
   ]);
 
-  const user = await repository.findUser('1', '976684739');
+  const user = await repository.findUser(null, '976684739');
 
   assert.deepEqual(user, {
     id: '1',
     telegramUserId: '976684739',
     cycleStartDay: 31,
   });
+  assert.match(calls[0].text, /is_active IS TRUE/);
   assert.match(calls[0].text, /\(\$1::text IS NULL OR id::text = \$1\)/);
   assert.match(
     calls[0].text,
     /\(\$2::text IS NULL OR telegram_id::text = \$2\)/,
   );
   assert.doesNotMatch(calls[0].text, /\)\s+OR\s+\(/);
-  assert.deepEqual(calls[0].values, ['1', '976684739']);
+  assert.deepEqual(calls[0].values, [null, '976684739']);
 });
 
 test('findUser returns null when identifiers do not resolve one row', async () => {
