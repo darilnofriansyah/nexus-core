@@ -54,7 +54,7 @@ Parsing uses this fixed order:
 
 1. existing hard-coded parser;
 2. active learned template for the user and sender;
-3. AI structured extraction fallback.
+3. return an AI-fallback request to n8n.
 
 Hard-coded parsers retain priority and remain unchanged unless a separate
 migration explicitly modifies them.
@@ -103,12 +103,14 @@ Extracted values must pass the existing transaction validation:
 - non-empty merchant where required;
 - integer confidence from 0 through 100.
 
-If no learned template produces a valid result, processing falls back to AI.
+If no learned template produces a valid result, Core API returns `needs_ai`.
+n8n then invokes its AI node and sends the structured result back to Core API
+for validation and review creation.
 
 ## AI Contract
 
-Email content is untrusted input. The AI receives it as data and must return a
-strict structured response containing:
+Email content is untrusted input. n8n invokes the AI and requires a strict
+structured response containing:
 
 - whether the email is a transaction;
 - provider;
@@ -120,9 +122,11 @@ strict structured response containing:
 - confidence and warnings;
 - a declarative template proposal.
 
-Core API validates the structured response. It then runs the proposed template
-against the current email and verifies that the result reproduces the proposed
-amount, merchant, date, and transaction type.
+Core API never invokes the model. n8n sends the original email and the AI
+response to a Core API validation endpoint. Core API validates the structured
+response, then runs the proposed template against the email and verifies that
+the result reproduces the proposed amount, merchant, date, and transaction
+type.
 
 The AI cannot insert, update, activate, or disable database templates directly.
 It only proposes data that Core API validates.
@@ -157,10 +161,10 @@ The user sends one natural-language correction. The AI may change:
 - transaction type.
 
 The correction reuses the existing transaction change schema. n8n refetches
-the original Gmail message by message ID and sends the email, existing
-candidate, and correction to Core API. Core API validates the revised
-candidate and revised template, then shows the complete transaction for
-confirmation again.
+the original Gmail message by message ID, invokes its AI node with the email,
+existing candidate, and correction, then sends the structured revised result
+to Core API. Core API validates the revised candidate and template, then
+returns the complete transaction for confirmation again.
 
 The previous candidate remains unchanged if correction parsing fails.
 
@@ -250,6 +254,7 @@ n8n keeps:
 - Gmail Trigger nodes;
 - Gmail message fetching and refetching;
 - extracting sender-authentication results from Gmail headers;
+- AI model invocation and prompts for initial extraction and corrections;
 - Telegram message sending;
 - callback routing;
 - simple HTTP Request orchestration;
@@ -260,8 +265,8 @@ Core API owns:
 - transaction detection;
 - hard-coded and learned parser selection;
 - learned-template interpretation;
-- AI structured extraction and correction;
-- candidate and proposal validation;
+- `needs_ai` handoff responses;
+- validation of AI candidates, corrections, and template proposals;
 - template activation and disablement;
 - transaction persistence and diagnostics.
 
@@ -269,8 +274,8 @@ The implementation documentation must include example n8n HTTP Request
 payloads for:
 
 1. initial email handling;
-2. AI fallback review;
-3. AI-assisted detail correction with the refetched email;
+2. n8n AI output submission for fallback review;
+3. n8n AI output submission for detail correction with the refetched email;
 4. confirmation, cancellation, and category routing.
 
 The initial email payload includes normalized sender-authentication results
@@ -284,7 +289,7 @@ Keep the change focused. Expected files are:
 - `src/veyra/transactions/email-parsers.ts` for the safe declarative
   interpreter and shared extraction primitives;
 - `src/veyra/transactions/transaction.service.ts` for parser ordering,
-  AI-review orchestration, learning, and disablement;
+  AI handoff validation, learning, and disablement;
 - email transaction DTOs for structured AI, proposal, and correction
   contracts;
 - one migration SQL file for `email_parser_templates`;
@@ -292,8 +297,8 @@ Keep the change focused. Expected files are:
 - `docs/veyra-database-schema.md` after the migration is approved;
 - `README.md` for n8n HTTP Request payloads and node boundaries.
 
-No new dependency should be added unless the existing runtime cannot perform
-the required structured HTTP call safely.
+No AI SDK or new Core API dependency is required. n8n continues using its
+existing AI integration.
 
 ## Test Plan
 
@@ -301,7 +306,8 @@ Focused runnable tests must demonstrate:
 
 1. existing hard-coded parsers retain priority;
 2. a matching learned template parses without calling AI;
-3. an unknown or changed structure calls AI;
+3. an unknown or changed structure returns `needs_ai` and accepts only a valid
+   structured result from n8n;
 4. AI results cannot auto-save before confirmation;
 5. confirmation activates only a previously validated proposal;
 6. a corrected candidate revalidates its proposal;
