@@ -12,6 +12,45 @@ export type EmailTransactionHandleStatus =
   | "unsupported_template"
   | "parse_failed";
 
+export type EmailAuthenticationStatus = "pass" | "fail" | "unknown";
+
+export interface EmailSenderAuthenticationDto {
+  dkim: EmailAuthenticationStatus;
+  spf: EmailAuthenticationStatus;
+  dmarc: EmailAuthenticationStatus;
+  domain?: string;
+}
+
+export interface EmailTemplateCaptureRuleDto {
+  kind: "idr_amount" | "datetime" | "text";
+  after: string;
+  before?: string;
+}
+
+export interface EmailParserTemplateProposalDto {
+  provider: string;
+  templateKey: string;
+  requiredAnchors: string[];
+  forbiddenAnchors?: string[];
+  amount: EmailTemplateCaptureRuleDto;
+  merchant: EmailTemplateCaptureRuleDto;
+  transactionDate: EmailTemplateCaptureRuleDto;
+  transactionType: NormalizedTransactionType;
+  paymentType: string;
+}
+
+export interface LearnedEmailTemplate {
+  id: string;
+  userId: string;
+  senderAddress: string;
+  fingerprint: string;
+  proposal: EmailParserTemplateProposalDto;
+}
+
+export type EmailTemplateValidationResult =
+  | { ok: true; fingerprint: string; parsed: ParsedEmailTransactionDto }
+  | { ok: false; reason: string };
+
 export interface EmailTransactionMessageDto {
   messageId: string;
   threadId?: string;
@@ -20,6 +59,7 @@ export interface EmailTransactionMessageDto {
   date?: string;
   emailText: string;
   emailHtml?: string;
+  authentication?: EmailSenderAuthenticationDto;
 }
 
 export interface EmailTransactionHandleRequestDto {
