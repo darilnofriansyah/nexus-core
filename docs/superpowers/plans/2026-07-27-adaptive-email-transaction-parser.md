@@ -1163,6 +1163,15 @@ const originalAiEmail: EmailTransactionHandleRequestDto = {
     messageId: "gmail-learned-1",
   },
 };
+
+const learnedParsedTransaction = {
+  ...pendingAiTransaction,
+  raw_payload: {
+    email: { messageId: "gmail-learned-2", from: "alerts@krom.id" },
+    parserSource: "learned",
+    templateId: "7",
+  },
+};
 ```
 
 Then add:
@@ -1217,10 +1226,82 @@ test("Cancel never activates a proposed template", async () => {
   assert.equal(templates.calls.some((call) => call.method === "activate"), false);
 });
 
-test("material edit disables the learned template but category edit does not", async () => {
-  // Exercise handleManagedTransaction confirmation twice:
-  // amount change => disable("7", "1")
-  // category-only change => no disable call
+test("material edit disables the learned template", async () => {
+  const templates = createTemplateRepository();
+  const state = createManageStateStore({
+    stateName: "confirm_action",
+    stateData: {
+      action: "edit",
+      transaction_id: "123",
+      before: learnedParsedTransaction,
+      changes: { amount: 30000 },
+    },
+  });
+  const { service } = createService(
+    [
+      [{ id: "1", telegram_id: "976684739" }],
+      [learnedParsedTransaction],
+      [],
+      [],
+    ],
+    undefined,
+    undefined,
+    templates.repository,
+  );
+
+  const result = await service.handleManagedTransaction(
+    {
+      telegramUserId: "976684739",
+      text: "veyra_tx_manage:confirm",
+      llmResult: null,
+    },
+    state.store,
+  );
+
+  assert.equal(result.status, "completed");
+  assert.deepEqual(
+    templates.calls.filter((call) => call.method === "disable"),
+    [{ method: "disable", input: { templateId: "7", userId: "1" } }],
+  );
+});
+
+test("category-only edit does not disable the learned template", async () => {
+  const templates = createTemplateRepository();
+  const state = createManageStateStore({
+    stateName: "confirm_action",
+    stateData: {
+      action: "edit",
+      transaction_id: "123",
+      before: learnedParsedTransaction,
+      changes: { category: "Dining" },
+    },
+  });
+  const { service } = createService(
+    [
+      [{ id: "1", telegram_id: "976684739" }],
+      [learnedParsedTransaction],
+      [],
+      [],
+    ],
+    undefined,
+    undefined,
+    templates.repository,
+  );
+
+  const result = await service.handleManagedTransaction(
+    {
+      telegramUserId: "976684739",
+      text: "veyra_tx_manage:confirm",
+      llmResult: null,
+    },
+    state.store,
+  );
+
+  assert.equal(result.status, "completed");
+  assert.equal(
+    templates.calls.some((call) => call.method === "disable"),
+    false,
+  );
 });
 
 test("repeated Gmail delivery returns the existing pending review", async () => {
