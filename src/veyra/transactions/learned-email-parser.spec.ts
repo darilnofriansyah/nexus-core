@@ -134,6 +134,40 @@ test("rejects a forbidden marketing anchor", () => {
   assert.deepEqual(result, { ok: false, reason: "forbidden anchor was found" });
 });
 
+test("rejects proposals without required anchors", () => {
+  const result = validateEmailTemplateProposal(
+    input("Merchant: Tuku Jumlah: Rp25.000 Tanggal: 25 Juni 2026 09:30"),
+    proposal({ requiredAnchors: [] }),
+  );
+
+  assert.deepEqual(result, { ok: false, reason: "required anchors are empty" });
+});
+
+test("requires the fixed capture kinds", () => {
+  const parserInput = input(
+    "Merchant: Tuku Jumlah: Rp25.000 Tanggal: 25 Juni 2026 09:30",
+  );
+
+  for (const invalidProposal of [
+    proposal({ amount: { kind: "text", after: "Jumlah:" } }),
+    proposal({ merchant: { kind: "datetime", after: "Merchant:" } }),
+    proposal({
+      transactionDate: {
+        kind: "unknown" as "datetime",
+        after: "Tanggal:",
+      },
+    }),
+  ]) {
+    assert.deepEqual(
+      validateEmailTemplateProposal(parserInput, invalidProposal),
+      {
+        ok: false,
+        reason: "capture rule kind is invalid",
+      },
+    );
+  }
+});
+
 test("detects transactions but rejects marketing email", () => {
   assert.equal(
     isLikelyTransactionEmail(

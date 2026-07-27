@@ -81,11 +81,19 @@ function templateProblem(
   if (!isValidTransactionType(proposal.transactionType)) {
     return "transaction type is invalid";
   }
+  if (
+    proposal.amount.kind !== "idr_amount" ||
+    proposal.merchant.kind !== "text" ||
+    proposal.transactionDate.kind !== "datetime"
+  ) {
+    return "capture rule kind is invalid";
+  }
 
   const anchors = [
     ...proposal.requiredAnchors,
     ...(proposal.forbiddenAnchors ?? []),
   ];
+  if (!proposal.requiredAnchors.length) return "required anchors are empty";
   if (anchors.length > MAX_ANCHORS) return "too many anchors";
   if (anchors.some((anchor) => !anchor.trim())) return "anchor is empty";
   if (
