@@ -46,6 +46,7 @@ test('findActive returns only active templates for the user and exact sender', a
   const templates = await repository.findActive('1', 'card@bca.co.id');
 
   assert.match(calls[0].text, /status = 'active'/);
+  assert.match(calls[0].text, /user_id = \$1/);
   assert.match(calls[0].text, /lower\(sender_address\) = lower\(\$2\)/);
   assert.deepEqual(calls[0].values, ['1', 'card@bca.co.id']);
   assert.equal(templates[0].id, '7');
@@ -79,7 +80,8 @@ test('markMatched only updates matching timestamps for the user template', async
 
   assert.match(calls[0].text, /last_matched_at = now\(\)/);
   assert.match(calls[0].text, /updated_at = now\(\)/);
-  assert.match(calls[0].text, /user_id::text = \$2/);
+  assert.match(calls[0].text, /id = \$1/);
+  assert.match(calls[0].text, /user_id = \$2/);
   assert.deepEqual(calls[0].values, ['7', '1']);
 });
 
@@ -89,6 +91,7 @@ test('disable is user-scoped', async () => {
   await repository.disable('7', '1');
 
   assert.match(calls[0].text, /status = 'disabled'/);
-  assert.match(calls[0].text, /user_id::text = \$2/);
+  assert.match(calls[0].text, /id = \$1/);
+  assert.match(calls[0].text, /user_id = \$2/);
   assert.deepEqual(calls[0].values, ['7', '1']);
 });

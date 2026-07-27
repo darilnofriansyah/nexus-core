@@ -33,7 +33,7 @@ export class EmailParserTemplateRepository {
       `
         SELECT id, user_id, sender_address, fingerprint, rules
         FROM email_parser_templates
-        WHERE user_id::text = $1
+        WHERE user_id = $1
           AND lower(sender_address) = lower($2)
           AND status = 'active'
         ORDER BY updated_at DESC
@@ -87,8 +87,8 @@ export class EmailParserTemplateRepository {
         UPDATE email_parser_templates
         SET last_matched_at = now(),
             updated_at = now()
-        WHERE id::text = $1
-          AND user_id::text = $2
+        WHERE id = $1
+          AND user_id = $2
       `,
       [templateId, userId],
     );
@@ -101,8 +101,8 @@ export class EmailParserTemplateRepository {
         SET status = 'disabled',
             disabled_at = now(),
             updated_at = now()
-        WHERE id::text = $1
-          AND user_id::text = $2
+        WHERE id = $1
+          AND user_id = $2
       `,
       [templateId, userId],
     );
