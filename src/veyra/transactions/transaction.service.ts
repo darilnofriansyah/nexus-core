@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Injectable,
   Logger,
+  NotFoundException,
   Optional,
 } from "@nestjs/common";
 import { createHash } from "node:crypto";
@@ -63,6 +64,8 @@ import {
 import {
   EmailReviewResolutionDto,
   EmailReviewTransactionCandidateDto,
+  EmailSourceReferenceRequestDto,
+  EmailSourceReferenceResponseDto,
   EmailTransactionMessageDto,
   EmailTransactionHandleRequestDto,
   EmailTransactionHandleResponseDto,
@@ -169,6 +172,11 @@ interface ExistingImportRow extends QueryResultRow {
   transaction_id: string | number | null;
   status: string;
   raw_payload?: unknown;
+}
+
+interface EmailSourceReferenceRow extends QueryResultRow {
+  transaction_id: string | number;
+  source_reference: string;
 }
 
 interface PendingTransactionRow extends QueryResultRow {
@@ -710,6 +718,60 @@ export class TransactionService {
       changes: {},
       stateStore,
     });
+  }
+
+  async getEmailSourceReference(
+    request: EmailSourceReferenceRequestDto,
+  ): Promise<EmailSourceReferenceResponseDto> {
+    const telegramUserId = this.cleanString(
+      String(request.telegramUserId ?? ""),
+    );
+    const transactionId = this.cleanString(String(request.transactionId ?? ""));
+
+    if (!telegramUserId || !this.isPositiveBigintId(telegramUserId)) {
+      throw new BadRequestException(
+        "telegramUserId must be a positive integer",
+      );
+    }
+    if (!transactionId || !this.isPositiveBigintId(transactionId)) {
+      throw new BadRequestException("transactionId must be a positive integer");
+    }
+
+    const user = await this.findTelegramUserByTelegramId(telegramUserId);
+
+    if (!user) {
+      throw new NotFoundException("email source reference was not found");
+    }
+
+    const result = await this.database.query<EmailSourceReferenceRow>(
+      `
+        SELECT transaction.id AS transaction_id,
+               email_import.source_reference
+        FROM transactions AS transaction
+        JOIN transaction_imports AS email_import
+          ON email_import.transaction_id = transaction.id
+         AND email_import.user_id = transaction.user_id
+        WHERE transaction.id = $1
+          AND transaction.user_id = $2
+          AND transaction.source = 'email'
+          AND transaction.status = 'pending'
+          AND email_import.source = 'email'
+          AND email_import.status = 'pending'
+        LIMIT 1
+      `,
+      [transactionId, String(user.id)],
+    );
+    const row = result.rows[0];
+    const messageId = this.cleanString(row?.source_reference);
+
+    if (!row || !messageId) {
+      throw new NotFoundException("email source reference was not found");
+    }
+
+    return {
+      transactionId: String(row.transaction_id),
+      messageId,
+    };
   }
 
   async handleEmailTransaction(

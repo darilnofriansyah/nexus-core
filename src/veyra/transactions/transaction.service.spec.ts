@@ -1,12 +1,16 @@
 import * as assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
-import { BadRequestException } from "@nestjs/common";
+import {
+  BadRequestException,
+  NotFoundException,
+} from "@nestjs/common";
 import { DatabaseService } from "../../database/database.service";
 import { BudgetService } from "../budgets/budget.service";
 import {
   EmailParserTemplateProposalDto,
   EmailReviewTransactionCandidateDto,
+  EmailSourceReferenceRequestDto,
   EmailTransactionHandleRequestDto,
   EmailTransactionMessageDto,
   EmailTransactionResolveReviewRequestDto,
@@ -382,6 +386,91 @@ const pendingAiTransaction = {
     },
   },
 };
+
+test("returns Gmail message ID for an owned pending email transaction", async () => {
+  const { calls, service } = createService([
+    [{ id: "1", telegram_id: "976684739" }],
+    [{ transaction_id: "123", source_reference: "gmail-message-id" }],
+  ]);
+  const request: EmailSourceReferenceRequestDto = {
+    telegramUserId: "976684739",
+    transactionId: 123,
+  };
+
+  const result = await service.getEmailSourceReference(request);
+
+  assert.deepEqual(result, {
+    transactionId: "123",
+    messageId: "gmail-message-id",
+  });
+  assert.deepEqual(calls[1]?.values, ["123", "1"]);
+  assert.match(calls[1]?.text ?? "", /transaction\.source = 'email'/);
+  assert.match(calls[1]?.text ?? "", /transaction\.status = 'pending'/);
+  assert.match(calls[1]?.text ?? "", /email_import\.source = 'email'/);
+  assert.match(calls[1]?.text ?? "", /email_import\.status = 'pending'/);
+  assert.match(
+    calls[1]?.text ?? "",
+    /email_import\.user_id = transaction\.user_id/,
+  );
+});
+
+test("rejects invalid email source reference identifiers", async () => {
+  const { calls, service } = createService();
+
+  await assert.rejects(
+    () =>
+      service.getEmailSourceReference({
+        telegramUserId: "invalid",
+        transactionId: "123",
+      }),
+    (error: unknown) =>
+      error instanceof BadRequestException &&
+      error.message === "telegramUserId must be a positive integer",
+  );
+  await assert.rejects(
+    () =>
+      service.getEmailSourceReference({
+        telegramUserId: "976684739",
+        transactionId: "0",
+      }),
+    (error: unknown) =>
+      error instanceof BadRequestException &&
+      error.message === "transactionId must be a positive integer",
+  );
+
+  assert.equal(calls.length, 0);
+});
+
+test("hides unknown users and missing email source mappings behind one 404", async () => {
+  const unknownUser = createService([[]]);
+
+  await assert.rejects(
+    () =>
+      unknownUser.service.getEmailSourceReference({
+        telegramUserId: "976684739",
+        transactionId: "123",
+      }),
+    (error: unknown) =>
+      error instanceof NotFoundException &&
+      error.message === "email source reference was not found",
+  );
+
+  const missingMapping = createService([
+    [{ id: "1", telegram_id: "976684739" }],
+    [],
+  ]);
+
+  await assert.rejects(
+    () =>
+      missingMapping.service.getEmailSourceReference({
+        telegramUserId: "976684739",
+        transactionId: "123",
+      }),
+    (error: unknown) =>
+      error instanceof NotFoundException &&
+      error.message === "email source reference was not found",
+  );
+});
 
 const originalAiEmail: EmailTransactionHandleRequestDto = {
   ...authenticatedUnknownKromEmail,

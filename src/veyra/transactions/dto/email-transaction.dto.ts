@@ -209,3 +209,13 @@ export interface EmailTransactionResolveReviewResponseDto {
   };
   replyMarkup?: TelegramReplyMarkupDto;
 }
+
+export interface EmailSourceReferenceRequestDto {
+  telegramUserId: string | number;
+  transactionId: string | number;
+}
+
+export interface EmailSourceReferenceResponseDto {
+  transactionId: string;
+  messageId: string;
+}
