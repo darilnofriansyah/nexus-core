@@ -22,7 +22,7 @@ import { TransactionRiskReviewRepository } from "./transaction-risk-review.repos
 import { TransactionService } from "./transaction.service";
 
 function createService(
-  rowsByCall: unknown[][] = [],
+  rowsByCall: Array<unknown[] | Error> = [],
   budgetService?: BudgetService,
   riskReviewRepository?: TransactionRiskReviewRepository,
   emailParserTemplateRepository?: EmailParserTemplateRepository,
@@ -31,7 +31,9 @@ function createService(
   const transactionEvents: Array<"begin" | "commit" | "rollback"> = [];
   const query = async (text: string, values: unknown[] = []) => {
     calls.push({ text, values });
-    return { rows: rowsByCall.shift() ?? [] };
+    const rows = rowsByCall.shift() ?? [];
+    if (rows instanceof Error) throw rows;
+    return { rows };
   };
   const database = {
     query,
@@ -339,6 +341,14 @@ const learnedParsedTransaction = {
     email: { messageId: "gmail-learned-2", from: "alerts@krom.id" },
     parserSource: "learned",
     templateId: "7",
+  },
+};
+
+const pendingTemplateTransaction = {
+  ...pendingAiTransaction,
+  raw_payload: {
+    ...pendingAiTransaction.raw_payload,
+    parserSource: "review",
   },
 };
 
@@ -3867,7 +3877,15 @@ test("pending transaction cancel skips watchdog", async () => {
 test("Save activates the validated user template after confirming the transaction", async () => {
   const templates = createTemplateRepository();
   const { calls, service } = createService(
-    [[pendingAiTransaction], [], [], [], [], []],
+    [
+      [pendingAiTransaction],
+      [{ id: "123" }],
+      [{ id: "import-1" }],
+      [],
+      [],
+      [],
+      [],
+    ],
     undefined,
     undefined,
     templates.repository,
@@ -3894,10 +3912,230 @@ test("Save activates the validated user template after confirming the transactio
   );
 });
 
+test("only the winning pending email confirmation activates its template", async () => {
+  const templates = createTemplateRepository();
+  const confirmedTransaction = {
+    ...pendingTemplateTransaction,
+    status: "confirmed",
+  };
+  const { service } = createService(
+    [
+      [pendingTemplateTransaction],
+      [{ id: "123" }],
+      [{ id: "import-1" }],
+      [pendingTemplateTransaction],
+      [],
+      [confirmedTransaction],
+    ],
+    undefined,
+    undefined,
+    templates.repository,
+  );
+  spyOnWatchdog(service);
+
+  const first = await service.confirmTransaction({
+    transactionId: "123",
+    userId: "1",
+  });
+  const retry = await service.confirmTransaction({
+    transactionId: "123",
+    userId: "1",
+  });
+
+  assert.equal(first.status, "confirmed");
+  assert.equal(retry.status, "already_confirmed");
+  assert.equal(
+    templates.calls.filter((call) => call.method === "activate").length,
+    1,
+  );
+});
+
+test("confirmation cannot apply after another cancellation wins", async () => {
+  const templates = createTemplateRepository();
+  const rejectedTransaction = {
+    ...pendingTemplateTransaction,
+    status: "rejected",
+  };
+  const { service } = createService(
+    [
+      [pendingTemplateTransaction],
+      [{ id: "123" }],
+      [{ id: "import-1" }],
+      [pendingTemplateTransaction],
+      [],
+      [rejectedTransaction],
+    ],
+    undefined,
+    undefined,
+    templates.repository,
+  );
+  spyOnWatchdog(service);
+
+  const cancelled = await service.cancelTransaction({
+    transactionId: "123",
+    userId: "1",
+  });
+  const confirmed = await service.confirmTransaction({
+    transactionId: "123",
+    userId: "1",
+  });
+
+  assert.equal(cancelled.status, "rejected");
+  assert.equal(confirmed.status, "already_rejected");
+  assert.equal(
+    templates.calls.filter((call) => call.method === "activate").length,
+    0,
+  );
+});
+
+test("email confirmation rolls back when its import cannot transition and retries", async () => {
+  const templates = createTemplateRepository();
+  const { service, transactionEvents } = createService(
+    [
+      [pendingTemplateTransaction],
+      [{ id: "123" }],
+      new Error("import unavailable"),
+      [pendingTemplateTransaction],
+      [{ id: "123" }],
+      [{ id: "import-1" }],
+    ],
+    undefined,
+    undefined,
+    templates.repository,
+  );
+  spyOnWatchdog(service);
+
+  await assert.rejects(
+    () =>
+      service.confirmTransaction({
+        transactionId: "123",
+        userId: "1",
+      }),
+    /import unavailable/,
+  );
+  const retry = await service.confirmTransaction({
+    transactionId: "123",
+    userId: "1",
+  });
+
+  assert.equal(retry.status, "confirmed");
+  assert.deepEqual(transactionEvents, [
+    "begin",
+    "rollback",
+    "begin",
+    "commit",
+  ]);
+  assert.equal(
+    templates.calls.filter((call) => call.method === "activate").length,
+    1,
+  );
+});
+
+test("email import transition uses typed ids and email source", async () => {
+  const templates = createTemplateRepository();
+  const { calls, service } = createService(
+    [
+      [pendingTemplateTransaction],
+      [{ id: "123" }],
+      [{ id: "import-1" }],
+    ],
+    undefined,
+    undefined,
+    templates.repository,
+  );
+  spyOnWatchdog(service);
+
+  await service.confirmTransaction({ transactionId: "123", userId: "1" });
+
+  const update = calls.find((call) =>
+    /UPDATE transaction_imports/.test(call.text),
+  );
+  assert.ok(update);
+  assert.match(update.text, /source = 'email'/);
+  assert.match(update.text, /transaction_id = \$2/);
+  assert.match(update.text, /user_id = \$3/);
+  assert.doesNotMatch(update.text, /::text/);
+});
+
+test("malformed stored template does not activate after confirmation", async () => {
+  const templates = createTemplateRepository();
+  const malformed = {
+    ...pendingTemplateTransaction,
+    raw_payload: {
+      ...pendingTemplateTransaction.raw_payload,
+      validatedTemplate: {
+        fingerprint: learnedTemplate.fingerprint,
+        proposal: {
+          ...learnedProposal,
+          amount: { kind: "text", after: "Jumlah:", before: "Tanggal:" },
+        },
+      },
+    },
+  };
+  const { service } = createService(
+    [[malformed], [{ id: "123" }], [{ id: "import-1" }]],
+    undefined,
+    undefined,
+    templates.repository,
+  );
+  spyOnWatchdog(service);
+
+  const result = await service.confirmTransaction({
+    transactionId: "123",
+    userId: "1",
+  });
+
+  assert.equal(result.status, "confirmed");
+  assert.equal(
+    templates.calls.some((call) => call.method === "activate"),
+    false,
+  );
+});
+
+test("stored template fingerprint must match its proposal before activation", async () => {
+  const templates = createTemplateRepository();
+  const mismatched = {
+    ...pendingTemplateTransaction,
+    raw_payload: {
+      ...pendingTemplateTransaction.raw_payload,
+      validatedTemplate: {
+        fingerprint: "f".repeat(64),
+        proposal: learnedProposal,
+      },
+    },
+  };
+  const { service } = createService(
+    [[mismatched], [{ id: "123" }], [{ id: "import-1" }]],
+    undefined,
+    undefined,
+    templates.repository,
+  );
+  spyOnWatchdog(service);
+
+  const result = await service.confirmTransaction({
+    transactionId: "123",
+    userId: "1",
+  });
+
+  assert.equal(result.status, "confirmed");
+  assert.equal(
+    templates.calls.some((call) => call.method === "activate"),
+    false,
+  );
+});
+
 test("confirmed AI email learns a global alias and user category rule", async () => {
   const templates = createTemplateRepository();
   const { calls, service } = createService(
-    [[pendingAiTransaction], [], [], [], [], [], []],
+    [
+      [pendingAiTransaction],
+      [{ id: "123" }],
+      [{ id: "import-1" }],
+      [],
+      [],
+      [],
+      [],
+    ],
     undefined,
     undefined,
     templates.repository,
@@ -3924,8 +4162,16 @@ test("confirmed AI email learns a global alias and user category rule", async ()
 
 test("confirmation succeeds when template activation fails", async () => {
   const templates = createTemplateRepository([], new Error("db unavailable"));
-  const { service } = createService(
-    [[pendingAiTransaction], [], [], [], [], []],
+  const { service, transactionEvents } = createService(
+    [
+      [pendingAiTransaction],
+      [{ id: "123" }],
+      [{ id: "import-1" }],
+      [],
+      [],
+      [],
+      [],
+    ],
     undefined,
     undefined,
     templates.repository,
@@ -3937,12 +4183,17 @@ test("confirmation succeeds when template activation fails", async () => {
   });
 
   assert.equal(result.status, "confirmed");
+  assert.deepEqual(transactionEvents, ["begin", "commit"]);
 });
 
 test("Cancel never activates a proposed template", async () => {
   const templates = createTemplateRepository();
   const { calls, service } = createService(
-    [[pendingAiTransaction], [], []],
+    [
+      [pendingAiTransaction],
+      [{ id: "123" }],
+      [{ id: "import-1" }],
+    ],
     undefined,
     undefined,
     templates.repository,
@@ -3970,8 +4221,8 @@ test("category confirmation activates the proposal exactly once", async () => {
     [
       [pendingAiTransaction],
       [{ id: "budget-food", category: "Dining", parent_category: null }],
-      [],
-      [],
+      [{ id: "123" }],
+      [{ id: "import-1" }],
       [],
       [],
       [],
@@ -3989,6 +4240,54 @@ test("category confirmation activates the proposal exactly once", async () => {
   });
 
   assert.equal(result.status, "updated");
+  assert.equal(
+    templates.calls.filter((call) => call.method === "activate").length,
+    1,
+  );
+});
+
+test("only the winning category confirmation activates its template", async () => {
+  const templates = createTemplateRepository();
+  const confirmedTransaction = {
+    ...pendingTemplateTransaction,
+    category: "Dining",
+    status: "confirmed",
+  };
+  const budget = {
+    id: "budget-food",
+    category: "Dining",
+    parent_category: null,
+  };
+  const { service } = createService(
+    [
+      [pendingTemplateTransaction],
+      [budget],
+      [{ id: "123" }],
+      [{ id: "import-1" }],
+      [pendingTemplateTransaction],
+      [budget],
+      [],
+      [confirmedTransaction],
+    ],
+    undefined,
+    undefined,
+    templates.repository,
+  );
+  spyOnWatchdog(service);
+
+  const first = await service.setPendingTransactionCategory({
+    transactionId: "123",
+    budgetId: "budget-food",
+    userId: "1",
+  });
+  const retry = await service.setPendingTransactionCategory({
+    transactionId: "123",
+    budgetId: "budget-food",
+    userId: "1",
+  });
+
+  assert.equal(first.status, "updated");
+  assert.equal(retry.status, "already_resolved");
   assert.equal(
     templates.calls.filter((call) => call.method === "activate").length,
     1,

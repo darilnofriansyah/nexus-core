@@ -62,7 +62,6 @@ import {
 import {
   EmailReviewResolutionDto,
   EmailReviewTransactionCandidateDto,
-  EmailParserTemplateProposalDto,
   EmailTransactionMessageDto,
   EmailTransactionHandleRequestDto,
   EmailTransactionHandleResponseDto,
@@ -98,6 +97,7 @@ import {
   isLikelyTransactionEmail,
   parseLearnedEmailTemplate,
   validateEmailTemplateProposal,
+  validateStoredEmailTemplateProposal,
 } from "./learned-email-parser";
 
 const TRANSACTION_CATEGORY_OPTIONS = [
@@ -4859,13 +4859,16 @@ export class TransactionService {
     const email = this.readRecord(rawPayload.email);
     const senderAddress = this.cleanString(email.from);
     const fingerprint = this.cleanString(validatedTemplate.fingerprint);
-    const proposal = this.readRecord(validatedTemplate.proposal);
+    const proposal =
+      senderAddress && fingerprint
+        ? validateStoredEmailTemplateProposal({
+            senderAddress,
+            fingerprint,
+            proposal: validatedTemplate.proposal,
+          })
+        : null;
 
-    if (
-      !senderAddress ||
-      !fingerprint ||
-      !this.isEmailTemplateProposal(proposal)
-    ) {
+    if (!senderAddress || !fingerprint || !proposal) {
       return;
     }
 
@@ -4882,26 +4885,6 @@ export class TransactionService {
         error instanceof Error ? error.stack : undefined,
       );
     }
-  }
-
-  private isEmailTemplateProposal(
-    value: unknown,
-  ): value is EmailParserTemplateProposalDto {
-    const proposal = this.readRecord(value);
-
-    return (
-      typeof proposal.provider === "string" &&
-      typeof proposal.templateKey === "string" &&
-      Array.isArray(proposal.requiredAnchors) &&
-      typeof proposal.amount === "object" &&
-      proposal.amount !== null &&
-      typeof proposal.merchant === "object" &&
-      proposal.merchant !== null &&
-      typeof proposal.transactionDate === "object" &&
-      proposal.transactionDate !== null &&
-      typeof proposal.transactionType === "string" &&
-      typeof proposal.paymentType === "string"
-    );
   }
 
   private async disableLearnedTemplateAfterMaterialEdit(
@@ -4956,8 +4939,9 @@ export class TransactionService {
       `
         UPDATE transaction_imports
         SET status = $1
-        WHERE transaction_id::text = $2
-          AND user_id::text = $3
+        WHERE transaction_id = $2
+          AND user_id = $3
+          AND source = 'email'
       `,
       [status, String(transaction.id), String(transaction.user_id)],
     );
@@ -5074,6 +5058,82 @@ export class TransactionService {
     }
   }
 
+  private async transitionPendingEmailTransaction(input: {
+    transaction: TransactionRow;
+    status: "confirmed" | "rejected";
+    category?: string;
+  }): Promise<boolean> {
+    return this.database.withTransaction(async (client) => {
+      const values: unknown[] = [
+        input.status,
+        String(input.transaction.id),
+        String(input.transaction.user_id),
+      ];
+      const categoryAssignment =
+        input.category === undefined
+          ? ""
+          : `category = $${values.push(input.category)},`;
+      const transaction = await client.query<InsertedTransactionRow>(
+        `
+          UPDATE transactions
+          SET ${categoryAssignment}
+              status = $1,
+              updated_at = now()
+          WHERE id = $2
+            AND user_id = $3
+            AND source = 'email'
+            AND status = 'pending'
+          RETURNING id
+        `,
+        values,
+      );
+
+      if (!transaction.rows[0]) {
+        return false;
+      }
+
+      const emailImport = await client.query<InsertedImportRow>(
+        `
+          UPDATE transaction_imports
+          SET status = $1
+          WHERE transaction_id = $2
+            AND user_id = $3
+            AND source = 'email'
+          RETURNING id
+        `,
+        [
+          input.status,
+          String(input.transaction.id),
+          String(input.transaction.user_id),
+        ],
+      );
+
+      if (!emailImport.rows[0]) {
+        throw new BadRequestException("linked email import was not found");
+      }
+
+      return true;
+    });
+  }
+
+  private terminalTransactionResponse(
+    transaction: TransactionRow,
+  ): ConfirmTransactionResponseDto | null {
+    const status = this.cleanString(transaction.status)?.toLowerCase();
+
+    if (status !== "confirmed" && status !== "rejected") {
+      return null;
+    }
+
+    return {
+      status: status === "confirmed" ? "already_confirmed" : "already_rejected",
+      transactionId: String(transaction.id),
+      userId: String(transaction.user_id),
+      summary: this.transactionSummary(transaction),
+      editMessage: null,
+    };
+  }
+
   private async updateTransactionStatus(
     request: ConfirmTransactionRequestDto,
     nextStatus: "confirmed" | "rejected",
@@ -5101,41 +5161,42 @@ export class TransactionService {
       };
     }
 
-    const existingStatus = this.cleanString(transaction.status)?.toLowerCase();
     const summary = this.transactionSummary(transaction);
+    const terminalResponse = this.terminalTransactionResponse(transaction);
 
-    if (existingStatus === "confirmed") {
-      return {
-        status: "already_confirmed",
-        transactionId: String(transaction.id),
-        userId: String(transaction.user_id),
-        summary,
-        editMessage: null,
-      };
+    if (terminalResponse) {
+      return terminalResponse;
     }
 
-    if (existingStatus === "rejected") {
-      return {
-        status: "already_rejected",
-        transactionId: String(transaction.id),
-        userId: String(transaction.user_id),
-        summary,
-        editMessage: null,
-      };
+    if (transaction.source === "email") {
+      const transitioned = await this.transitionPendingEmailTransaction({
+        transaction,
+        status: nextStatus,
+      });
+
+      if (!transitioned) {
+        const current = await this.findTransaction(transactionId, userId);
+        const concurrentResponse =
+          current && this.terminalTransactionResponse(current);
+
+        if (concurrentResponse) {
+          return concurrentResponse;
+        }
+
+        throw new BadRequestException("transaction status transition failed");
+      }
+    } else {
+      await this.database.query(
+        `
+          UPDATE transactions
+          SET status = $1,
+              updated_at = now()
+          WHERE id::text = $2
+            AND user_id::text = $3
+        `,
+        [nextStatus, String(transaction.id), String(transaction.user_id)],
+      );
     }
-
-    await this.database.query(
-      `
-        UPDATE transactions
-        SET status = $1,
-            updated_at = now()
-        WHERE id::text = $2
-          AND user_id::text = $3
-      `,
-      [nextStatus, String(transaction.id), String(transaction.user_id)],
-    );
-
-    await this.updateEmailImportStatus(transaction, nextStatus);
 
     if (nextStatus === "confirmed") {
       await this.activateValidatedEmailTemplate(transaction);
@@ -5805,6 +5866,17 @@ export class TransactionService {
       };
     }
 
+    if (this.cleanString(transaction.status)?.toLowerCase() !== "pending") {
+      return {
+        status: "already_resolved",
+        pendingTransactionId: null,
+        transactionId: String(transaction.id),
+        confirmationPayload: null,
+        summary: this.transactionSummary(transaction),
+        editMessage: null,
+      };
+    }
+
     const budgetCategory = await this.findBudgetCategory(
       input.budgetId,
       input.userId,
@@ -5821,21 +5893,54 @@ export class TransactionService {
       };
     }
 
-    await this.database.query(
-      `
-        UPDATE transactions
-        SET category = $1,
-            status = 'confirmed',
-            updated_at = now()
-        WHERE id::text = $2
-          AND user_id::text = $3
-      `,
-      [
-        budgetCategory.category,
-        String(transaction.id),
-        String(transaction.user_id),
-      ],
-    );
+    if (transaction.source === "email") {
+      const transitioned = await this.transitionPendingEmailTransaction({
+        transaction,
+        status: "confirmed",
+        category: budgetCategory.category,
+      });
+
+      if (!transitioned) {
+        const current = await this.findTransaction(
+          String(transaction.id),
+          String(transaction.user_id),
+        );
+
+        if (
+          !current ||
+          this.cleanString(current.status)?.toLowerCase() === "pending"
+        ) {
+          throw new BadRequestException(
+            "transaction category transition failed",
+          );
+        }
+
+        return {
+          status: "already_resolved",
+          pendingTransactionId: null,
+          transactionId: String(transaction.id),
+          confirmationPayload: null,
+          summary: this.transactionSummary(current),
+          editMessage: null,
+        };
+      }
+    } else {
+      await this.database.query(
+        `
+          UPDATE transactions
+          SET category = $1,
+              status = 'confirmed',
+              updated_at = now()
+          WHERE id::text = $2
+            AND user_id::text = $3
+        `,
+        [
+          budgetCategory.category,
+          String(transaction.id),
+          String(transaction.user_id),
+        ],
+      );
+    }
 
     const summary = this.transactionSummary({
       ...transaction,
@@ -5848,8 +5953,7 @@ export class TransactionService {
       status: "confirmed",
     };
 
-    if (this.cleanString(transaction.status)?.toLowerCase() === "pending") {
-      await this.updateEmailImportStatus(confirmedTransaction, "confirmed");
+    if (transaction.source === "email") {
       await this.activateValidatedEmailTemplate(confirmedTransaction);
       await this.learnConfirmedEmailTransaction(confirmedTransaction);
     }

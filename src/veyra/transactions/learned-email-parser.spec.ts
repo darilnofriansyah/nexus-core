@@ -9,6 +9,7 @@ import {
   isLikelyTransactionEmail,
   parseLearnedEmailTemplate,
   validateEmailTemplateProposal,
+  validateStoredEmailTemplateProposal,
 } from "./learned-email-parser";
 import { EmailParserInput, normalizeEmailWhitespace } from "./email-parsers";
 
@@ -185,6 +186,47 @@ test("returns invalid for structurally malformed proposals", () => {
     const result = validateEmailTemplateProposal(parserInput, value);
     assert.equal(result.ok, false);
   }
+});
+
+test("validates a stored proposal against its sender fingerprint", () => {
+  const parserInput = input(
+    "Merchant: Tuku Jumlah: Rp25.000 Tanggal: 25 Juni 2026 09:30",
+  );
+  const templateProposal = proposal();
+  const validated = validateEmailTemplateProposal(
+    parserInput,
+    templateProposal,
+  );
+  assert.equal(validated.ok, true);
+  if (!validated.ok) return;
+
+  assert.deepEqual(
+    validateStoredEmailTemplateProposal({
+      senderAddress: parserInput.email.from,
+      fingerprint: validated.fingerprint,
+      proposal: templateProposal,
+    }),
+    templateProposal,
+  );
+});
+
+test("rejects malformed or fingerprint-mismatched stored proposals", () => {
+  assert.equal(
+    validateStoredEmailTemplateProposal({
+      senderAddress: "no-reply@krom.id",
+      fingerprint: "f".repeat(64),
+      proposal: { ...proposal(), amount: { kind: "text" } },
+    }),
+    null,
+  );
+  assert.equal(
+    validateStoredEmailTemplateProposal({
+      senderAddress: "no-reply@krom.id",
+      fingerprint: "f".repeat(64),
+      proposal: proposal(),
+    }),
+    null,
+  );
 });
 
 test("detects transactions but rejects marketing email", () => {

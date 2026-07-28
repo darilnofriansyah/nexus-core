@@ -211,8 +211,15 @@ function fingerprint(
   input: EmailParserInput,
   proposal: EmailParserTemplateProposalDto,
 ): string {
+  return templateFingerprint(input.email.from, proposal);
+}
+
+function templateFingerprint(
+  senderAddress: string,
+  proposal: EmailParserTemplateProposalDto,
+): string {
   const canonicalTemplateShape = {
-    senderAddress: input.email.from.trim().toLowerCase(),
+    senderAddress: senderAddress.trim().toLowerCase(),
     provider: proposal.provider.trim(),
     templateKey: proposal.templateKey.trim(),
     requiredAnchors: proposal.requiredAnchors,
@@ -290,6 +297,20 @@ export function validateEmailTemplateProposal(
     fingerprint: fingerprint(input, validatedProposal),
     parsed,
   };
+}
+
+export function validateStoredEmailTemplateProposal(input: {
+  senderAddress: string;
+  fingerprint: string;
+  proposal: unknown;
+}): EmailParserTemplateProposalDto | null {
+  if (templateProblem(input.proposal)) return null;
+  const proposal = input.proposal as EmailParserTemplateProposalDto;
+
+  return templateFingerprint(input.senderAddress, proposal) ===
+    input.fingerprint
+    ? proposal
+    : null;
 }
 
 export function parseLearnedEmailTemplate(
