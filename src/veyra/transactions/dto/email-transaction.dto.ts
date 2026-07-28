@@ -96,8 +96,17 @@ export interface EmailReviewResolutionDto {
 export interface EmailTransactionResolveReviewRequestDto {
   telegramUserId: string;
   reviewToken?: string;
-  transactionCandidate: EmailReviewTransactionCandidateDto;
-  resolution: EmailReviewResolutionDto;
+  transactionId?: string;
+  email: EmailTransactionMessageDto;
+  transactionCandidate?: EmailReviewTransactionCandidateDto;
+  resolution?: EmailReviewResolutionDto;
+  templateProposal?: EmailParserTemplateProposalDto;
+  aiError?: string;
+}
+
+export interface EmailValidatedTemplatePayloadDto {
+  fingerprint: string;
+  proposal: EmailParserTemplateProposalDto;
 }
 
 export interface ParsedEmailTransactionDto {
@@ -154,13 +163,17 @@ export type EmailTransactionResolveReviewStatus =
   | "needs_review";
 
 export interface EmailReviewActionDto {
-  action?: "save_transaction" | "cancel_transaction" | "change_categories";
+  action?:
+    | "save_transaction"
+    | "cancel_transaction"
+    | "change_categories"
+    | "edit_email_details";
   transactionId?: string;
 }
 
 export interface EmailTransactionResolveReviewResponseDto {
   status: EmailTransactionResolveReviewStatus;
-  reason?: "user_not_found" | "category_not_found";
+  reason?: "user_not_found" | "category_not_found" | "ai_failed";
   message?: string;
   transaction?: EmailTransactionResponseTransactionDto & {
     status: "confirmed" | "pending";
@@ -174,6 +187,7 @@ export interface EmailTransactionResolveReviewResponseDto {
     confirm: EmailReviewActionDto;
     cancel: EmailReviewActionDto;
     changeCategory: EmailReviewActionDto;
+    editDetails: EmailReviewActionDto;
   };
   replyMarkup?: TelegramReplyMarkupDto;
 }

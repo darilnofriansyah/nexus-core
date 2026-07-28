@@ -62,11 +62,13 @@ import {
 import {
   EmailReviewResolutionDto,
   EmailReviewTransactionCandidateDto,
+  EmailTransactionMessageDto,
   EmailTransactionHandleRequestDto,
   EmailTransactionHandleResponseDto,
   EmailTransactionHandleStatus,
   EmailTransactionResolveReviewRequestDto,
   EmailTransactionResolveReviewResponseDto,
+  EmailValidatedTemplatePayloadDto,
   ParsedEmailTransactionDto,
 } from "./dto/email-transaction.dto";
 import {
@@ -94,6 +96,7 @@ import {
   hasAlignedSenderAuthentication,
   isLikelyTransactionEmail,
   parseLearnedEmailTemplate,
+  validateEmailTemplateProposal,
 } from "./learned-email-parser";
 
 const TRANSACTION_CATEGORY_OPTIONS = [
@@ -232,21 +235,48 @@ interface RiskCountRow extends QueryResultRow {
   count: string | number;
 }
 
-interface ValidatedEmailReview {
-  userId: string;
-  candidate: EmailReviewTransactionCandidateDto & {
-    source: "email";
-    transactionType: NormalizedTransactionType;
-    amount: number;
-    merchant: string;
-    merchantNormalized: string;
-    transactionDate: string;
-    rawPayload: Record<string, unknown>;
-  };
-  resolution: EmailReviewResolutionDto & {
-    category: string;
-    confidence: number;
-  };
+type ValidatedEmailReview =
+  | {
+      kind: "failure";
+      userId: string;
+      email: EmailTransactionMessageDto;
+      errorReason: string;
+    }
+  | {
+      kind: "candidate";
+      userId: string;
+      email: EmailTransactionMessageDto;
+      transactionId: string | null;
+      candidate: EmailReviewTransactionCandidateDto & {
+        source: "email";
+        transactionType: NormalizedTransactionType;
+        amount: number;
+        merchant: string;
+        merchantNormalized: string;
+        transactionDate: string;
+      };
+      resolution: EmailReviewResolutionDto & {
+        category: string;
+        confidence: number;
+      };
+      rawPayload: {
+        email: {
+          messageId: string;
+          from: string;
+          authentication: EmailTransactionMessageDto["authentication"] | null;
+        };
+        parserSource: "ai";
+        validatedTemplate: EmailValidatedTemplatePayloadDto | null;
+      };
+    };
+
+type ValidatedEmailCandidateReview = Extract<
+  ValidatedEmailReview,
+  { kind: "candidate" }
+>;
+
+interface PendingEmailReviewRow extends QueryResultRow {
+  id: string | number;
 }
 
 interface EmailParseAttempt {
@@ -858,68 +888,61 @@ export class TransactionService {
       };
     }
 
+    const transactionId = this.cleanString(request.transactionId);
+
+    if (
+      transactionId &&
+      !(await this.findPendingEmailReviewTransaction(
+        transactionId,
+        String(user.id),
+      ))
+    ) {
+      throw new BadRequestException("pending email transaction was not found");
+    }
+
     const validated = this.validateEmailReviewRequest(request, String(user.id));
+
+    if (validated.kind === "failure") {
+      await this.recordEmailAiFailure(validated);
+      return {
+        status: "needs_review",
+        reason: "ai_failed",
+        message: validated.errorReason,
+      };
+    }
+
     const budgetCategory = await this.findExistingBudgetCategory(
       validated.userId,
       validated.resolution.category,
     );
-    const transactionStatus =
-      validated.resolution.confidence >= 85 ? "confirmed" : "pending";
-
-    if (transactionStatus === "confirmed" && !budgetCategory) {
-      return {
-        status: "needs_review",
-        reason: "category_not_found",
-        message: "Category was not found in user budgets.",
-        transactionCandidate: request.transactionCandidate,
-        resolution: request.resolution,
-      };
-    }
-
     const category = budgetCategory ?? validated.resolution.category;
     const transaction = await this.saveEmailReviewTransaction({
       userId: validated.userId,
+      transactionId: validated.transactionId,
       candidate: {
         ...validated.candidate,
         category,
       },
-      status: transactionStatus,
       confidence: validated.resolution.confidence,
+      rawPayload: validated.rawPayload,
     });
 
-    if (transactionStatus === "confirmed") {
-      try {
-        await this.upsertHighConfidenceEmailReviewLearning({
-          userId: validated.userId,
-          merchant: validated.candidate.merchant,
-          merchantNormalized: validated.candidate.merchantNormalized,
-          category,
-        });
-      } catch {
-        // Alias/rule learning is intentionally best-effort for this endpoint.
-      }
+    if (!validated.transactionId) {
+      await this.attachPendingEmailReviewImport({
+        userId: validated.userId,
+        messageId: validated.email.messageId,
+        transactionId: transaction.id,
+        rawPayload: validated.rawPayload,
+      });
     }
 
     const telegramText = this.buildEmailReviewTelegramText({
-      status: transactionStatus,
+      status: "pending",
       amount: transaction.amount,
       merchant: transaction.merchantNormalized,
       category: transaction.category,
     });
-    const watchdog =
-      transactionStatus === "confirmed"
-        ? await this.evaluateTransactionWatchdog(transaction.id)
-        : this.emptyTransactionWatchdogResponse();
-
-    if (transactionStatus === "confirmed") {
-      return {
-        status: "confirmed",
-        transaction,
-        telegramText: this.appendWatchdogMessage(telegramText, watchdog),
-        notifications: watchdog.notifications,
-        ...(watchdog.watchdog ? { watchdog: watchdog.watchdog } : {}),
-      };
-    }
+    const watchdog = this.emptyTransactionWatchdogResponse();
 
     return {
       status: "pending",
@@ -928,10 +951,7 @@ export class TransactionService {
       notifications: watchdog.notifications,
       ...(watchdog.watchdog ? { watchdog: watchdog.watchdog } : {}),
       actions: this.buildEmailReviewActions(transaction.id),
-      replyMarkup: this.buildConfirmationReplyMarkup(
-        transaction.id,
-        PRODUCTION_CALLBACK_MODE,
-      ),
+      replyMarkup: this.buildEmailReviewReplyMarkup(transaction.id),
     };
   }
 
@@ -1646,8 +1666,56 @@ export class TransactionService {
     request: EmailTransactionResolveReviewRequestDto,
     userId: string,
   ): ValidatedEmailReview {
+    const email = request.email;
+
+    if (!email || typeof email !== "object") {
+      throw new BadRequestException("email is required");
+    }
+
+    const messageId = this.cleanString(email.messageId);
+    const from = this.cleanString(email.from);
+    const subject = this.cleanString(email.subject);
+    const body = normalizeEmailBody({
+      emailText: email.emailText,
+      emailHtml: email.emailHtml,
+      htmlToText: (html) => convert(html, { wordwrap: false }),
+    });
+
+    if (!messageId) {
+      throw new BadRequestException("email.messageId is required");
+    }
+
+    if (!from) {
+      throw new BadRequestException("email.from is required");
+    }
+
+    if (!subject) {
+      throw new BadRequestException("email.subject is required");
+    }
+
+    if (!body.text) {
+      throw new BadRequestException("email body is required");
+    }
+
+    const validatedEmail = { ...email, messageId, from, subject };
     const candidate = request.transactionCandidate;
     const resolution = request.resolution;
+    const errorReason = this.cleanString(request.aiError);
+
+    if (errorReason) {
+      if (candidate || resolution || request.templateProposal) {
+        throw new BadRequestException(
+          "aiError cannot be combined with an AI review result",
+        );
+      }
+
+      return {
+        kind: "failure",
+        userId,
+        email: validatedEmail,
+        errorReason,
+      };
+    }
 
     if (!candidate || typeof candidate !== "object") {
       throw new BadRequestException("transactionCandidate is required");
@@ -1671,6 +1739,12 @@ export class TransactionService {
       throw new BadRequestException("amount must be positive");
     }
 
+    const transactionDate = this.cleanString(candidate.transactionDate);
+
+    if (!transactionDate) {
+      throw new BadRequestException("transactionDate is required");
+    }
+
     const warnings: string[] = [];
     const transactionType = this.normalizeTransactionType(
       candidate.transactionType,
@@ -1689,8 +1763,24 @@ export class TransactionService {
       throw new BadRequestException("resolution.category is required");
     }
 
+    const templateValidation = request.templateProposal
+      ? validateEmailTemplateProposal(
+          {
+            email: validatedEmail,
+            text: body.text,
+            normalizedText: normalizeEmailWhitespace(body.text),
+            bodySource: body.source,
+            bodyWarnings: body.warnings,
+          },
+          request.templateProposal,
+        )
+      : null;
+
     return {
+      kind: "candidate",
       userId,
+      email: validatedEmail,
+      transactionId: this.cleanString(request.transactionId) ?? null,
       candidate: {
         ...candidate,
         source: "email",
@@ -1698,29 +1788,79 @@ export class TransactionService {
         amount,
         merchant,
         merchantNormalized,
-        transactionDate: this.normalizeTransactionDate(
-          candidate.transactionDate,
-        ),
-        rawPayload: candidate.rawPayload ?? {},
+        transactionDate: this.normalizeTransactionDate(transactionDate),
       },
       resolution: {
         ...resolution,
         category,
         confidence: this.normalizeConfidence(resolution.confidence),
       },
+      rawPayload: {
+        email: {
+          messageId,
+          from,
+          authentication: email.authentication ?? null,
+        },
+        parserSource: "ai",
+        validatedTemplate: templateValidation?.ok
+          ? {
+              fingerprint: templateValidation.fingerprint,
+              proposal: request.templateProposal!,
+            }
+          : null,
+      },
     };
   }
 
   private async saveEmailReviewTransaction(input: {
     userId: string;
-    candidate: ValidatedEmailReview["candidate"] & { category: string };
-    status: "confirmed" | "pending";
+    transactionId: string | null;
+    candidate: ValidatedEmailCandidateReview["candidate"] & {
+      category: string;
+    };
     confidence: number;
+    rawPayload: ValidatedEmailCandidateReview["rawPayload"];
   }): Promise<
     NonNullable<EmailTransactionResolveReviewResponseDto["transaction"]>
   > {
-    const result = await this.database.query<InsertedTransactionRow>(
-      `
+    const values = [
+      input.userId,
+      input.candidate.transactionType,
+      input.candidate.amount,
+      input.candidate.merchant,
+      input.candidate.merchantNormalized,
+      input.candidate.category,
+      input.candidate.transactionDate,
+      this.cleanString(input.candidate.description) ?? null,
+      "pending",
+      input.confidence,
+      input.rawPayload,
+    ];
+    const result = input.transactionId
+      ? await this.database.query<InsertedTransactionRow>(
+          `
+            UPDATE transactions
+            SET transaction_type = $2,
+                amount = $3,
+                merchant = $4,
+                merchant_normalized = $5,
+                category = $6,
+                transaction_date = $7,
+                notes = $8,
+                status = 'pending',
+                confidence = $10,
+                raw_payload = $11,
+                updated_at = now()
+            WHERE id::text = $12
+              AND user_id::text = $1
+              AND source = 'email'
+              AND status = 'pending'
+            RETURNING id
+          `,
+          [...values, input.transactionId],
+        )
+      : await this.database.query<InsertedTransactionRow>(
+          `
         INSERT INTO transactions (
           user_id,
           transaction_type,
@@ -1738,24 +1878,12 @@ export class TransactionService {
         VALUES ($1, $2, $3, $4, $5, $6, $7, 'email', $8, $9, $10, $11)
         RETURNING id
       `,
-      [
-        input.userId,
-        input.candidate.transactionType,
-        input.candidate.amount,
-        input.candidate.merchant,
-        input.candidate.merchantNormalized,
-        input.candidate.category,
-        input.candidate.transactionDate,
-        this.cleanString(input.candidate.description) ?? null,
-        input.status,
-        input.confidence,
-        input.candidate.rawPayload,
-      ],
-    );
+          values,
+        );
     const insertedId = result.rows[0]?.id;
 
     if (insertedId === undefined) {
-      throw new BadRequestException("transaction insert failed");
+      throw new BadRequestException("pending email transaction save failed");
     }
 
     return {
@@ -1768,117 +1896,105 @@ export class TransactionService {
       category: input.candidate.category,
       transactionDate: input.candidate.transactionDate,
       source: "email",
-      status: input.status,
+      status: "pending",
       confidence: input.confidence,
     };
   }
 
-  private async upsertHighConfidenceEmailReviewLearning(input: {
-    userId: string;
-    merchant: string;
-    merchantNormalized: string;
-    category: string;
-  }): Promise<void> {
-    await this.upsertMerchantAlias({
-      userId: input.userId,
-      aliasName: input.merchant,
-      canonicalName: input.merchantNormalized,
-    });
-    await this.upsertCategoryRule({
-      userId: input.userId,
-      merchantPattern: input.merchantNormalized,
-      category: input.category,
-    });
-  }
-
-  private async upsertMerchantAlias(input: {
-    userId: string;
-    aliasName: string;
-    canonicalName: string;
-  }): Promise<void> {
-    if (!input.aliasName || !input.canonicalName) {
-      return;
-    }
-
-    const existing = await this.database.query<MerchantAliasRow>(
+  private async findPendingEmailReviewTransaction(
+    transactionId: string,
+    userId: string,
+  ): Promise<PendingEmailReviewRow | undefined> {
+    const result = await this.database.query<PendingEmailReviewRow>(
       `
-        SELECT id, canonical_name
-        FROM merchant_aliases
-        WHERE user_id::text = $1
-          AND lower(alias_name) = lower($2)
+        SELECT id
+        FROM transactions
+        WHERE id::text = $1
+          AND user_id::text = $2
+          AND source = 'email'
+          AND status = 'pending'
         LIMIT 1
       `,
-      [input.userId, input.aliasName],
+      [transactionId, userId],
     );
-    const row = existing.rows[0];
 
-    if (row) {
-      if (row.canonical_name !== input.canonicalName) {
-        await this.database.query(
-          `
-            UPDATE merchant_aliases
-            SET canonical_name = $1
-            WHERE id::text = $2
-          `,
-          [input.canonicalName, String(row.id)],
-        );
-      }
+    return result.rows[0];
+  }
 
-      return;
-    }
-
+  private async attachPendingEmailReviewImport(input: {
+    userId: string;
+    messageId: string;
+    transactionId: string;
+    rawPayload: ValidatedEmailCandidateReview["rawPayload"];
+  }): Promise<void> {
     await this.database.query(
       `
-        INSERT INTO merchant_aliases (user_id, alias_name, canonical_name)
-        VALUES ($1, $2, $3)
+        UPDATE transaction_imports
+        SET transaction_id = $1,
+            status = 'pending',
+            raw_payload = $2
+        WHERE user_id::text = $3
+          AND source = 'email'
+          AND source_reference = $4
       `,
-      [input.userId, input.aliasName, input.canonicalName],
+      [input.transactionId, input.rawPayload, input.userId, input.messageId],
     );
   }
 
-  private async upsertCategoryRule(input: {
-    userId: string;
-    merchantPattern: string;
-    category: string;
-  }): Promise<void> {
-    if (!input.merchantPattern || !input.category) {
-      return;
-    }
-
-    const existing = await this.database.query<CategoryRuleRow>(
+  private async recordEmailAiFailure(
+    input: Extract<ValidatedEmailReview, { kind: "failure" }>,
+  ): Promise<void> {
+    await this.database.query(
       `
-        SELECT id, category
-        FROM category_rules
+        UPDATE transaction_imports
+        SET status = 'needs_review',
+            raw_payload = raw_payload || jsonb_build_object('aiError', $3::text)
         WHERE user_id::text = $1
-          AND lower(merchant_pattern) = lower($2)
-        LIMIT 1
+          AND source = 'email'
+          AND source_reference = $2
       `,
-      [input.userId, input.merchantPattern],
+      [input.userId, input.email.messageId, input.errorReason],
     );
-    const row = existing.rows[0];
-
-    if (row) {
-      if (row.category !== input.category) {
-        await this.database.query(
-          `
-            UPDATE category_rules
-            SET category = $1
-            WHERE id::text = $2
-          `,
-          [input.category, String(row.id)],
-        );
-      }
-
-      return;
-    }
 
     await this.database.query(
       `
-        INSERT INTO category_rules (user_id, merchant_pattern, category)
-        VALUES ($1, $2, $3)
+        UPDATE email_parse_attempts
+        SET status = 'needs_review',
+            error_reason = $3
+        WHERE user_id::text = $1
+          AND source_reference = $2
       `,
-      [input.userId, input.merchantPattern, input.category],
+      [input.userId, input.email.messageId, input.errorReason],
     );
+  }
+
+  private buildEmailReviewReplyMarkup(
+    transactionId: string,
+  ): TelegramReplyMarkupDto {
+    return {
+      inline_keyboard: [
+        [
+          {
+            text: "Save",
+            callback_data: this.saveTransactionCallbackData(transactionId),
+          },
+          {
+            text: "Edit Details",
+            callback_data: `edit_email_details:${transactionId}`,
+          },
+        ],
+        [
+          {
+            text: "Change Category",
+            callback_data: this.changeCategoriesCallbackData(transactionId),
+          },
+          {
+            text: "Cancel",
+            callback_data: this.cancelTransactionCallbackData(transactionId),
+          },
+        ],
+      ],
+    };
   }
 
   private buildEmailReviewTelegramText(input: {
@@ -1930,6 +2046,10 @@ export class TransactionService {
       },
       changeCategory: {
         action: "change_categories",
+        transactionId,
+      },
+      editDetails: {
+        action: "edit_email_details",
         transactionId,
       },
     };
