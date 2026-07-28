@@ -1197,13 +1197,13 @@ Delete is a soft delete: Core API updates `transactions.status = 'rejected'` and
 
 ### `POST /api/veyra/transactions/email/handle`
 
-Handles one Gmail-sourced transaction notification with deterministic bank email parsers. This endpoint parses only the supported Phase 1 templates: BCA credit-card transaction notifications, Mandiri e-money top-ups, Krom incoming transfers, Krom QRIS payments, and Krom outgoing transfers. It does not call an LLM, does not execute DB-driven parser templates, and does not auto-save unknown BCA, Mandiri, or Krom templates.
+Handles one Gmail-sourced transaction notification. Core API tries existing hard-coded bank parsers first, then active user-scoped learned templates. It never invokes an LLM. An AI-created candidate remains pending until the user confirms it; confirmation is what activates its validated learned template for future matching emails.
 
 The handler deduplicates Gmail messages through `transaction_imports` using `source = "email"` and `source_reference = email.messageId`. It normalizes the email body, parses `emailText` first, then falls back to `emailHtml` converted with `html-to-text` when the text body is missing, too short, or not parseable. Provider/template detection runs before extraction, so known providers with unknown templates still return `unsupported_template`. Parse outcomes are logged to `email_parse_attempts` with structured diagnostics and a trimmed `body_sample`, not the full email body. The table definitions are in `docs/migration/2026-06-23-email-transaction-imports.sql` and should be applied separately.
 
 Confirmed saves insert into `transactions` with `source = "email"` and `status = "confirmed"` only when the parser returns a valid transaction, amount is positive, merchant is known or an allowed fallback, and category resolves from `category_rules` or an allowed existing fallback budget category. If category cannot be resolved, Core API returns `needs_review` instead of inserting a confirmed transaction.
 
-Example n8n HTTP Request body:
+Initial Gmail HTTP Request body:
 
 ```json
 {
@@ -1213,11 +1213,17 @@ Example n8n HTTP Request body:
   "email": {
     "messageId": "gmail-message-id",
     "threadId": "gmail-thread-id",
-    "from": "sender@email.com",
-    "subject": "Email subject",
-    "date": "2026-06-22T10:00:00+07:00",
-    "emailText": "plain text body",
-    "emailHtml": "<p>optional fallback HTML body</p>"
+    "from": "card@bca.co.id",
+    "subject": "Credit Card Transaction Notification",
+    "date": "2026-07-27T10:00:00+07:00",
+    "emailText": "normalized plain-text body",
+    "emailHtml": "<p>optional fallback body</p>",
+    "authentication": {
+      "dkim": "pass",
+      "spf": "pass",
+      "dmarc": "pass",
+      "domain": "bca.co.id"
+    }
   }
 }
 ```
@@ -1269,37 +1275,74 @@ Example confirmed response:
 }
 ```
 
-Possible statuses are `confirmed`, `needs_review`, `duplicate`, `ignored_non_transaction`, `unsupported_provider`, `unsupported_template`, and `parse_failed`. The `telegram.text` field is HTML-safe and suitable for n8n Telegram routing with `parseMode: "HTML"`.
+Possible statuses are `confirmed`, `needs_review`, `needs_ai`, `duplicate`, `ignored_non_transaction`, `unsupported_provider`, `unsupported_template`, and `parse_failed`. The `telegram.text` field is HTML-safe and suitable for n8n Telegram routing with `parseMode: "HTML"`.
 
-This endpoint can replace deterministic email parser Code nodes and the high-confidence direct insert branch for supported templates. Gmail triggers, email fetching, HTML/plain-text extraction, Telegram sends, retries, unsupported-template review routing, category review callbacks, and any LLM fallback stay in n8n.
+`needs_ai` means the message looks transactional but neither deterministic path produced a usable result. Core API returns `aiRequest.reviewToken` (the Gmail `messageId`) and a reason; it does not include the body in that handoff. n8n owns the fallback: it calls its existing AI node with the original Gmail data, then posts only the structured result to `resolve-review`.
+
+This endpoint can replace deterministic email parser Code nodes and the high-confidence direct insert branch for supported templates. Gmail triggers, email fetching and refetching, HTML/plain-text extraction, AI invocation, Telegram sends, retries, and callback routing stay in n8n.
 
 ### `POST /api/veyra/transactions/email/resolve-review`
 
-Resolves an email transaction candidate that previously returned `status: "needs_review"` from the email ingestion flow. n8n may use an LLM to suggest a category. Core API validates the category against active `budgets.category` before confirming high-confidence rows; low-confidence rows are saved as pending with the LLM category so the user can save, cancel, or change category.
+Accepts a structured result from n8n after an email returned `needs_ai`. Every AI candidate is persisted as a pending email transaction for user confirmation, regardless of confidence. Core API validates the transaction fields and retains a learned-template proposal only when it can replay safely against the supplied email. It does not call an LLM or send Telegram messages.
 
-The endpoint accepts confidence as `0..1` or `0..100`. Confidence `>= 85` inserts a confirmed email transaction and best-effort learns the merchant alias/category rule without duplicating existing user-scoped rows. Confidence `< 85` inserts a pending email transaction with the LLM category and returns production callback actions/markup for n8n. It does not create budgets and does not send Telegram messages.
+The endpoint accepts confidence as `0..1` or `0..100`; the response normalizes it to `0..100`. It does not create budgets. If the AI category is not an active budget category, the candidate still remains pending with that category for the user to correct.
 
-Example n8n HTTP Request body:
+Structured n8n AI submission:
 
 ```json
 {
   "telegramUserId": "976684739",
-  "reviewToken": "optional-correlation-id",
+  "reviewToken": "gmail-message-id",
+  "email": {
+    "messageId": "gmail-message-id",
+    "from": "card@bca.co.id",
+    "subject": "Credit Card Transaction Notification",
+    "date": "2026-07-27T10:00:00+07:00",
+    "emailText": "normalized plain-text body",
+    "authentication": {
+      "dkim": "pass",
+      "spf": "pass",
+      "dmarc": "pass",
+      "domain": "bca.co.id"
+    }
+  },
   "transactionCandidate": {
     "source": "email",
-    "bank": "bca",
+    "bank": "BCA",
     "transactionType": "expense",
     "amount": 25000,
-    "merchant": "TUKU",
-    "merchantNormalized": "tuku",
-    "transactionDate": "2026-06-25T00:00:00+07:00",
-    "description": "BCA Credit Card transaction",
+    "merchant": "Kopi Tuku",
+    "merchantNormalized": "Kopi Tuku",
+    "transactionDate": "2026-07-27T09:30:00+07:00",
+    "description": "BCA credit-card purchase",
     "rawPayload": {}
   },
   "resolution": {
     "category": "Food",
-    "confidence": 0.86,
+    "confidence": 98,
     "resolver": "llm"
+  },
+  "templateProposal": {
+    "provider": "BCA",
+    "templateKey": "learned-bca-card",
+    "requiredAnchors": ["Merchant / ATM", "Pada Tanggal", "Sejumlah"],
+    "forbiddenAnchors": ["Promo"],
+    "merchant": {
+      "kind": "text",
+      "after": "Merchant / ATM",
+      "before": "Jenis Transaksi"
+    },
+    "amount": {
+      "kind": "idr_amount",
+      "after": "Sejumlah"
+    },
+    "transactionDate": {
+      "kind": "datetime",
+      "after": "Pada Tanggal",
+      "before": "Sejumlah"
+    },
+    "transactionType": "expense",
+    "paymentType": "Credit Card"
   }
 }
 ```
@@ -1335,6 +1378,10 @@ Example pending response:
     "changeCategory": {
       "action": "change_categories",
       "transactionId": "123"
+    },
+    "editDetails": {
+      "action": "edit_email_details",
+      "transactionId": "123"
     }
   },
   "replyMarkup": {
@@ -1345,11 +1392,15 @@ Example pending response:
           "callback_data": "save_transaction:123"
         },
         {
-          "text": "Change Category",
-          "callback_data": "change_categories:123"
+          "text": "Edit Details",
+          "callback_data": "edit_email_details:123"
         }
       ],
       [
+        {
+          "text": "Change Category",
+          "callback_data": "change_categories:123"
+        },
         {
           "text": "Cancel",
           "callback_data": "cancel_transaction:123"
@@ -1360,19 +1411,39 @@ Example pending response:
 }
 ```
 
-If the category does not exist in active budgets, Core API returns:
+`templateProposal` is optional. A malformed or non-replayable proposal does not block the user review; Core API stores no validated template for it. A valid proposal is activated only after the pending transaction is saved.
+
+AI correction uses the preceding structured submission plus the existing pending row:
 
 ```json
 {
-  "status": "needs_review",
-  "reason": "category_not_found",
-  "message": "Category was not found in user budgets.",
-  "transactionCandidate": {},
-  "resolution": {}
+  "transactionId": "123"
 }
 ```
 
-This endpoint can replace the n8n review-resolution validation and insert branch after LLM categorization. Gmail triggers, email fetching/parsing, LLM category suggestion, Telegram sends, retries, and callback routing stay in n8n.
+n8n refetches Gmail by `messageId`, sends the original candidate, the user's correction, and the email to its AI node, then sends the corrected `transactionCandidate` and regenerated `templateProposal` back to Core API. The correction updates that pending email transaction; it does not create another one.
+
+n8n must intercept `edit_email_details:*` itself and must not forward it to the generic Core API callback handler. It uses that action to gather the correction and invoke its AI node. The existing production callbacks remain owned by their current n8n routes: `save_transaction:*`, `change_categories:*`, and `cancel_transaction:*`.
+
+When the AI node fails, n8n submits:
+
+```json
+{
+  "telegramUserId": "976684739",
+  "reviewToken": "gmail-message-id",
+  "email": {
+    "messageId": "gmail-message-id",
+    "from": "card@bca.co.id",
+    "subject": "Credit Card Transaction Notification",
+    "emailText": "normalized plain-text body"
+  },
+  "aiError": "model unavailable"
+}
+```
+
+Core API returns `status: "needs_review"` with `reason: "ai_failed"`, records the import and parse attempt as the AI failure, and inserts neither a transaction nor a template.
+
+This endpoint owns only validation and pending review persistence. Gmail triggers, Gmail refetching, AI prompting/invocation, correction collection, Telegram sends, retries, and callback routing stay in n8n. Do not alter or activate a production n8n workflow as part of this API change.
 
 ### `POST /api/veyra/transactions/confirmation-payload`
 
