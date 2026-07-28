@@ -6,11 +6,17 @@ import { TransactionWatchdogNotificationDto } from "./transaction-watchdog.dto";
 export type EmailTransactionHandleStatus =
   | "confirmed"
   | "needs_review"
+  | "needs_ai"
   | "duplicate"
   | "ignored_non_transaction"
   | "unsupported_provider"
   | "unsupported_template"
   | "parse_failed";
+
+export interface EmailAiHandoffDto {
+  reviewToken: string;
+  reason: "unsupported_template" | "parse_failed";
+}
 
 export type EmailAuthenticationStatus = "pass" | "fail" | "unknown";
 
@@ -133,6 +139,7 @@ export interface EmailTransactionHandleResponseDto {
   reason: string | null;
   transaction?: EmailTransactionResponseTransactionDto;
   parsed?: ParsedEmailTransactionDto;
+  aiRequest?: EmailAiHandoffDto;
   telegram: {
     text: string;
     parseMode: "HTML";

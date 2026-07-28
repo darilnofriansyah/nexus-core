@@ -3,7 +3,19 @@ import { test } from "node:test";
 import { BadRequestException } from "@nestjs/common";
 import { DatabaseService } from "../../database/database.service";
 import { BudgetService } from "../budgets/budget.service";
+import {
+  EmailParserTemplateProposalDto,
+  EmailTransactionHandleRequestDto,
+  EmailTransactionMessageDto,
+  LearnedEmailTemplate,
+} from "./dto/email-transaction.dto";
 import { TransactionWatchdogResponseDto } from "./dto/transaction-watchdog.dto";
+import { normalizeEmailWhitespace } from "./email-parsers";
+import {
+  ActivateEmailParserTemplateInput,
+  EmailParserTemplateRepository,
+} from "./email-parser-template.repository";
+import { validateEmailTemplateProposal } from "./learned-email-parser";
 import { TransactionRiskReviewRepository } from "./transaction-risk-review.repository";
 import { TransactionService } from "./transaction.service";
 
@@ -11,6 +23,7 @@ function createService(
   rowsByCall: unknown[][] = [],
   budgetService?: BudgetService,
   riskReviewRepository?: TransactionRiskReviewRepository,
+  emailParserTemplateRepository?: EmailParserTemplateRepository,
 ) {
   const calls: Array<{ text: string; values: unknown[] }> = [];
   const query = async (text: string, values: unknown[] = []) => {
@@ -30,7 +43,35 @@ function createService(
       database,
       budgetService,
       riskReviewRepository,
+      emailParserTemplateRepository,
     ),
+  };
+}
+
+function createTemplateRepository(
+  templates: LearnedEmailTemplate[] = [],
+  activateError?: Error,
+) {
+  const calls: Array<{ method: string; input: unknown }> = [];
+  return {
+    calls,
+    repository: {
+      findActive: async (userId: string, senderAddress: string) => {
+        calls.push({ method: "findActive", input: { userId, senderAddress } });
+        return templates;
+      },
+      activate: async (input: ActivateEmailParserTemplateInput) => {
+        calls.push({ method: "activate", input });
+        if (activateError) throw activateError;
+        return { id: "7", ...input };
+      },
+      markMatched: async (templateId: string, userId: string) => {
+        calls.push({ method: "markMatched", input: { templateId, userId } });
+      },
+      disable: async (templateId: string, userId: string) => {
+        calls.push({ method: "disable", input: { templateId, userId } });
+      },
+    } as unknown as EmailParserTemplateRepository,
   };
 }
 
@@ -124,6 +165,103 @@ const transaction = {
   merchant_normalized: "GoPay",
   category: "Transport",
   status: "pending",
+};
+
+const learnedProposal: EmailParserTemplateProposalDto = {
+  provider: "Krom",
+  templateKey: "learned-krom-qris",
+  requiredAnchors: [
+    "Pembayaran QR berhasil",
+    "Merchant:",
+    "Jumlah:",
+    "Tanggal:",
+  ],
+  merchant: { kind: "text", after: "Merchant:", before: "Jumlah:" },
+  amount: { kind: "idr_amount", after: "Jumlah:", before: "Tanggal:" },
+  transactionDate: { kind: "datetime", after: "Tanggal:" },
+  transactionType: "expense",
+  paymentType: "QRIS",
+};
+
+const authenticatedUnknownKromEmail: EmailTransactionHandleRequestDto = {
+  telegramUserId: "976684739",
+  userId: "1",
+  source: "email",
+  email: {
+    messageId: "gmail-learned-1",
+    from: "alerts@krom.id",
+    subject: "Pembayaran berhasil",
+    date: "2026-07-27T09:30:00+07:00",
+    emailText:
+      "Pembayaran QR berhasil Merchant: Kopi Tuku Jumlah: Rp25.000 Tanggal: 27 Juli 2026 09:30",
+    authentication: {
+      dkim: "pass",
+      spf: "pass",
+      dmarc: "pass",
+      domain: "krom.id",
+    },
+  },
+};
+
+function validatedFingerprint(
+  email: EmailTransactionMessageDto,
+  proposal: EmailParserTemplateProposalDto,
+): string {
+  const normalizedText = normalizeEmailWhitespace(email.emailText);
+  const result = validateEmailTemplateProposal(
+    {
+      email,
+      text: email.emailText,
+      normalizedText,
+      bodySource: "text",
+      bodyWarnings: [],
+    },
+    proposal,
+  );
+  if (!result.ok) throw new Error(result.reason);
+  assert.equal(result.ok, true);
+  return result.fingerprint;
+}
+
+const learnedTemplate: LearnedEmailTemplate = {
+  id: "7",
+  userId: "1",
+  senderAddress: "alerts@krom.id",
+  fingerprint: validatedFingerprint(
+    authenticatedUnknownKromEmail.email,
+    learnedProposal,
+  ),
+  proposal: learnedProposal,
+};
+
+const authenticatedUnknownBankTransaction: EmailTransactionHandleRequestDto = {
+  ...authenticatedUnknownKromEmail,
+  email: {
+    ...authenticatedUnknownKromEmail.email,
+    messageId: "gmail-unknown-1",
+    from: "alerts@newbank.id",
+    subject: "Pembayaran berhasil",
+    emailText: "Pembayaran berhasil sebesar Rp25.000",
+    authentication: {
+      dkim: "pass",
+      spf: "pass",
+      dmarc: "pass",
+      domain: "newbank.id",
+    },
+  },
+};
+
+const unauthenticatedMatchingEmail: EmailTransactionHandleRequestDto = {
+  ...authenticatedUnknownKromEmail,
+  email: {
+    ...authenticatedUnknownKromEmail.email,
+    authentication: {
+      dkim: "fail",
+      spf: "unknown",
+      dmarc: "fail",
+      domain: "krom.id",
+    },
+  },
 };
 
 const riskReview = {
@@ -2721,16 +2859,90 @@ test("rejects invalid email review amount", async () => {
   );
 });
 
-test("handles confirmed Krom QRIS email with category rule", async () => {
-  const { calls, service } = createService([
-    [],
-    [{ canonical_name: "Kopi Tuku Canonical" }],
-    [{ category: "Food" }],
-    [{ id: "import-1" }],
-    [{ id: "tx-email" }],
-    [],
-    [],
-  ]);
+test("uses a learned template after hard-coded parsers and skips AI", async () => {
+  const templates = createTemplateRepository([learnedTemplate]);
+  const { service } = createService(
+    [
+      [],
+      [{ canonical_name: "Kopi Tuku" }],
+      [{ category: "Food" }],
+      [{ id: "import-1" }],
+      [{ id: "tx-1" }],
+      [],
+      [],
+    ],
+    undefined,
+    undefined,
+    templates.repository,
+  );
+
+  const result = await service.handleEmailTransaction(
+    authenticatedUnknownKromEmail,
+  );
+
+  assert.equal(result.status, "confirmed");
+  assert.equal(result.templateKey, "learned-krom-qris");
+  assert.equal(result.parsed?.raw.parserSource, "learned");
+  assert.equal(templates.calls[0].method, "findActive");
+});
+
+test("returns needs_ai for a likely transaction with no deterministic parser", async () => {
+  const templates = createTemplateRepository([]);
+  const { service } = createService(
+    [[], [{ id: "import-1" }], []],
+    undefined,
+    undefined,
+    templates.repository,
+  );
+
+  const result = await service.handleEmailTransaction(
+    authenticatedUnknownBankTransaction,
+  );
+
+  assert.equal(result.status, "needs_ai");
+  assert.deepEqual(result.aiRequest, {
+    reviewToken: "gmail-unknown-1",
+    reason: "unsupported_template",
+  });
+  assert.equal("emailText" in (result.aiRequest ?? {}), false);
+});
+
+test("does not auto-save a learned result without aligned sender authentication", async () => {
+  const templates = createTemplateRepository([learnedTemplate]);
+  const { service } = createService(
+    [[], [{ id: "import-1" }], []],
+    undefined,
+    undefined,
+    templates.repository,
+  );
+
+  const result = await service.handleEmailTransaction(
+    unauthenticatedMatchingEmail,
+  );
+
+  assert.equal(result.status, "needs_review");
+  assert.equal(
+    result.reason,
+    "sender authentication is required for automatic import",
+  );
+});
+
+test("hard-coded parser handles confirmed Krom QRIS email without learned lookup", async () => {
+  const templates = createTemplateRepository([learnedTemplate]);
+  const { calls, service } = createService(
+    [
+      [],
+      [{ canonical_name: "Kopi Tuku Canonical" }],
+      [{ category: "Food" }],
+      [{ id: "import-1" }],
+      [{ id: "tx-email" }],
+      [],
+      [],
+    ],
+    undefined,
+    undefined,
+    templates.repository,
+  );
 
   const result = await service.handleEmailTransaction({
     telegramUserId: "976684739",
@@ -2769,6 +2981,7 @@ test("handles confirmed Krom QRIS email with category rule", async () => {
     "2026-06-22T03:00:00.000Z",
     97,
   ]);
+  assert.deepEqual(templates.calls, []);
 });
 
 test("falls back to emailHtml when emailText is not parseable", async () => {
@@ -2871,7 +3084,7 @@ test("returns needs_review for known email when merchant alias is missing", asyn
   assert.match(calls[3].text, /INSERT INTO email_parse_attempts/);
 });
 
-test("returns unsupported_template for Mandiri non e-money email", async () => {
+test("returns needs_ai for a likely Mandiri transaction with no parser", async () => {
   const { calls, service } = createService([
     [],
     [{ id: "import-mandiri" }],
@@ -2891,40 +3104,64 @@ test("returns unsupported_template for Mandiri non e-money email", async () => {
     },
   });
 
-  assert.equal(result.status, "unsupported_template");
+  assert.equal(result.status, "needs_ai");
   assert.equal(result.provider, "Mandiri");
   assert.equal(result.templateKey, null);
+  assert.deepEqual(result.aiRequest, {
+    reviewToken: "gmail-mandiri",
+    reason: "unsupported_template",
+  });
   assert.equal(calls.length, 3);
 });
 
 test("returns duplicate for existing Gmail message import", async () => {
-  const { calls, service } = createService([
+  const templates = createTemplateRepository([]);
+  const { calls, service } = createService(
     [
-      {
-        id: "import-existing",
-        transaction_id: "tx-existing",
-        status: "confirmed",
-      },
+      [
+        {
+          id: "import-existing",
+          transaction_id: "tx-existing",
+          status: "confirmed",
+        },
+      ],
     ],
-  ]);
+    undefined,
+    undefined,
+    templates.repository,
+  );
 
   const result = await service.handleEmailTransaction({
-    telegramUserId: "976684739",
-    userId: 1,
-    source: "email",
+    ...authenticatedUnknownBankTransaction,
     email: {
+      ...authenticatedUnknownBankTransaction.email,
       messageId: "gmail-existing",
-      from: "no-reply@krom.id",
-      subject: "Transaksi QRIS berhasil",
-      date: "2026-06-22T10:00:00+07:00",
-      emailText:
-        "Transaksi QRIS berhasil. Merchant: Kopi Tuku Jumlah: Rp25.000",
     },
   });
 
   assert.equal(result.status, "duplicate");
   assert.equal(result.transaction, undefined);
+  assert.equal(result.aiRequest, undefined);
+  assert.deepEqual(templates.calls, []);
   assert.equal(calls.length, 1);
+});
+
+test("does not include an AI handoff when Gmail idempotency wins an insert race", async () => {
+  const templates = createTemplateRepository([]);
+  const { calls, service } = createService(
+    [[], []],
+    undefined,
+    undefined,
+    templates.repository,
+  );
+
+  const result = await service.handleEmailTransaction(
+    authenticatedUnknownBankTransaction,
+  );
+
+  assert.equal(result.status, "duplicate");
+  assert.equal(result.aiRequest, undefined);
+  assert.equal(calls.length, 2);
 });
 
 test("missing amount in known email returns parse_failed instead of confirmed", async () => {

@@ -89,6 +89,12 @@ import {
   normalizeEmailBody,
   normalizeEmailWhitespace,
 } from "./email-parsers";
+import { EmailParserTemplateRepository } from "./email-parser-template.repository";
+import {
+  hasAlignedSenderAuthentication,
+  isLikelyTransactionEmail,
+  parseLearnedEmailTemplate,
+} from "./learned-email-parser";
 
 const TRANSACTION_CATEGORY_OPTIONS = [
   "Food",
@@ -244,11 +250,12 @@ interface ValidatedEmailReview {
 }
 
 interface EmailParseAttempt {
-  parser: EmailTransactionParser;
+  parser?: EmailTransactionParser;
   input: EmailParserInput;
   detection: EmailTemplateDetection;
   parsed?: ParsedEmailTransactionDto;
   reason?: string;
+  learnedTemplateId?: string;
 }
 
 interface TransactionHandleStateStore {
@@ -348,6 +355,8 @@ export class TransactionService {
     @Optional() private readonly budgetService?: BudgetService,
     @Optional()
     private readonly riskReviewRepository?: TransactionRiskReviewRepository,
+    @Optional()
+    private readonly emailParserTemplateRepository?: EmailParserTemplateRepository,
   ) {}
 
   placeholderStatus() {
@@ -624,12 +633,54 @@ export class TransactionService {
     }
 
     const parserInputs = this.buildEmailParserInputs(validated);
-    const parsedAttempt = this.parseEmail(parserInputs);
+    let parsedAttempt = this.parseEmail(parserInputs);
+
+    if (!parsedAttempt?.parsed || parsedAttempt.reason) {
+      const learnedAttempt = await this.parseLearnedEmail(
+        parserInputs,
+        validated,
+      );
+
+      if (learnedAttempt) {
+        parsedAttempt = learnedAttempt;
+      }
+    }
+
     const parser = parsedAttempt?.parser;
     const detection =
       parsedAttempt?.detection ??
       this.detectEmailProviderFromInputs(parserInputs);
-    const provider = parser?.provider ?? detection.provider;
+    const provider =
+      parsedAttempt?.parsed?.provider ?? parser?.provider ?? detection.provider;
+
+    if (
+      (!parsedAttempt?.parsed || parsedAttempt.reason) &&
+      parserInputs.some(isLikelyTransactionEmail)
+    ) {
+      const aiReason = parsedAttempt ? "parse_failed" : "unsupported_template";
+
+      return this.recordUnconfirmedEmailAttempt({
+        request: validated,
+        status: "needs_ai",
+        provider: provider === "unknown" ? null : provider,
+        templateKey:
+          parsedAttempt?.parsed?.templateKey ??
+          parser?.templateKey ??
+          detection.templateKey,
+        reason:
+          aiReason === "parse_failed"
+            ? (parsedAttempt?.reason ?? "email parse failed")
+            : provider === "unknown"
+              ? "email template is not supported"
+              : `${provider} email template is not supported`,
+        parsed: parsedAttempt?.parsed,
+        detection,
+        aiRequest: {
+          reviewToken: validated.email.messageId,
+          reason: aiReason,
+        },
+      });
+    }
 
     if (provider === "unknown") {
       return this.recordUnconfirmedEmailAttempt({
@@ -643,7 +694,7 @@ export class TransactionService {
       });
     }
 
-    if (!parser || !parsedAttempt) {
+    if (!parsedAttempt) {
       return this.recordUnconfirmedEmailAttempt({
         request: validated,
         status: "unsupported_template",
@@ -661,8 +712,8 @@ export class TransactionService {
       return this.recordUnconfirmedEmailAttempt({
         request: validated,
         status: "parse_failed",
-        provider: parser.provider,
-        templateKey: parser.templateKey,
+        provider: parser?.provider ?? detection.provider,
+        templateKey: parser?.templateKey ?? detection.templateKey,
         reason: parsedAttempt.reason ?? "email parse failed",
         parsed: undefined,
         detection,
@@ -678,9 +729,24 @@ export class TransactionService {
           parsedValidationReason === "email is not a transaction"
             ? "ignored_non_transaction"
             : "parse_failed",
-        provider: parsed?.provider ?? parser.provider,
-        templateKey: parsed?.templateKey ?? parser.templateKey,
+        provider: parsed.provider,
+        templateKey: parsed.templateKey,
         reason: parsedValidationReason,
+        parsed,
+        detection,
+      });
+    }
+
+    if (
+      parsedAttempt.learnedTemplateId &&
+      !hasAlignedSenderAuthentication(validated.email)
+    ) {
+      return this.recordUnconfirmedEmailAttempt({
+        request: validated,
+        status: "needs_review",
+        provider: parsed.provider,
+        templateKey: parsed.templateKey,
+        reason: "sender authentication is required for automatic import",
         parsed,
         detection,
       });
@@ -1936,6 +2002,7 @@ export class TransactionService {
         date: this.cleanString(email.date),
         emailText: emailText ?? "",
         emailHtml,
+        authentication: email.authentication,
       },
     };
   }
@@ -2034,6 +2101,52 @@ export class TransactionService {
     return failedAttempt;
   }
 
+  private async parseLearnedEmail(
+    inputs: EmailParserInput[],
+    request: EmailTransactionHandleRequestDto & {
+      userId: string;
+      source: "email";
+    },
+  ): Promise<EmailParseAttempt | undefined> {
+    if (!this.emailParserTemplateRepository) {
+      return undefined;
+    }
+
+    const templates = await this.emailParserTemplateRepository.findActive(
+      request.userId,
+      request.email.from.trim().toLowerCase(),
+    );
+
+    for (const input of inputs) {
+      for (const template of templates) {
+        const parsed = parseLearnedEmailTemplate(input, template);
+
+        if (!parsed || this.emailParsedValidationReason(parsed)) {
+          continue;
+        }
+
+        parsed.raw = {
+          ...parsed.raw,
+          parserSource: "learned",
+          templateId: template.id,
+        };
+
+        return {
+          input,
+          detection: detectEmailProviderAndTemplate({
+            from: input.email.from,
+            subject: input.email.subject,
+            normalizedText: input.normalizedText,
+          }),
+          parsed,
+          learnedTemplateId: template.id,
+        };
+      }
+    }
+
+    return undefined;
+  }
+
   private findEmailParser(
     input: EmailParserInput,
   ): EmailTransactionParser | undefined {
@@ -2115,6 +2228,7 @@ export class TransactionService {
     reason: string;
     parsed: ParsedEmailTransactionDto | undefined;
     detection: EmailTemplateDetection;
+    aiRequest?: EmailTransactionHandleResponseDto["aiRequest"];
   }): Promise<EmailTransactionHandleResponseDto> {
     const inserted = await this.createTransactionImport({
       userId: input.request.userId,
@@ -2149,6 +2263,7 @@ export class TransactionService {
       templateKey: input.templateKey,
       reason: input.reason,
       parsed: input.parsed,
+      aiRequest: input.aiRequest,
     });
   }
 
@@ -2567,6 +2682,7 @@ export class TransactionService {
     parsed?: ParsedEmailTransactionDto;
     transaction?: EmailTransactionHandleResponseDto["transaction"];
     watchdog?: TransactionWatchdogResponseDto;
+    aiRequest?: EmailTransactionHandleResponseDto["aiRequest"];
   }): EmailTransactionHandleResponseDto {
     return {
       status: input.status,
@@ -2575,6 +2691,7 @@ export class TransactionService {
       reason: input.reason,
       transaction: input.transaction,
       parsed: input.parsed,
+      ...(input.aiRequest ? { aiRequest: input.aiRequest } : {}),
       telegram: {
         text: this.appendWatchdogMessage(
           this.buildEmailTelegramText(input),
