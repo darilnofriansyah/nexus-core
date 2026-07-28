@@ -26,10 +26,19 @@ function createService(
   budgetService?: BudgetService,
   riskReviewRepository?: TransactionRiskReviewRepository,
   emailParserTemplateRepository?: EmailParserTemplateRepository,
+  resolvedEmailUserId: string | null = "1",
 ) {
   const calls: Array<{ text: string; values: unknown[] }> = [];
   const transactionEvents: Array<"begin" | "commit" | "rollback"> = [];
   const query = async (text: string, values: unknown[] = []) => {
+    if (/resolve_email_caller/.test(text)) {
+      return {
+        rows:
+          resolvedEmailUserId === null
+            ? []
+            : [{ id: resolvedEmailUserId, telegram_id: values[0] }],
+      };
+    }
     calls.push({ text, values });
     const rows = rowsByCall.shift() ?? [];
     if (rows instanceof Error) throw rows;
@@ -67,6 +76,7 @@ function createService(
 function createTemplateRepository(
   templates: LearnedEmailTemplate[] = [],
   activateError?: Error,
+  disableError?: Error,
 ) {
   const calls: Array<{ method: string; input: unknown }> = [];
   return {
@@ -86,6 +96,7 @@ function createTemplateRepository(
       },
       disable: async (templateId: string, userId: string) => {
         calls.push({ method: "disable", input: { templateId, userId } });
+        if (disableError) throw disableError;
       },
     } as unknown as EmailParserTemplateRepository,
   };
@@ -251,7 +262,14 @@ function validAiReviewRequest(
     email: authenticatedUnknownKromEmail.email,
     transactionCandidate: aiCandidate,
     resolution: { category: "Food", confidence: 98, resolver: "llm" },
-    templateProposal: learnedProposal,
+    templateProposal: {
+      ...learnedProposal,
+      injectedBody: "must not persist",
+      amount: {
+        ...learnedProposal.amount,
+        executable: "process.exit()",
+      },
+    } as EmailParserTemplateProposalDto,
     ...overrides,
   };
 }
@@ -318,6 +336,7 @@ const pendingAiTransaction = {
     email: {
       messageId: "gmail-learned-1",
       from: "alerts@krom.id",
+      authentication: authenticatedUnknownKromEmail.email.authentication,
     },
     parserSource: "ai",
     validatedTemplate: {
@@ -1655,7 +1674,8 @@ test("returns not_found for transaction owned by a different user", async () => 
     editMessage: null,
   });
   assert.deepEqual(calls[0].values, ["tx-1", "user-2"]);
-  assert.match(calls[0].text, /AND user_id::text = \$2/);
+  assert.match(calls[0].text, /AND user_id = \$2/);
+  assert.doesNotMatch(calls[0].text, /::text/);
   assert.equal(calls.length, 1);
 });
 
@@ -2698,7 +2718,7 @@ test("keeps every AI result pending and stores only a validated proposal", async
 
   const result = await service.resolveEmailTransactionReview({
     telegramUserId: "976684739",
-    reviewToken: "gmail-message-id",
+    reviewToken: authenticatedUnknownKromEmail.email.messageId,
     email: authenticatedUnknownKromEmail.email,
     transactionCandidate: aiCandidate,
     resolution: { category: "Food", confidence: 98, resolver: "llm" },
@@ -2708,6 +2728,10 @@ test("keeps every AI result pending and stores only a validated proposal", async
   assert.equal(result.status, "pending");
   assert.equal(result.transaction?.status, "pending");
   assert.match(calls[2].text, /FOR UPDATE/);
+  assert.match(
+    calls[2].text,
+    /status IN \('needs_ai', 'needs_review'\).*status = 'pending'.*transaction_id IS NOT NULL/s,
+  );
   assert.equal(calls[3].values[8], "pending");
   const rawPayload = calls[3].values[10] as Record<string, unknown>;
   assert.equal(rawPayload.parserSource, "ai");
@@ -2718,7 +2742,15 @@ test("keeps every AI result pending and stores only a validated proposal", async
     from: "alerts@krom.id",
     authentication: authenticatedUnknownKromEmail.email.authentication,
   });
-  assert.ok(rawPayload.validatedTemplate);
+  const validatedTemplate = rawPayload.validatedTemplate as {
+    proposal: EmailParserTemplateProposalDto;
+  };
+  assert.ok(validatedTemplate);
+  assert.equal("injectedBody" in validatedTemplate.proposal, false);
+  assert.equal(
+    "executable" in (validatedTemplate.proposal.amount as unknown as object),
+    false,
+  );
   assert.match(calls[4].text, /UPDATE transaction_imports/);
   assert.deepEqual(calls[4].values, ["123", rawPayload, "import-1"]);
 });
@@ -2816,7 +2848,7 @@ test("updates the same pending row after a valid AI correction", async () => {
 
   const result = await service.resolveEmailTransactionReview({
     telegramUserId: "976684739",
-    reviewToken: "gmail-message-id",
+    reviewToken: correctionEmail.messageId,
     transactionId: "123",
     email: correctionEmail,
     transactionCandidate: { ...aiCandidate, amount: 30000 },
@@ -2826,11 +2858,10 @@ test("updates the same pending row after a valid AI correction", async () => {
 
   assert.equal(result.transaction?.id, "123");
   assert.match(calls[3].text, /UPDATE transactions/);
-  assert.match(calls[3].text, /status = 'pending'/);
-  assert.match(calls[3].text, /source = 'email'/);
-  assert.equal(calls[3].values[0], "1");
-  assert.equal(calls[3].values[2], 30000);
-  assert.equal(calls[3].values[11], "123");
+  assert.match(calls[3].text, /transaction\.status = 'pending'/);
+  assert.match(calls[3].text, /transaction\.source = 'email'/);
+  assert.equal(calls[3].values[1], 30000);
+  assert.equal(calls[3].values[9], "123");
 });
 
 test("does not mutate a pending row when corrected output is invalid", async () => {
@@ -2922,6 +2953,7 @@ test("accepts a positive formatted AI amount", async () => {
 test("records needs_review when n8n reports AI failure", async () => {
   const { calls, service } = createService([
     [{ id: "1", telegram_id: "976684739" }],
+    [{ id: "import-1" }],
     [],
   ]);
 
@@ -3003,6 +3035,7 @@ test("resolves medium confidence email review as pending with production actions
 
   const result = await service.resolveEmailTransactionReview({
     telegramUserId: "976684739",
+    reviewToken: authenticatedUnknownKromEmail.email.messageId,
     email: authenticatedUnknownKromEmail.email,
     transactionCandidate: {
       source: "email",
@@ -3056,6 +3089,7 @@ test("resolves low confidence email review as pending with LLM category", async 
 
   const result = await service.resolveEmailTransactionReview({
     telegramUserId: "976684739",
+    reviewToken: authenticatedUnknownKromEmail.email.messageId,
     email: authenticatedUnknownKromEmail.email,
     transactionCandidate: {
       source: "email",
@@ -3095,6 +3129,7 @@ test("resolves low confidence email review with unknown LLM category as pending"
 
   const result = await service.resolveEmailTransactionReview({
     telegramUserId: "976684739",
+    reviewToken: authenticatedUnknownKromEmail.email.messageId,
     email: authenticatedUnknownKromEmail.email,
     transactionCandidate: {
       source: "email",
@@ -3129,6 +3164,7 @@ test("keeps high confidence AI result pending when category is not in budgets", 
 
   const result = await service.resolveEmailTransactionReview({
     telegramUserId: "976684739",
+    reviewToken: authenticatedUnknownKromEmail.email.messageId,
     email: authenticatedUnknownKromEmail.email,
     transactionCandidate: {
       source: "email",
@@ -3158,6 +3194,7 @@ test("returns safe email review response when telegram user is not found", async
 
   const result = await service.resolveEmailTransactionReview({
     telegramUserId: "976684739",
+    reviewToken: authenticatedUnknownKromEmail.email.messageId,
     email: authenticatedUnknownKromEmail.email,
     transactionCandidate: {
       source: "email",
@@ -3186,6 +3223,7 @@ test("rejects invalid email review source", async () => {
     () =>
       service.resolveEmailTransactionReview({
         telegramUserId: "976684739",
+        reviewToken: authenticatedUnknownKromEmail.email.messageId,
         email: authenticatedUnknownKromEmail.email,
         transactionCandidate: {
           source: "manual",
@@ -3210,6 +3248,7 @@ test("rejects invalid email review amount", async () => {
     () =>
       service.resolveEmailTransactionReview({
         telegramUserId: "976684739",
+        reviewToken: authenticatedUnknownKromEmail.email.messageId,
         email: authenticatedUnknownKromEmail.email,
         transactionCandidate: {
           source: "email",
@@ -3378,6 +3417,10 @@ test("hard-coded parser handles confirmed Krom QRIS email without learned lookup
     "2026-06-22T03:00:00.000Z",
     97,
   ]);
+  assert.equal(
+    (calls[4].values[8] as Record<string, unknown>).parserSource,
+    "hardcoded",
+  );
   assert.deepEqual(templates.calls, []);
 });
 
@@ -3702,6 +3745,7 @@ test("email review AI result skips watchdog until confirmed", async () => {
 
   const result = await service.resolveEmailTransactionReview({
     telegramUserId: "976684739",
+    reviewToken: authenticatedUnknownKromEmail.email.messageId,
     email: authenticatedUnknownKromEmail.email,
     transactionCandidate: {
       source: "email",
@@ -4310,6 +4354,355 @@ test("Cancel never activates a proposed template", async () => {
     ),
     true,
   );
+});
+
+test("binds an AI review token to the supplied Gmail message", async () => {
+  const { calls, service } = createService([
+    [{ id: "1", telegram_id: "976684739" }],
+  ]);
+
+  await assert.rejects(
+    () =>
+      service.resolveEmailTransactionReview(
+        validAiReviewRequest({ reviewToken: "different-message" }),
+      ),
+    /reviewToken must match email.messageId/,
+  );
+  assert.equal(
+    calls.some((call) => /FROM transactions/.test(call.text)),
+    false,
+  );
+});
+
+test("binds AI correction SQL to one import with contiguous placeholders", async () => {
+  const { calls, service } = createService([
+    [{ id: "1", telegram_id: "976684739" }],
+    [{ id: "123" }],
+    [{ category: "Food" }],
+    [{ id: "123" }],
+  ]);
+
+  await service.resolveEmailTransactionReview(
+    validAiReviewRequest({
+      transactionId: "123",
+      email: correctionEmail,
+      reviewToken: correctionEmail.messageId,
+      transactionCandidate: { ...aiCandidate, amount: 30000 },
+      templateProposal: correctedKromProposal,
+    }),
+  );
+
+  const update = calls.find((call) =>
+    /UPDATE transactions AS transaction/.test(call.text),
+  );
+  assert.ok(update);
+  assert.match(update.text, /FROM transaction_imports AS email_import/);
+  assert.match(update.text, /email_import\.transaction_id = transaction\.id/);
+  assert.match(update.text, /email_import\.source_reference = \$12/);
+  assert.deepEqual(
+    [...update.text.matchAll(/\$(\d+)/g)].map((match) => Number(match[1])),
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+  );
+  assert.equal(update.values.length, 12);
+});
+
+test("drops a replayable proposal that does not reproduce the AI candidate", async () => {
+  const { calls, service } = createService([
+    [{ id: "1", telegram_id: "976684739" }],
+    [{ category: "Food" }],
+    [{ id: "import-1", transaction_id: null, status: "needs_ai" }],
+    [{ id: "123" }],
+    [{ id: "import-1" }],
+  ]);
+
+  const result = await service.resolveEmailTransactionReview(
+    validAiReviewRequest({
+      transactionCandidate: { ...aiCandidate, amount: 30000 },
+    }),
+  );
+
+  assert.equal(result.status, "pending");
+  const insert = calls.find((call) => /INSERT INTO transactions/.test(call.text));
+  const rawPayload = insert?.values[10] as Record<string, unknown>;
+  assert.equal(rawPayload.validatedTemplate, null);
+});
+
+test("clears the stored proposal after a material correction no longer matches it", async () => {
+  const { calls, service } = createService([
+    [{ id: "1", telegram_id: "976684739" }],
+    [{ id: "123" }],
+    [{ category: "Food" }],
+    [{ id: "123" }],
+  ]);
+
+  await service.resolveEmailTransactionReview(
+    validAiReviewRequest({
+      transactionId: "123",
+      transactionCandidate: { ...aiCandidate, amount: 30000 },
+    }),
+  );
+
+  const update = calls.find((call) =>
+    /UPDATE transactions AS transaction/.test(call.text),
+  );
+  const rawPayload = update?.values[8] as Record<string, unknown>;
+  assert.equal(rawPayload.validatedTemplate, null);
+});
+
+test("AI failure cannot downgrade an import with a transaction", async () => {
+  const { calls, service } = createService([
+    [{ id: "1", telegram_id: "976684739" }],
+    [],
+  ]);
+
+  await assert.rejects(
+    () =>
+      service.resolveEmailTransactionReview({
+        telegramUserId: "976684739",
+        reviewToken: authenticatedUnknownKromEmail.email.messageId,
+        email: authenticatedUnknownKromEmail.email,
+        aiError: "model unavailable",
+      }),
+    /email import is not eligible for AI failure/,
+  );
+
+  const update = calls.find((call) =>
+    /UPDATE transaction_imports/.test(call.text),
+  );
+  assert.ok(update);
+  assert.match(update.text, /transaction_id IS NULL/);
+  assert.match(update.text, /status IN \('needs_ai', 'needs_review'\)/);
+  assert.match(update.text, /RETURNING id/);
+  assert.equal(
+    calls.some((call) => /UPDATE email_parse_attempts/.test(call.text)),
+    false,
+  );
+});
+
+test("a failed AI import without a transaction resumes the AI handoff", async () => {
+  const { service } = createService([
+    [
+      {
+        id: "import-1",
+        transaction_id: null,
+        status: "needs_review",
+        raw_payload: {
+          aiRequest: {
+            reviewToken: "gmail-learned-1",
+            reason: "unsupported_template",
+          },
+        },
+      },
+    ],
+  ]);
+
+  const result = await service.handleEmailTransaction(originalAiEmail);
+
+  assert.equal(result.status, "needs_ai");
+  assert.equal(result.aiRequest?.reviewToken, "gmail-learned-1");
+});
+
+test("records an explicit AI non-transaction decision idempotently", async () => {
+  const { calls, service } = createService([
+    [{ id: "1", telegram_id: "976684739" }],
+    [{ id: "import-1" }],
+    [{ id: "attempt-1" }],
+    [{ id: "1", telegram_id: "976684739" }],
+    [{ id: "import-1" }],
+    [{ id: "attempt-1" }],
+  ]);
+  const request: EmailTransactionResolveReviewRequestDto = {
+    telegramUserId: "976684739",
+    reviewToken: authenticatedUnknownKromEmail.email.messageId,
+    email: authenticatedUnknownKromEmail.email,
+    isTransaction: false,
+  };
+
+  const first = await service.resolveEmailTransactionReview(request);
+  const retry = await service.resolveEmailTransactionReview(request);
+
+  assert.equal(first.status, "ignored_non_transaction");
+  assert.equal(retry.status, "ignored_non_transaction");
+  assert.equal(
+    calls.some((call) => /INSERT INTO transactions/.test(call.text)),
+    false,
+  );
+  const importUpdates = calls.filter((call) =>
+    /UPDATE transaction_imports/.test(call.text),
+  );
+  assert.equal(importUpdates.length, 2);
+  assert.equal(
+    JSON.stringify(importUpdates[0].values).includes("emailText"),
+    false,
+  );
+});
+
+test("does not activate a confirmed AI template without aligned sender auth", async () => {
+  const weakAuthTransaction = {
+    ...pendingAiTransaction,
+    raw_payload: {
+      ...pendingAiTransaction.raw_payload,
+      email: {
+        ...pendingAiTransaction.raw_payload.email,
+        authentication: {
+          dkim: "fail",
+          spf: "pass",
+          dmarc: "fail",
+          domain: "krom.id",
+        },
+      },
+    },
+  };
+  const templates = createTemplateRepository();
+  const { service } = createService(
+    [
+      [weakAuthTransaction],
+      [{ ...weakAuthTransaction, status: "confirmed" }],
+      [{ id: "import-1" }],
+      [],
+      [],
+      [],
+      [],
+    ],
+    undefined,
+    undefined,
+    templates.repository,
+  );
+  spyOnWatchdog(service);
+
+  const result = await service.confirmTransaction({
+    transactionId: "123",
+    userId: "1",
+  });
+
+  assert.equal(result.status, "confirmed");
+  assert.equal(
+    templates.calls.some((call) => call.method === "activate"),
+    false,
+  );
+});
+
+test("reconciles a pre-branch pending email review without an attached import", async () => {
+  const { calls, service, transactionEvents } = createService([
+    [pendingTemplateTransaction],
+    [{ ...pendingTemplateTransaction, status: "confirmed" }],
+    [],
+    [{ id: "import-backfill" }],
+  ]);
+  spyOnWatchdog(service);
+
+  const result = await service.confirmTransaction({
+    transactionId: "123",
+    userId: "1",
+  });
+
+  assert.equal(result.status, "confirmed");
+  const reconciliation = calls.find((call) =>
+    /INSERT INTO transaction_imports/.test(call.text),
+  );
+  assert.ok(reconciliation);
+  assert.match(
+    reconciliation.text,
+    /ON CONFLICT \(user_id, source, source_reference\) DO UPDATE/,
+  );
+  assert.deepEqual(transactionEvents, ["begin", "commit"]);
+});
+
+test("confirms a legacy email review that predates stored Gmail identity", async () => {
+  const legacy = {
+    ...pendingAiTransaction,
+    raw_payload: { legacyCandidate: true },
+  };
+  const { calls, service, transactionEvents } = createService([
+    [legacy],
+    [{ ...legacy, status: "confirmed" }],
+    [],
+  ]);
+  spyOnWatchdog(service);
+
+  const result = await service.confirmTransaction({
+    transactionId: "123",
+    userId: "1",
+  });
+
+  assert.equal(result.status, "confirmed");
+  assert.equal(
+    calls.some((call) => /INSERT INTO transaction_imports/.test(call.text)),
+    false,
+  );
+  assert.deepEqual(transactionEvents, ["begin", "commit"]);
+});
+
+test("AI confirmation text exposes transaction type and date", async () => {
+  const result = await resolveValidAiReview();
+
+  assert.match(result.telegramText ?? "", /Type: Expense/);
+  assert.match(result.telegramText ?? "", /Date: 2026-07-27/);
+});
+
+test("rolls back a learned material edit when template disable fails", async () => {
+  const templates = createTemplateRepository(
+    [],
+    undefined,
+    new Error("disable unavailable"),
+  );
+  const state = createManageStateStore({
+    stateName: "confirm_action",
+    stateData: {
+      action: "edit",
+      transaction_id: "123",
+      before: learnedParsedTransaction,
+      changes: { amount: 30000 },
+    },
+  });
+  const { service, transactionEvents } = createService(
+    [
+      [{ id: "1", telegram_id: "976684739" }],
+      [learnedParsedTransaction],
+      [],
+    ],
+    undefined,
+    undefined,
+    templates.repository,
+  );
+
+  await assert.rejects(
+    () =>
+      service.handleManagedTransaction(
+        {
+          telegramUserId: "976684739",
+          text: "veyra_tx_manage:confirm",
+          llmResult: null,
+        },
+        state.store,
+      ),
+    /disable unavailable/,
+  );
+
+  assert.deepEqual(transactionEvents, ["begin", "rollback"]);
+  assert.equal(state.state.stateName, "confirm_action");
+});
+
+test("derives the email owner from telegramUserId and rejects a claimed mismatch", async () => {
+  const templates = createTemplateRepository([]);
+  const { calls, service } = createService(
+    [],
+    undefined,
+    undefined,
+    templates.repository,
+    "2",
+  );
+
+  await assert.rejects(
+    () => service.handleEmailTransaction(authenticatedUnknownBankTransaction),
+    /userId does not match telegramUserId/,
+  );
+
+  assert.equal(
+    calls.some((call) => /FROM transaction_imports/.test(call.text)),
+    false,
+  );
+  assert.deepEqual(templates.calls, []);
 });
 
 test("category confirmation activates the proposal exactly once", async () => {

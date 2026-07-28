@@ -278,3 +278,98 @@ test("requires aligned DKIM or DMARC for automatic learned parsing", () => {
     false,
   );
 });
+
+test("requires ordered anchors and a closing boundary after its opening boundary", () => {
+  assert.deepEqual(
+    validateEmailTemplateProposal(
+      input(
+        "Jumlah: Rp25.000 Merchant: Tuku Tanggal: 25 Juni 2026 09:30",
+      ),
+      proposal({
+        requiredAnchors: ["Merchant:", "Jumlah:", "Tanggal:"],
+      }),
+    ),
+    { ok: false, reason: "required anchors are out of order" },
+  );
+
+  assert.deepEqual(
+    validateEmailTemplateProposal(
+      input(
+        "Merchant: Tuku Jumlah: Rp25.000 Tanggal: 25 Juni 2026 09:30",
+      ),
+      proposal({
+        amount: {
+          kind: "idr_amount",
+          after: "Jumlah:",
+          before: "Missing:",
+        },
+      }),
+    ),
+    { ok: false, reason: "proposal did not produce a transaction" },
+  );
+});
+
+test("rejects a non-positive captured amount", () => {
+  for (const amount of ["Rp0", "Rp-25.000", "Rp−25.000"]) {
+    const result = validateEmailTemplateProposal(
+      input(
+        `Merchant: Tuku Jumlah: ${amount} Tanggal: 25 Juni 2026 09:30`,
+      ),
+      proposal({
+        amount: {
+          kind: "idr_amount",
+          after: "Jumlah:",
+          before: "Tanggal:",
+        },
+      }),
+    );
+
+    assert.deepEqual(result, {
+      ok: false,
+      reason: "proposal did not produce a transaction",
+    });
+  }
+});
+
+test("canonicalizes untrusted proposals before fingerprinting and storage", () => {
+  const parserInput = input(
+    "Merchant: Tuku Jumlah: Rp25.000 Tanggal: 25 Juni 2026 09:30",
+  );
+  const untrusted = {
+    ...proposal(),
+    injected: "email body must never persist",
+    amount: {
+      ...proposal().amount,
+      executable: "process.exit()",
+    },
+  };
+
+  const validated = validateEmailTemplateProposal(parserInput, untrusted);
+
+  assert.equal(validated.ok, true);
+  if (!validated.ok) return;
+  assert.equal("injected" in validated.proposal, false);
+  assert.equal(
+    "executable" in (validated.proposal.amount as unknown as object),
+    false,
+  );
+
+  const roundTripped = JSON.parse(
+    JSON.stringify(validated.proposal),
+  ) as EmailParserTemplateProposalDto;
+  const replayed = validateEmailTemplateProposal(parserInput, roundTripped);
+  assert.equal(replayed.ok, true);
+  if (!replayed.ok) return;
+  assert.equal(replayed.fingerprint, validated.fingerprint);
+});
+
+test("does not treat Rp punctuation without a digit as money", () => {
+  assert.equal(
+    isLikelyTransactionEmail(
+      input("Pembayaran berhasil, nilai transaksi Rp.", {
+        from: "bank@example.com",
+      }),
+    ),
+    false,
+  );
+});

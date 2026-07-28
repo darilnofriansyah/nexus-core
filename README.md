@@ -1197,9 +1197,9 @@ Delete is a soft delete: Core API updates `transactions.status = 'rejected'` and
 
 ### `POST /api/veyra/transactions/email/handle`
 
-Handles one Gmail-sourced transaction notification. Core API tries existing hard-coded bank parsers first, then active user-scoped learned templates. It never invokes an LLM. An AI-created candidate remains pending until the user confirms it; confirmation is what activates its validated learned template for future matching emails.
+Handles one Gmail-sourced transaction notification. Core API tries existing hard-coded bank parsers first, then active user-scoped learned templates. It never invokes an LLM. An AI-created candidate remains pending until the user confirms it; confirmation activates its validated learned template only when the stored Gmail sender metadata has aligned DKIM or DMARC authentication.
 
-The handler deduplicates Gmail messages through `transaction_imports` using `source = "email"` and `source_reference = email.messageId`. It normalizes the email body, parses `emailText` first, then falls back to `emailHtml` converted with `html-to-text` when the text body is missing, too short, or not parseable. A likely transaction that neither the hard-coded nor learned parser can handle returns `needs_ai`, including an unknown template from a known provider; `unsupported_template` is reserved for non-likely, unsupported input. Parse outcomes are logged to `email_parse_attempts` with structured diagnostics and a trimmed `body_sample`, not the full email body. The table definitions are in `docs/migration/2026-06-23-email-transaction-imports.sql` and should be applied separately.
+The handler derives the internal `userId` from `telegramUserId`; an included `userId` is treated as a compatibility assertion and must match. It deduplicates Gmail messages through `transaction_imports` using `source = "email"` and `source_reference = email.messageId`. It normalizes the email body, parses `emailText` first, then falls back to `emailHtml` converted with `html-to-text` when the text body is missing, too short, or not parseable. A likely transaction that neither the hard-coded nor learned parser can handle returns `needs_ai`, including an unknown template from a known provider; `unsupported_template` is reserved for non-likely, unsupported input. Parse outcomes are logged to `email_parse_attempts` with structured diagnostics and a trimmed `body_sample`, not the full email body. The table definitions are in `docs/migration/2026-06-23-email-transaction-imports.sql` and should be applied separately.
 
 Confirmed saves insert into `transactions` with `source = "email"` and `status = "confirmed"` only when the parser returns a valid transaction, amount is positive, merchant is known or an allowed fallback, and category resolves from `category_rules` or an allowed existing fallback budget category. If category cannot be resolved, Core API returns `needs_review` instead of inserting a confirmed transaction.
 
@@ -1293,6 +1293,7 @@ Structured n8n AI submission:
 {
   "telegramUserId": "976684739",
   "reviewToken": "gmail-message-id",
+  "isTransaction": true,
   "email": {
     "messageId": "gmail-message-id",
     "from": "card@bca.co.id",
@@ -1365,7 +1366,7 @@ Example pending response:
     "status": "pending",
     "confidence": 84
   },
-  "telegramText": "<b>Confirm transaction</b>\n\nAmount: Rp25.000\nMerchant: tuku\nCategory: Food",
+  "telegramText": "<b>Confirm transaction</b>\n\nType: Expense\nAmount: Rp25.000\nMerchant: tuku\nCategory: Food\nDate: 2026-06-24",
   "actions": {
     "confirm": {
       "action": "save_transaction",
@@ -1411,7 +1412,7 @@ Example pending response:
 }
 ```
 
-`templateProposal` is optional. A malformed or non-replayable proposal does not block the user review; Core API stores no validated template for it. A valid proposal is activated only after the pending transaction is saved.
+`reviewToken` must exactly equal `email.messageId`. `templateProposal` is optional. A malformed proposal, a proposal that cannot replay the email, or a proposal whose replayed amount, merchant, date, or transaction type differs from `transactionCandidate` does not block the user review; Core API stores no validated template for it. A retained proposal is activated only after the user confirms the pending transaction and aligned sender authentication is present.
 
 AI correction uses the preceding structured submission plus the existing pending row:
 
@@ -1442,6 +1443,24 @@ When the AI node fails, n8n submits:
 ```
 
 Core API returns `status: "needs_review"` with `reason: "ai_failed"`, records the import and parse attempt as the AI failure, and inserts neither a transaction nor a template.
+
+When AI explicitly classifies the email as a non-transaction, n8n submits the same identity and email metadata with no candidate, resolution, or proposal:
+
+```json
+{
+  "telegramUserId": "976684739",
+  "reviewToken": "gmail-message-id",
+  "isTransaction": false,
+  "email": {
+    "messageId": "gmail-message-id",
+    "from": "card@bca.co.id",
+    "subject": "Monthly card newsletter",
+    "emailText": "normalized plain-text body"
+  }
+}
+```
+
+Core API returns `status: "ignored_non_transaction"` with `reason: "ai_non_transaction"`, records only a body-free decision in the existing import diagnostics, and creates no transaction or template. Repeating the same submission is idempotent. A failed AI attempt with no transaction remains retryable: a repeated Gmail delivery resumes the same `needs_ai` handoff.
 
 This endpoint owns only validation and pending review persistence. Gmail triggers, Gmail refetching, AI prompting/invocation, correction collection, Telegram sends, retries, and callback routing stay in n8n. Do not alter or activate a production n8n workflow as part of this API change.
 

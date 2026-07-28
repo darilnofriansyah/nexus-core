@@ -13,6 +13,11 @@ export interface ActivateEmailParserTemplateInput {
   proposal: EmailParserTemplateProposalDto;
 }
 
+export type EmailTemplateQuery = (
+  text: string,
+  values?: unknown[],
+) => Promise<unknown>;
+
 interface EmailParserTemplateRow extends QueryResultRow {
   id: string | number;
   user_id: string | number;
@@ -94,8 +99,13 @@ export class EmailParserTemplateRepository {
     );
   }
 
-  async disable(templateId: string, userId: string): Promise<void> {
-    await this.database.query(
+  async disable(
+    templateId: string,
+    userId: string,
+    query: EmailTemplateQuery = (text, values) =>
+      this.database.query(text, values),
+  ): Promise<void> {
+    await query(
       `
         UPDATE email_parser_templates
         SET status = 'disabled',

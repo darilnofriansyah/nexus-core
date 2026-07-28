@@ -15,7 +15,7 @@ This checklist turns the parity audit into reviewable migration work. It reflect
 - Transaction confirm/cancel now target production `transactions` rows by `transactionId` and `userId`, updating `status` to `confirmed` or `rejected`.
 - Transaction category options can emit production-style `catid:{budgetId}:{transactionId}` callbacks when matching active budgets exist.
 - Intent classification exists as a deterministic helper endpoint at `POST /veyra/intents/classify`.
-- Email transaction ingestion now tries existing hard-coded parsers, then user-scoped learned templates, and returns `needs_ai` for a transactional email that neither can parse. Structured AI results remain pending until user confirmation; confirmation activates only a validated template.
+- Email transaction ingestion now tries existing hard-coded parsers, then user-scoped learned templates, and returns `needs_ai` for a transactional email that neither can parse. Structured AI results remain pending until user confirmation; confirmation activates only a candidate-equivalent validated template with aligned stored sender authentication. Explicit AI non-transaction decisions create no transaction or template.
 - README documents current n8n HTTP Request payload examples for the migrated endpoints.
 
 ### Not Covered Yet

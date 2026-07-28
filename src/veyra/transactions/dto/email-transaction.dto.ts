@@ -54,7 +54,12 @@ export interface LearnedEmailTemplate {
 }
 
 export type EmailTemplateValidationResult =
-  | { ok: true; fingerprint: string; parsed: ParsedEmailTransactionDto }
+  | {
+      ok: true;
+      fingerprint: string;
+      proposal: EmailParserTemplateProposalDto;
+      parsed: ParsedEmailTransactionDto;
+    }
   | { ok: false; reason: string };
 
 export interface EmailTransactionMessageDto {
@@ -70,7 +75,7 @@ export interface EmailTransactionMessageDto {
 
 export interface EmailTransactionHandleRequestDto {
   telegramUserId: string;
-  userId: string | number;
+  userId?: string | number;
   source: "email" | string;
   email: EmailTransactionMessageDto;
 }
@@ -98,6 +103,7 @@ export interface EmailTransactionResolveReviewRequestDto {
   reviewToken?: string;
   transactionId?: string;
   email: EmailTransactionMessageDto;
+  isTransaction?: boolean;
   transactionCandidate?: EmailReviewTransactionCandidateDto;
   resolution?: EmailReviewResolutionDto;
   templateProposal?: EmailParserTemplateProposalDto;
@@ -160,7 +166,8 @@ export interface EmailTransactionHandleResponseDto {
 export type EmailTransactionResolveReviewStatus =
   | "confirmed"
   | "pending"
-  | "needs_review";
+  | "needs_review"
+  | "ignored_non_transaction";
 
 export interface EmailReviewActionDto {
   action?:
@@ -173,7 +180,11 @@ export interface EmailReviewActionDto {
 
 export interface EmailTransactionResolveReviewResponseDto {
   status: EmailTransactionResolveReviewStatus;
-  reason?: "user_not_found" | "category_not_found" | "ai_failed";
+  reason?:
+    | "user_not_found"
+    | "category_not_found"
+    | "ai_failed"
+    | "ai_non_transaction";
   message?: string;
   transaction?: EmailTransactionResponseTransactionDto & {
     status: "confirmed" | "pending";

@@ -48,6 +48,7 @@ test('findActive returns only active templates for the user and exact sender', a
   assert.match(calls[0].text, /status = 'active'/);
   assert.match(calls[0].text, /user_id = \$1/);
   assert.match(calls[0].text, /lower\(sender_address\) = lower\(\$2\)/);
+  assert.match(calls[0].text, /ORDER BY updated_at DESC/);
   assert.deepEqual(calls[0].values, ['1', 'card@bca.co.id']);
   assert.equal(templates[0].id, '7');
 });
@@ -63,6 +64,9 @@ test('activate upserts a user fingerprint without executable fields', async () =
   });
 
   assert.match(calls[0].text, /ON CONFLICT \(user_id, fingerprint\)/);
+  assert.match(calls[0].text, /status = 'active'/);
+  assert.match(calls[0].text, /disabled_at = NULL/);
+  assert.match(calls[0].text, /updated_at = now\(\)/);
   assert.deepEqual(calls[0].values, [
     '1',
     'BCA',
@@ -94,4 +98,18 @@ test('disable is user-scoped', async () => {
   assert.match(calls[0].text, /id = \$1/);
   assert.match(calls[0].text, /user_id = \$2/);
   assert.deepEqual(calls[0].values, ['7', '1']);
+});
+
+test('disable can use the caller transaction query', async () => {
+  const { calls, repository } = createRepository();
+  const transactionCalls: Array<{ text: string; values: unknown[] }> = [];
+
+  await repository.disable('7', '1', async (text, values = []) => {
+    transactionCalls.push({ text, values });
+    return { rows: [] };
+  });
+
+  assert.equal(calls.length, 0);
+  assert.match(transactionCalls[0].text, /status = 'disabled'/);
+  assert.deepEqual(transactionCalls[0].values, ['7', '1']);
 });

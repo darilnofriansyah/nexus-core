@@ -56,6 +56,7 @@ function captureLiteral(
   const end = rule.before
     ? tail.toLowerCase().indexOf(rule.before.toLowerCase())
     : -1;
+  if (rule.before && end < 0) return null;
   const value = (end < 0 ? tail : tail.slice(0, end)).trim();
 
   return value || null;
@@ -173,20 +174,50 @@ function templateProblem(proposal: unknown): string | null {
   return null;
 }
 
+function canonicalProposal(
+  proposal: EmailParserTemplateProposalDto,
+): EmailParserTemplateProposalDto {
+  const capture = (
+    rule: EmailTemplateCaptureRuleDto,
+  ): EmailTemplateCaptureRuleDto => ({
+    kind: rule.kind,
+    after: rule.after,
+    ...(rule.before === undefined ? {} : { before: rule.before }),
+  });
+
+  return {
+    provider: proposal.provider.trim(),
+    templateKey: proposal.templateKey.trim(),
+    requiredAnchors: [...proposal.requiredAnchors],
+    ...(proposal.forbiddenAnchors === undefined
+      ? {}
+      : { forbiddenAnchors: [...proposal.forbiddenAnchors] }),
+    amount: capture(proposal.amount),
+    merchant: capture(proposal.merchant),
+    transactionDate: capture(proposal.transactionDate),
+    transactionType: proposal.transactionType,
+    paymentType: proposal.paymentType.trim(),
+  };
+}
+
 function parseProposal(
   input: EmailParserInput,
   proposal: EmailParserTemplateProposalDto,
 ): ParsedEmailTransactionDto | null {
   const text = input.normalizedText;
   const merchant = captureLiteral(text, proposal.merchant);
-  const amount = cleanAmount(
-    captureLiteral(text, proposal.amount) ?? undefined,
-  );
+  const capturedAmount = captureLiteral(text, proposal.amount);
+  const amount =
+    capturedAmount && !/[-−]/u.test(capturedAmount)
+      ? cleanAmount(capturedAmount)
+      : null;
   const transactionDate = extractIndonesianDateTime(
     captureLiteral(text, proposal.transactionDate) ?? "",
   );
 
-  if (!merchant || amount === null || !transactionDate) return null;
+  if (!merchant || amount === null || amount <= 0 || !transactionDate) {
+    return null;
+  }
 
   return {
     ok: true,
@@ -224,7 +255,11 @@ function templateFingerprint(
     templateKey: proposal.templateKey.trim(),
     requiredAnchors: proposal.requiredAnchors,
     forbiddenAnchors: proposal.forbiddenAnchors ?? [],
-    captures: [proposal.amount, proposal.merchant, proposal.transactionDate],
+    captures: {
+      amount: proposal.amount,
+      merchant: proposal.merchant,
+      transactionDate: proposal.transactionDate,
+    },
     transactionType: proposal.transactionType,
     paymentType: proposal.paymentType.trim(),
   };
@@ -237,7 +272,7 @@ function templateFingerprint(
 export function isLikelyTransactionEmail(input: EmailParserInput): boolean {
   const text = input.normalizedText.toLowerCase();
   const hasMoney =
-    /\b(?:rp\.?|idr)\s*[\d.,]+\b|\b\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{2})?\b/.test(
+    /\b(?:rp\.?|idr)\s*\d[\d.,]*\b|\b\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{2})?\b/.test(
       text,
     );
 
@@ -270,15 +305,23 @@ export function validateEmailTemplateProposal(
 ): EmailTemplateValidationResult {
   const problem = templateProblem(proposal);
   if (problem) return { ok: false, reason: problem };
-  const validatedProposal = proposal as EmailParserTemplateProposalDto;
+  const validatedProposal = canonicalProposal(
+    proposal as EmailParserTemplateProposalDto,
+  );
 
   const lower = input.normalizedText.toLowerCase();
-  if (
-    validatedProposal.requiredAnchors.some(
-      (anchor) => !lower.includes(anchor.toLowerCase()),
-    )
-  ) {
-    return { ok: false, reason: "required anchor was not found" };
+  let anchorOffset = 0;
+  for (const anchor of validatedProposal.requiredAnchors) {
+    const index = lower.indexOf(anchor.toLowerCase(), anchorOffset);
+    if (index < 0) {
+      return {
+        ok: false,
+        reason: lower.includes(anchor.toLowerCase())
+          ? "required anchors are out of order"
+          : "required anchor was not found",
+      };
+    }
+    anchorOffset = index + anchor.length;
   }
   if (
     validatedProposal.forbiddenAnchors?.some((anchor) =>
@@ -295,6 +338,7 @@ export function validateEmailTemplateProposal(
   return {
     ok: true,
     fingerprint: fingerprint(input, validatedProposal),
+    proposal: validatedProposal,
     parsed,
   };
 }
@@ -305,7 +349,9 @@ export function validateStoredEmailTemplateProposal(input: {
   proposal: unknown;
 }): EmailParserTemplateProposalDto | null {
   if (templateProblem(input.proposal)) return null;
-  const proposal = input.proposal as EmailParserTemplateProposalDto;
+  const proposal = canonicalProposal(
+    input.proposal as EmailParserTemplateProposalDto,
+  );
 
   return templateFingerprint(input.senderAddress, proposal) ===
     input.fingerprint
