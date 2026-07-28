@@ -15,6 +15,7 @@ This checklist turns the parity audit into reviewable migration work. It reflect
 - Transaction confirm/cancel now target production `transactions` rows by `transactionId` and `userId`, updating `status` to `confirmed` or `rejected`.
 - Transaction category options can emit production-style `catid:{budgetId}:{transactionId}` callbacks when matching active budgets exist.
 - Intent classification exists as a deterministic helper endpoint at `POST /veyra/intents/classify`.
+- Email transaction ingestion now tries existing hard-coded parsers, then user-scoped learned templates, and returns `needs_ai` for a transactional email that neither can parse. Structured AI results remain pending until user confirmation; confirmation activates only a candidate-equivalent validated template with aligned stored sender authentication. Explicit AI non-transaction decisions create no transaction or template.
 - README documents current n8n HTTP Request payload examples for the migrated endpoints.
 
 ### Not Covered Yet
@@ -23,7 +24,8 @@ This checklist turns the parity audit into reviewable migration work. It reflect
 - Budget status still does not return the production child breakdown/message shape and may not match all parent-budget display paths.
 - Budget upsert still does not auto-create a missing parent budget like production n8n.
 - Overspending does not insert `budget_alerts`, uses `YYYY-MM` period keys instead of the production full cycle-start date shape, and does not build the production Telegram HTML alert.
-- Transaction normalization does not parse bank email bodies, does not perform production `LIKE` alias matching, does not implement LLM categorization fallback, does not insert pending transactions, and does not upsert `merchant_review_queue`.
+- Transaction normalization does not perform production `LIKE` alias matching, does not implement a general LLM categorization fallback, and does not upsert `merchant_review_queue`.
+- n8n AI invocation, Gmail refetch for AI corrections, callback interception for `edit_email_details:*`, and production workflow rollout remain separate work; Core API only exposes the contracts for them.
 - Confirmation payload text still differs from production Telegram copy even though callback names are closer.
 - Category options still read from `pending_transactions`, use a fixed category list as the display base, and do not fully implement production leaf-budget SQL, parent/child labels, 32-character label truncation, or default fallback category parity.
 - Category selection still updates `pending_transactions`; it does not confirm the production `transactions` row after category selection.
@@ -39,6 +41,7 @@ This checklist turns the parity audit into reviewable migration work. It reflect
 | Budget upsert | Implemented, missing parent auto-create | Pilot only for existing-parent/single-category paths |
 | Overspending check | Implemented as read-only classifier | Not safe as full workflow replacement |
 | Transaction normalization | Implemented as normalization helper | Not safe as full normalizer replacement |
+| Email transaction parser | Hard-coded + learned parser and AI handoff contract | Core API ready; requires separate n8n rollout and migration approval |
 | Confirmation payload | Production callbacks improved, text differs | Not drop-in until text fixtures pass |
 | Confirm/cancel | Production transaction status model improved | Candidate after callback payload tests |
 | Category options/set-category | Partial production callback support | Not safe as full category flow replacement |
@@ -103,8 +106,14 @@ This checklist turns the parity audit into reviewable migration work. It reflect
   - Decision: keep the existing Core API `0-95` helper scale while this endpoint remains normalization-only and does not own LLM categorization.
 - [x] Add bank email parser endpoint only if explicitly migrating email parsing.
   - Phase 1 endpoint: `POST /api/veyra/transactions/email/handle` for deterministic BCA credit-card, Mandiri e-money, and Krom transfer/QRIS templates.
-  - Still excludes LLM fallback, DB-driven parser execution, and auto-saving unknown BCA/Mandiri/Krom templates.
-- [ ] Add LLM categorizer fallback only if explicitly migrating categorization.
+  - [x] Add user-scoped learned templates after hard-coded parsing, with safe literal-anchor validation and sender-authentication gating.
+  - [x] Return `needs_ai` for likely transaction emails that neither deterministic parser can handle; Core API never invokes an AI model.
+  - [x] Accept n8n's structured AI result as a pending confirmation, and activate only its validated template after user confirmation.
+  - [x] Support correction through `transactionId`, regenerated structured AI output, and the n8n-only `edit_email_details:*` interception contract.
+  - [x] Record an n8n AI failure as `needs_review` / `ai_failed` without inserting a transaction or template.
+- [ ] Invoke the existing n8n AI node for `needs_ai` and submit its structured result to `POST /api/veyra/transactions/email/resolve-review`.
+- [ ] Apply `docs/migration/2026-07-27-email-parser-templates.sql` after review and approval.
+- [ ] Prepare, fixture-test, approve, and only then activate the production n8n Gmail/AI/callback workflow changes.
 - [ ] Add `merchant_review_queue` upsert only if replacing the normalizer/categorizer side effects.
 - [x] Add tests for dirty amount strings, reversal/refund mapping, alias hit, alias miss, category rule hit, and missing merchant validation.
 - [x] Keep Gmail trigger, email fetch, n8n orchestration, Telegram send, and credentials in n8n.

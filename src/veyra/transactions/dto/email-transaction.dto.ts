@@ -6,11 +6,61 @@ import { TransactionWatchdogNotificationDto } from "./transaction-watchdog.dto";
 export type EmailTransactionHandleStatus =
   | "confirmed"
   | "needs_review"
+  | "needs_ai"
   | "duplicate"
   | "ignored_non_transaction"
   | "unsupported_provider"
   | "unsupported_template"
   | "parse_failed";
+
+export interface EmailAiHandoffDto {
+  reviewToken: string;
+  reason: "unsupported_template" | "parse_failed";
+}
+
+export type EmailAuthenticationStatus = "pass" | "fail" | "unknown";
+
+export interface EmailSenderAuthenticationDto {
+  dkim: EmailAuthenticationStatus;
+  spf: EmailAuthenticationStatus;
+  dmarc: EmailAuthenticationStatus;
+  domain?: string;
+}
+
+export interface EmailTemplateCaptureRuleDto {
+  kind: "idr_amount" | "datetime" | "text";
+  after: string;
+  before?: string;
+}
+
+export interface EmailParserTemplateProposalDto {
+  provider: string;
+  templateKey: string;
+  requiredAnchors: string[];
+  forbiddenAnchors?: string[];
+  amount: EmailTemplateCaptureRuleDto;
+  merchant: EmailTemplateCaptureRuleDto;
+  transactionDate: EmailTemplateCaptureRuleDto;
+  transactionType: NormalizedTransactionType;
+  paymentType: string;
+}
+
+export interface LearnedEmailTemplate {
+  id: string;
+  userId: string;
+  senderAddress: string;
+  fingerprint: string;
+  proposal: EmailParserTemplateProposalDto;
+}
+
+export type EmailTemplateValidationResult =
+  | {
+      ok: true;
+      fingerprint: string;
+      proposal: EmailParserTemplateProposalDto;
+      parsed: ParsedEmailTransactionDto;
+    }
+  | { ok: false; reason: string };
 
 export interface EmailTransactionMessageDto {
   messageId: string;
@@ -20,11 +70,12 @@ export interface EmailTransactionMessageDto {
   date?: string;
   emailText: string;
   emailHtml?: string;
+  authentication?: EmailSenderAuthenticationDto;
 }
 
 export interface EmailTransactionHandleRequestDto {
   telegramUserId: string;
-  userId: string | number;
+  userId?: string | number;
   source: "email" | string;
   email: EmailTransactionMessageDto;
 }
@@ -50,8 +101,18 @@ export interface EmailReviewResolutionDto {
 export interface EmailTransactionResolveReviewRequestDto {
   telegramUserId: string;
   reviewToken?: string;
-  transactionCandidate: EmailReviewTransactionCandidateDto;
-  resolution: EmailReviewResolutionDto;
+  transactionId?: string;
+  email?: EmailTransactionMessageDto;
+  isTransaction?: boolean;
+  transactionCandidate?: EmailReviewTransactionCandidateDto;
+  resolution?: EmailReviewResolutionDto;
+  templateProposal?: EmailParserTemplateProposalDto;
+  aiError?: string;
+}
+
+export interface EmailValidatedTemplatePayloadDto {
+  fingerprint: string;
+  proposal: EmailParserTemplateProposalDto;
 }
 
 export interface ParsedEmailTransactionDto {
@@ -93,6 +154,14 @@ export interface EmailTransactionHandleResponseDto {
   reason: string | null;
   transaction?: EmailTransactionResponseTransactionDto;
   parsed?: ParsedEmailTransactionDto;
+  aiRequest?: EmailAiHandoffDto;
+  actions?: {
+    confirm: EmailReviewActionDto;
+    cancel: EmailReviewActionDto;
+    changeCategory: EmailReviewActionDto;
+    editDetails: EmailReviewActionDto;
+  };
+  replyMarkup?: TelegramReplyMarkupDto;
   telegram: {
     text: string;
     parseMode: "HTML";
@@ -104,16 +173,25 @@ export interface EmailTransactionHandleResponseDto {
 export type EmailTransactionResolveReviewStatus =
   | "confirmed"
   | "pending"
-  | "needs_review";
+  | "needs_review"
+  | "ignored_non_transaction";
 
 export interface EmailReviewActionDto {
-  action?: "save_transaction" | "cancel_transaction" | "change_categories";
+  action?:
+    | "save_transaction"
+    | "cancel_transaction"
+    | "change_categories"
+    | "edit_email_details";
   transactionId?: string;
 }
 
 export interface EmailTransactionResolveReviewResponseDto {
   status: EmailTransactionResolveReviewStatus;
-  reason?: "user_not_found" | "category_not_found";
+  reason?:
+    | "user_not_found"
+    | "category_not_found"
+    | "ai_failed"
+    | "ai_non_transaction";
   message?: string;
   transaction?: EmailTransactionResponseTransactionDto & {
     status: "confirmed" | "pending";
@@ -127,6 +205,17 @@ export interface EmailTransactionResolveReviewResponseDto {
     confirm: EmailReviewActionDto;
     cancel: EmailReviewActionDto;
     changeCategory: EmailReviewActionDto;
+    editDetails: EmailReviewActionDto;
   };
   replyMarkup?: TelegramReplyMarkupDto;
+}
+
+export interface EmailSourceReferenceRequestDto {
+  telegramUserId: string | number;
+  transactionId: string | number;
+}
+
+export interface EmailSourceReferenceResponseDto {
+  transactionId: string;
+  messageId: string;
 }
