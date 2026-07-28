@@ -301,6 +301,47 @@ const learnedTemplate: LearnedEmailTemplate = {
   proposal: learnedProposal,
 };
 
+const pendingAiTransaction = {
+  id: "123",
+  user_id: "1",
+  transaction_type: "expense",
+  amount: "25000",
+  merchant: "Kopi Tuku",
+  merchant_normalized: "Kopi Tuku",
+  category: "Food",
+  transaction_date: "2026-07-27T09:30:00+07:00",
+  source: "email",
+  status: "pending",
+  raw_payload: {
+    email: {
+      messageId: "gmail-learned-1",
+      from: "alerts@krom.id",
+    },
+    parserSource: "ai",
+    validatedTemplate: {
+      fingerprint: learnedTemplate.fingerprint,
+      proposal: learnedProposal,
+    },
+  },
+};
+
+const originalAiEmail: EmailTransactionHandleRequestDto = {
+  ...authenticatedUnknownKromEmail,
+  email: {
+    ...authenticatedUnknownKromEmail.email,
+    messageId: "gmail-learned-1",
+  },
+};
+
+const learnedParsedTransaction = {
+  ...pendingAiTransaction,
+  raw_payload: {
+    email: { messageId: "gmail-learned-2", from: "alerts@krom.id" },
+    parserSource: "learned",
+    templateId: "7",
+  },
+};
+
 const authenticatedUnknownBankTransaction: EmailTransactionHandleRequestDto = {
   ...authenticatedUnknownKromEmail,
   email: {
@@ -3201,6 +3242,35 @@ test("uses a learned template after hard-coded parsers and skips AI", async () =
   assert.equal(result.templateKey, "learned-krom-qris");
   assert.equal(result.parsed?.raw.parserSource, "learned");
   assert.equal(templates.calls[0].method, "findActive");
+  assert.equal(templates.calls[1].method, "markMatched");
+});
+
+test("learned auto-save succeeds when marking the template match fails", async () => {
+  const templates = createTemplateRepository([learnedTemplate]);
+  templates.repository.markMatched = async () => {
+    throw new Error("db unavailable");
+  };
+  const { service } = createService(
+    [
+      [],
+      [{ canonical_name: "Kopi Tuku" }],
+      [{ category: "Food" }],
+      [{ id: "import-1" }],
+      [{ id: "tx-1" }],
+      [],
+      [],
+    ],
+    undefined,
+    undefined,
+    templates.repository,
+  );
+
+  const result = await service.handleEmailTransaction(
+    authenticatedUnknownKromEmail,
+  );
+
+  assert.equal(result.status, "confirmed");
+  assert.equal(result.transaction?.id, "tx-1");
 });
 
 test("returns needs_ai for a likely transaction with no deterministic parser", async () => {
@@ -3463,6 +3533,45 @@ test("returns duplicate for existing Gmail message import", async () => {
   assert.equal(calls.length, 1);
 });
 
+test("repeated Gmail delivery returns the existing pending review", async () => {
+  const { service } = createService([
+    [{ id: "import-1", transaction_id: "123", status: "pending" }],
+    [pendingAiTransaction],
+  ]);
+
+  const result = await service.handleEmailTransaction(originalAiEmail);
+
+  assert.equal(result.status, "needs_review");
+  assert.equal(result.transaction?.id, "123");
+});
+
+test("repeated Gmail delivery returns the existing AI handoff", async () => {
+  const { calls, service } = createService([
+    [{ id: "import-1", transaction_id: null, status: "needs_ai" }],
+  ]);
+
+  const result = await service.handleEmailTransaction(originalAiEmail);
+
+  assert.equal(result.status, "needs_ai");
+  assert.deepEqual(result.aiRequest, {
+    reviewToken: "gmail-learned-1",
+    reason: "unsupported_template",
+  });
+  assert.equal(calls.length, 1);
+});
+
+test("repeated rejected Gmail delivery remains a terminal duplicate", async () => {
+  const { calls, service } = createService([
+    [{ id: "import-1", transaction_id: "123", status: "rejected" }],
+  ]);
+
+  const result = await service.handleEmailTransaction(originalAiEmail);
+
+  assert.equal(result.status, "duplicate");
+  assert.equal(result.transaction, undefined);
+  assert.equal(calls.length, 1);
+});
+
 test("does not include an AI handoff when Gmail idempotency wins an insert race", async () => {
   const templates = createTemplateRepository([]);
   const { calls, service } = createService(
@@ -3629,6 +3738,81 @@ test("manage edit confirm triggers watchdog", async () => {
   assert.deepEqual(watchdogCalls, ["101"]);
 });
 
+test("material edit disables the learned template", async () => {
+  const templates = createTemplateRepository();
+  const state = createManageStateStore({
+    stateName: "confirm_action",
+    stateData: {
+      action: "edit",
+      transaction_id: "123",
+      before: learnedParsedTransaction,
+      changes: { amount: 30000 },
+    },
+  });
+  const { service } = createService(
+    [
+      [{ id: "1", telegram_id: "976684739" }],
+      [learnedParsedTransaction],
+      [],
+      [],
+    ],
+    undefined,
+    undefined,
+    templates.repository,
+  );
+  spyOnWatchdog(service);
+
+  const result = await service.handleManagedTransaction(
+    {
+      telegramUserId: "976684739",
+      text: "veyra_tx_manage:confirm",
+      llmResult: null,
+    },
+    state.store,
+  );
+
+  assert.equal(result.status, "completed");
+  assert.deepEqual(
+    templates.calls.filter((call) => call.method === "disable"),
+    [{ method: "disable", input: { templateId: "7", userId: "1" } }],
+  );
+});
+
+test("category-only edit does not disable the learned template", async () => {
+  const templates = createTemplateRepository();
+  const state = createManageStateStore({
+    stateName: "confirm_action",
+    stateData: {
+      action: "edit",
+      transaction_id: "123",
+      before: learnedParsedTransaction,
+      changes: { category: "Dining" },
+    },
+  });
+  const { service } = createService(
+    [[{ id: "1", telegram_id: "976684739" }], [learnedParsedTransaction], []],
+    undefined,
+    undefined,
+    templates.repository,
+  );
+  spyOnWatchdog(service);
+
+  const result = await service.handleManagedTransaction(
+    {
+      telegramUserId: "976684739",
+      text: "veyra_tx_manage:confirm",
+      llmResult: null,
+    },
+    state.store,
+  );
+
+  assert.equal(result.status, "completed");
+  assert.equal(
+    templates.calls.some((call) => call.method === "disable"),
+    false,
+  );
+});
+
 test("manage delete confirm skips watchdog", async () => {
   const state = createManageStateStore({
     stateName: "confirm_action",
@@ -3678,6 +3862,137 @@ test("pending transaction cancel skips watchdog", async () => {
 
   assert.equal(result.status, "rejected");
   assert.deepEqual(watchdogCalls, []);
+});
+
+test("Save activates the validated user template after confirming the transaction", async () => {
+  const templates = createTemplateRepository();
+  const { calls, service } = createService(
+    [[pendingAiTransaction], [], [], [], [], []],
+    undefined,
+    undefined,
+    templates.repository,
+  );
+
+  const result = await service.confirmTransaction({
+    transactionId: "123",
+    userId: "1",
+  });
+
+  assert.equal(result.status, "confirmed");
+  assert.equal(templates.calls[0].method, "activate");
+  const activation = templates.calls[0]
+    .input as ActivateEmailParserTemplateInput;
+  assert.equal(activation.userId, "1");
+  assert.equal(activation.senderAddress, "alerts@krom.id");
+  assert.equal(
+    calls.some(
+      (call) =>
+        /UPDATE transaction_imports/.test(call.text) &&
+        call.values[0] === "confirmed",
+    ),
+    true,
+  );
+});
+
+test("confirmed AI email learns a global alias and user category rule", async () => {
+  const templates = createTemplateRepository();
+  const { calls, service } = createService(
+    [[pendingAiTransaction], [], [], [], [], [], []],
+    undefined,
+    undefined,
+    templates.repository,
+  );
+  spyOnWatchdog(service);
+
+  await service.confirmTransaction({ transactionId: "123", userId: "1" });
+
+  const aliasSelect = calls.find((call) =>
+    /SELECT id, canonical_name\s+FROM merchant_aliases/.test(call.text),
+  );
+  const aliasInsert = calls.find((call) =>
+    /INSERT INTO merchant_aliases/.test(call.text),
+  );
+  const categoryInsert = calls.find((call) =>
+    /INSERT INTO category_rules/.test(call.text),
+  );
+  assert.ok(aliasSelect);
+  assert.doesNotMatch(aliasSelect.text, /user_id/);
+  assert.deepEqual(aliasSelect.values, ["Kopi Tuku"]);
+  assert.deepEqual(aliasInsert?.values, ["Kopi Tuku", "Kopi Tuku"]);
+  assert.deepEqual(categoryInsert?.values, ["1", "Kopi Tuku", "Food"]);
+});
+
+test("confirmation succeeds when template activation fails", async () => {
+  const templates = createTemplateRepository([], new Error("db unavailable"));
+  const { service } = createService(
+    [[pendingAiTransaction], [], [], [], [], []],
+    undefined,
+    undefined,
+    templates.repository,
+  );
+
+  const result = await service.confirmTransaction({
+    transactionId: "123",
+    userId: "1",
+  });
+
+  assert.equal(result.status, "confirmed");
+});
+
+test("Cancel never activates a proposed template", async () => {
+  const templates = createTemplateRepository();
+  const { calls, service } = createService(
+    [[pendingAiTransaction], [], []],
+    undefined,
+    undefined,
+    templates.repository,
+  );
+
+  await service.cancelTransaction({ transactionId: "123", userId: "1" });
+
+  assert.equal(
+    templates.calls.some((call) => call.method === "activate"),
+    false,
+  );
+  assert.equal(
+    calls.some(
+      (call) =>
+        /UPDATE transaction_imports/.test(call.text) &&
+        call.values[0] === "rejected",
+    ),
+    true,
+  );
+});
+
+test("category confirmation activates the proposal exactly once", async () => {
+  const templates = createTemplateRepository();
+  const { service } = createService(
+    [
+      [pendingAiTransaction],
+      [{ id: "budget-food", category: "Dining", parent_category: null }],
+      [],
+      [],
+      [],
+      [],
+      [],
+    ],
+    undefined,
+    undefined,
+    templates.repository,
+  );
+  spyOnWatchdog(service);
+
+  const result = await service.setPendingTransactionCategory({
+    transactionId: "123",
+    budgetId: "budget-food",
+    userId: "1",
+  });
+
+  assert.equal(result.status, "updated");
+  assert.equal(
+    templates.calls.filter((call) => call.method === "activate").length,
+    1,
+  );
 });
 
 test("category confirmation triggers watchdog", async () => {

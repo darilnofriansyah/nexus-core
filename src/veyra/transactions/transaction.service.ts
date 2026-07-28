@@ -62,6 +62,7 @@ import {
 import {
   EmailReviewResolutionDto,
   EmailReviewTransactionCandidateDto,
+  EmailParserTemplateProposalDto,
   EmailTransactionMessageDto,
   EmailTransactionHandleRequestDto,
   EmailTransactionHandleResponseDto,
@@ -154,6 +155,7 @@ interface ExistingImportRow extends QueryResultRow {
   id: string | number;
   transaction_id: string | number | null;
   status: string;
+  raw_payload?: unknown;
 }
 
 interface PendingTransactionRow extends QueryResultRow {
@@ -204,6 +206,9 @@ interface TransactionRow extends QueryResultRow {
   transaction_date?: string | Date | null;
   notes?: string | null;
   status: string | null;
+  source?: string | null;
+  confidence?: string | number | null;
+  raw_payload?: unknown;
   created_at?: string | Date | null;
 }
 
@@ -667,12 +672,7 @@ export class TransactionService {
     );
 
     if (existingImport) {
-      return this.buildEmailResponse({
-        status: "duplicate",
-        provider: null,
-        templateKey: null,
-        reason: "email message already imported",
-      });
+      return this.resumeExistingEmailImport(validated, existingImport);
     }
 
     const parserInputs = this.buildEmailParserInputs(validated);
@@ -865,6 +865,20 @@ export class TransactionService {
         reason: "email message already imported",
         parsed,
       });
+    }
+
+    if (parsedAttempt.learnedTemplateId && this.emailParserTemplateRepository) {
+      try {
+        await this.emailParserTemplateRepository.markMatched(
+          parsedAttempt.learnedTemplateId,
+          validated.userId,
+        );
+      } catch (error) {
+        this.logger.error(
+          `Failed to mark email parser template ${parsedAttempt.learnedTemplateId} as matched`,
+          error instanceof Error ? error.stack : undefined,
+        );
+      }
     }
 
     const watchdog = await this.evaluateTransactionWatchdog(transaction.id);
@@ -1130,6 +1144,10 @@ export class TransactionService {
         userId,
         stateData.changes ?? {},
       );
+      await this.disableLearnedTemplateAfterMaterialEdit(
+        transaction,
+        stateData.changes,
+      );
       await stateStore.resetState({ userId });
       const updated = this.applyManageChangesToSnapshot(
         this.snapshotManageTransaction(transaction),
@@ -1149,6 +1167,7 @@ export class TransactionService {
     }
 
     await this.rejectManageTransaction(transactionId, userId);
+    await this.updateEmailImportStatus(transaction, "rejected");
     await stateStore.resetState({ userId });
     const deleted = this.snapshotManageTransaction({
       ...transaction,
@@ -2458,7 +2477,10 @@ export class TransactionService {
       userId: input.request.userId,
       sourceReference: input.request.email.messageId,
       status: input.status,
-      rawPayload: this.buildEmailRawPayload(input.request, input.parsed),
+      rawPayload: {
+        ...this.buildEmailRawPayload(input.request, input.parsed),
+        ...(input.aiRequest ? { aiRequest: input.aiRequest } : {}),
+      },
     });
 
     if (!inserted) {
@@ -2497,7 +2519,7 @@ export class TransactionService {
   ): Promise<ExistingImportRow | undefined> {
     const result = await this.database.query<ExistingImportRow>(
       `
-        SELECT id, transaction_id, status
+        SELECT id, transaction_id, status, raw_payload
         FROM transaction_imports
         WHERE user_id::text = $1
           AND source = 'email'
@@ -2508,6 +2530,104 @@ export class TransactionService {
     );
 
     return result.rows[0];
+  }
+
+  private async resumeExistingEmailImport(
+    request: EmailTransactionHandleRequestDto & {
+      userId: string;
+      source: "email";
+    },
+    emailImport: ExistingImportRow,
+  ): Promise<EmailTransactionHandleResponseDto> {
+    if (
+      emailImport.status === "needs_ai" &&
+      emailImport.transaction_id === null
+    ) {
+      const rawPayload = this.readRecord(emailImport.raw_payload);
+      const storedAiRequest = this.readRecord(rawPayload.aiRequest);
+      const parser = this.readRecord(rawPayload.parser);
+      const reason =
+        storedAiRequest.reason === "parse_failed"
+          ? "parse_failed"
+          : "unsupported_template";
+
+      return this.buildEmailResponse({
+        status: "needs_ai",
+        provider: typeof parser.provider === "string" ? parser.provider : null,
+        templateKey:
+          typeof parser.templateKey === "string" ? parser.templateKey : null,
+        reason: "email requires AI parsing",
+        aiRequest: {
+          reviewToken: request.email.messageId,
+          reason,
+        },
+      });
+    }
+
+    if (
+      emailImport.status === "pending" &&
+      emailImport.transaction_id !== null
+    ) {
+      const transaction = await this.findTransaction(
+        String(emailImport.transaction_id),
+        request.userId,
+      );
+
+      if (transaction) {
+        const rawPayload = this.readRecord(transaction.raw_payload);
+        const validatedTemplate = this.readRecord(rawPayload.validatedTemplate);
+        const proposal = this.readRecord(validatedTemplate.proposal);
+
+        return this.buildEmailResponse({
+          status: "needs_review",
+          provider:
+            typeof proposal.provider === "string" ? proposal.provider : null,
+          templateKey:
+            typeof proposal.templateKey === "string"
+              ? proposal.templateKey
+              : null,
+          reason: "email transaction is awaiting confirmation",
+          transaction: this.mapPendingEmailTransaction(transaction),
+        });
+      }
+    }
+
+    return this.buildEmailResponse({
+      status: "duplicate",
+      provider: null,
+      templateKey: null,
+      reason: "email message already imported",
+    });
+  }
+
+  private mapPendingEmailTransaction(
+    transaction: TransactionRow,
+  ): NonNullable<EmailTransactionHandleResponseDto["transaction"]> {
+    const transactionType = this.cleanString(
+      transaction.transaction_type,
+    )?.toLowerCase();
+
+    return {
+      id: String(transaction.id),
+      userId: String(transaction.user_id),
+      transactionType:
+        transactionType === "income" ||
+        transactionType === "transfer" ||
+        transactionType === "reversal"
+          ? transactionType
+          : "expense",
+      amount: this.normalizeAmount(transaction.amount),
+      merchant: transaction.merchant ?? "Unknown",
+      merchantNormalized:
+        transaction.merchant_normalized ?? transaction.merchant ?? "Unknown",
+      category: transaction.category ?? "Uncategorized",
+      transactionDate: this.normalizeTransactionDate(
+        this.formatNullableTimestamp(transaction.transaction_date) ?? undefined,
+      ),
+      source: "email",
+      status: "pending",
+      confidence: this.normalizeConfidence(Number(transaction.confidence ?? 0)),
+    };
   }
 
   private async createTransactionImport(input: {
@@ -2657,6 +2777,9 @@ export class TransactionService {
     request: EmailTransactionHandleRequestDto,
     parsed: ParsedEmailTransactionDto | undefined,
   ): Record<string, unknown> {
+    const parserSource = parsed?.raw.parserSource;
+    const templateId = parsed?.raw.templateId;
+
     return {
       email: {
         messageId: request.email.messageId,
@@ -2674,6 +2797,8 @@ export class TransactionService {
           }
         : null,
       parsed: parsed ?? null,
+      ...(typeof parserSource === "string" ? { parserSource } : {}),
+      ...(typeof templateId === "string" ? { templateId } : {}),
     };
   }
 
@@ -4722,6 +4847,233 @@ export class TransactionService {
     };
   }
 
+  private async activateValidatedEmailTemplate(
+    transaction: TransactionRow,
+  ): Promise<void> {
+    if (transaction.source !== "email" || !this.emailParserTemplateRepository) {
+      return;
+    }
+
+    const rawPayload = this.readRecord(transaction.raw_payload);
+    const validatedTemplate = this.readRecord(rawPayload.validatedTemplate);
+    const email = this.readRecord(rawPayload.email);
+    const senderAddress = this.cleanString(email.from);
+    const fingerprint = this.cleanString(validatedTemplate.fingerprint);
+    const proposal = this.readRecord(validatedTemplate.proposal);
+
+    if (
+      !senderAddress ||
+      !fingerprint ||
+      !this.isEmailTemplateProposal(proposal)
+    ) {
+      return;
+    }
+
+    try {
+      await this.emailParserTemplateRepository.activate({
+        userId: String(transaction.user_id),
+        senderAddress: senderAddress.toLowerCase(),
+        fingerprint,
+        proposal,
+      });
+    } catch (error) {
+      this.logger.error(
+        `Failed to activate email parser template for transaction ${String(transaction.id)}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+    }
+  }
+
+  private isEmailTemplateProposal(
+    value: unknown,
+  ): value is EmailParserTemplateProposalDto {
+    const proposal = this.readRecord(value);
+
+    return (
+      typeof proposal.provider === "string" &&
+      typeof proposal.templateKey === "string" &&
+      Array.isArray(proposal.requiredAnchors) &&
+      typeof proposal.amount === "object" &&
+      proposal.amount !== null &&
+      typeof proposal.merchant === "object" &&
+      proposal.merchant !== null &&
+      typeof proposal.transactionDate === "object" &&
+      proposal.transactionDate !== null &&
+      typeof proposal.transactionType === "string" &&
+      typeof proposal.paymentType === "string"
+    );
+  }
+
+  private async disableLearnedTemplateAfterMaterialEdit(
+    transaction: TransactionRow,
+    changes: ManageStateData["changes"],
+  ): Promise<void> {
+    if (!this.emailParserTemplateRepository) {
+      return;
+    }
+
+    const materialKeys = [
+      "amount",
+      "merchant",
+      "merchant_normalized",
+      "transaction_date",
+      "transaction_type",
+    ];
+
+    if (!materialKeys.some((key) => key in (changes ?? {}))) {
+      return;
+    }
+
+    const rawPayload = this.readRecord(transaction.raw_payload);
+    const templateId = this.cleanString(rawPayload.templateId);
+
+    if (rawPayload.parserSource !== "learned" || !templateId) {
+      return;
+    }
+
+    try {
+      await this.emailParserTemplateRepository.disable(
+        templateId,
+        String(transaction.user_id),
+      );
+    } catch (error) {
+      this.logger.error(
+        `Failed to disable email parser template ${templateId}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+    }
+  }
+
+  private async updateEmailImportStatus(
+    transaction: TransactionRow,
+    status: "pending" | "confirmed" | "rejected",
+  ): Promise<void> {
+    if (transaction.source !== "email") {
+      return;
+    }
+
+    await this.database.query(
+      `
+        UPDATE transaction_imports
+        SET status = $1
+        WHERE transaction_id::text = $2
+          AND user_id::text = $3
+      `,
+      [status, String(transaction.id), String(transaction.user_id)],
+    );
+  }
+
+  private async learnConfirmedEmailTransaction(
+    transaction: TransactionRow,
+  ): Promise<void> {
+    const rawPayload = this.readRecord(transaction.raw_payload);
+
+    if (
+      transaction.source !== "email" ||
+      rawPayload.parserSource !== "ai" ||
+      !transaction.merchant ||
+      !transaction.merchant_normalized ||
+      !transaction.category
+    ) {
+      return;
+    }
+
+    try {
+      await this.upsertMerchantAlias(
+        transaction.merchant,
+        transaction.merchant_normalized,
+      );
+      await this.upsertCategoryRule({
+        userId: String(transaction.user_id),
+        merchantPattern: transaction.merchant_normalized,
+        category: transaction.category,
+      });
+    } catch (error) {
+      this.logger.error(
+        `Failed to learn confirmed email transaction ${String(transaction.id)}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+    }
+  }
+
+  private async upsertMerchantAlias(
+    aliasName: string,
+    canonicalName: string,
+  ): Promise<void> {
+    const existing = await this.database.query<MerchantAliasRow>(
+      `
+        SELECT id, canonical_name
+        FROM merchant_aliases
+        WHERE lower(alias_name) = lower($1)
+        LIMIT 1
+      `,
+      [aliasName],
+    );
+    const row = existing.rows[0];
+
+    if (!row) {
+      await this.database.query(
+        `
+          INSERT INTO merchant_aliases (alias_name, canonical_name)
+          VALUES ($1, $2)
+        `,
+        [aliasName, canonicalName],
+      );
+      return;
+    }
+
+    if (row.canonical_name !== canonicalName) {
+      await this.database.query(
+        `
+          UPDATE merchant_aliases
+          SET canonical_name = $1
+          WHERE id::text = $2
+        `,
+        [canonicalName, String(row.id)],
+      );
+    }
+  }
+
+  private async upsertCategoryRule(input: {
+    userId: string;
+    merchantPattern: string;
+    category: string;
+  }): Promise<void> {
+    const existing = await this.database.query<CategoryRuleRow>(
+      `
+        SELECT id, category
+        FROM category_rules
+        WHERE user_id::text = $1
+          AND lower(merchant_pattern) = lower($2)
+        LIMIT 1
+      `,
+      [input.userId, input.merchantPattern],
+    );
+    const row = existing.rows[0];
+
+    if (!row) {
+      await this.database.query(
+        `
+          INSERT INTO category_rules (user_id, merchant_pattern, category)
+          VALUES ($1, $2, $3)
+        `,
+        [input.userId, input.merchantPattern, input.category],
+      );
+      return;
+    }
+
+    if (row.category !== input.category) {
+      await this.database.query(
+        `
+          UPDATE category_rules
+          SET category = $1
+          WHERE id::text = $2
+        `,
+        [input.category, String(row.id)],
+      );
+    }
+  }
+
   private async updateTransactionStatus(
     request: ConfirmTransactionRequestDto,
     nextStatus: "confirmed" | "rejected",
@@ -4782,6 +5134,14 @@ export class TransactionService {
       `,
       [nextStatus, String(transaction.id), String(transaction.user_id)],
     );
+
+    await this.updateEmailImportStatus(transaction, nextStatus);
+
+    if (nextStatus === "confirmed") {
+      await this.activateValidatedEmailTemplate(transaction);
+      await this.learnConfirmedEmailTransaction(transaction);
+    }
+
     const watchdog =
       nextStatus === "confirmed"
         ? await this.evaluateTransactionWatchdog(String(transaction.id))
@@ -4822,7 +5182,10 @@ export class TransactionService {
           category,
           transaction_type,
           transaction_date,
-          status
+          status,
+          source,
+          confidence,
+          raw_payload
         FROM transactions
         WHERE id::text = $1
           AND user_id::text = $2
@@ -4849,6 +5212,9 @@ export class TransactionService {
                transaction_date,
                notes,
                status,
+               source,
+               confidence,
+               raw_payload,
                created_at
         FROM transactions
         WHERE id::text = $1
@@ -5476,6 +5842,18 @@ export class TransactionService {
       category: budgetCategory.category,
       status: "confirmed",
     });
+    const confirmedTransaction: TransactionRow = {
+      ...transaction,
+      category: budgetCategory.category,
+      status: "confirmed",
+    };
+
+    if (this.cleanString(transaction.status)?.toLowerCase() === "pending") {
+      await this.updateEmailImportStatus(confirmedTransaction, "confirmed");
+      await this.activateValidatedEmailTemplate(confirmedTransaction);
+      await this.learnConfirmedEmailTransaction(confirmedTransaction);
+    }
+
     const watchdog = await this.evaluateTransactionWatchdog(
       String(transaction.id),
     );
