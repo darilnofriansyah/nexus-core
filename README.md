@@ -1283,6 +1283,36 @@ Possible statuses are `confirmed`, `needs_review`, `needs_ai`, `duplicate`, `ign
 
 This endpoint can replace deterministic email parser Code nodes and the high-confidence direct insert branch for supported templates. Gmail triggers, email fetching and refetching, HTML/plain-text extraction, AI invocation, Telegram sends, retries, and callback routing stay in n8n.
 
+### `POST /api/veyra/transactions/email/source-reference`
+
+Resolves the Gmail message ID linked to one user-owned pending email
+transaction. This endpoint exists only for the n8n
+`edit_email_details:{transactionId}` branch so Gmail can refetch the original
+message before AI correction.
+
+Request:
+
+```json
+{
+  "telegramUserId": "976684739",
+  "transactionId": "123"
+}
+```
+
+Response:
+
+```json
+{
+  "transactionId": "123",
+  "messageId": "gmail-message-id"
+}
+```
+
+Invalid identifiers return `400`. Unknown users and missing, foreign-owned,
+non-email, non-pending, or unlinked transactions return the same `404`. Core
+API performs no Gmail request. Gmail refetch, AI regeneration, callback
+interception, Telegram handling, and workflow activation remain in n8n.
+
 ### `POST /api/veyra/transactions/email/resolve-review`
 
 Accepts a structured result from n8n after an email returned `needs_ai`. Every AI candidate is persisted as a pending email transaction for user confirmation, regardless of confidence. Core API validates the transaction fields and retains a learned-template proposal only when it can replay safely against the supplied email. It does not call an LLM or send Telegram messages.
