@@ -28,6 +28,7 @@ function createService(
   emailParserTemplateRepository?: EmailParserTemplateRepository,
 ) {
   const calls: Array<{ text: string; values: unknown[] }> = [];
+  const transactionEvents: Array<"begin" | "commit" | "rollback"> = [];
   const query = async (text: string, values: unknown[] = []) => {
     calls.push({ text, values });
     return { rows: rowsByCall.shift() ?? [] };
@@ -36,11 +37,22 @@ function createService(
     query,
     withTransaction: async (
       callback: (client: { query: typeof query }) => unknown,
-    ) => callback({ query }),
+    ) => {
+      transactionEvents.push("begin");
+      try {
+        const result = await callback({ query });
+        transactionEvents.push("commit");
+        return result;
+      } catch (error) {
+        transactionEvents.push("rollback");
+        throw error;
+      }
+    },
   } as unknown as DatabaseService;
 
   return {
     calls,
+    transactionEvents,
     service: new TransactionService(
       database,
       budgetService,
@@ -251,7 +263,9 @@ async function resolveValidAiReview() {
   const { service } = createService([
     [{ id: "1", telegram_id: "976684739" }],
     [{ category: "Food" }],
+    [{ id: "import-1", transaction_id: null, status: "needs_ai" }],
     [{ id: "123" }],
+    [{ id: "import-1" }],
   ]);
   return service.resolveEmailTransactionReview(validAiReviewRequest());
 }
@@ -2626,7 +2640,9 @@ test("keeps every AI result pending and stores only a validated proposal", async
   const { calls, service } = createService([
     [{ id: "1", telegram_id: "976684739" }],
     [{ category: "Food" }],
+    [{ id: "import-1", transaction_id: null, status: "needs_ai" }],
     [{ id: "123" }],
+    [{ id: "import-1" }],
   ]);
 
   const result = await service.resolveEmailTransactionReview({
@@ -2640,8 +2656,9 @@ test("keeps every AI result pending and stores only a validated proposal", async
 
   assert.equal(result.status, "pending");
   assert.equal(result.transaction?.status, "pending");
-  assert.equal(calls[2].values[8], "pending");
-  const rawPayload = calls[2].values[10] as Record<string, unknown>;
+  assert.match(calls[2].text, /FOR UPDATE/);
+  assert.equal(calls[3].values[8], "pending");
+  const rawPayload = calls[3].values[10] as Record<string, unknown>;
   assert.equal(rawPayload.parserSource, "ai");
   assert.equal("emailText" in rawPayload, false);
   assert.equal("emailHtml" in rawPayload, false);
@@ -2651,13 +2668,76 @@ test("keeps every AI result pending and stores only a validated proposal", async
     authentication: authenticatedUnknownKromEmail.email.authentication,
   });
   assert.ok(rawPayload.validatedTemplate);
-  assert.match(calls[3].text, /UPDATE transaction_imports/);
-  assert.deepEqual(calls[3].values, [
-    "123",
-    rawPayload,
-    "1",
-    "gmail-learned-1",
+  assert.match(calls[4].text, /UPDATE transaction_imports/);
+  assert.deepEqual(calls[4].values, ["123", rawPayload, "import-1"]);
+});
+
+test("reuses the import-linked pending transaction on an initial AI retry", async () => {
+  const existingTransaction = {
+    id: "123",
+    user_id: "1",
+    transaction_type: "expense",
+    amount: "25000",
+    merchant: "Kopi Tuku",
+    merchant_normalized: "Kopi Tuku",
+    category: "Food",
+    transaction_date: "2026-07-27T02:30:00.000Z",
+    status: "pending",
+    confidence: 98,
+  };
+  const { calls, service, transactionEvents } = createService([
+    [{ id: "1", telegram_id: "976684739" }],
+    [{ category: "Food" }],
+    [{ id: "import-1", transaction_id: null, status: "needs_ai" }],
+    [{ id: "123" }],
+    [{ id: "import-1" }],
+    [{ id: "1", telegram_id: "976684739" }],
+    [{ category: "Food" }],
+    [{ id: "import-1", transaction_id: "123", status: "pending" }],
+    [existingTransaction],
   ]);
+
+  const first = await service.resolveEmailTransactionReview(
+    validAiReviewRequest(),
+  );
+  const retry = await service.resolveEmailTransactionReview(
+    validAiReviewRequest(),
+  );
+
+  assert.equal(first.transaction?.id, "123");
+  assert.equal(retry.transaction?.id, "123");
+  assert.equal(
+    calls.filter((call) => /INSERT INTO transactions/.test(call.text)).length,
+    1,
+  );
+  assert.equal(
+    calls.filter((call) => /FOR UPDATE/.test(call.text)).length,
+    2,
+  );
+  assert.deepEqual(transactionEvents, ["begin", "commit", "begin", "commit"]);
+});
+
+test("rolls back an initial AI insert when the import cannot be attached", async () => {
+  const { calls, service, transactionEvents } = createService([
+    [{ id: "1", telegram_id: "976684739" }],
+    [{ category: "Food" }],
+    [{ id: "import-1", transaction_id: null, status: "needs_ai" }],
+    [{ id: "123" }],
+    [],
+  ]);
+
+  await assert.rejects(
+    () => service.resolveEmailTransactionReview(validAiReviewRequest()),
+    BadRequestException,
+  );
+
+  assert.equal(
+    calls.filter((call) => /INSERT INTO transactions/.test(call.text)).length,
+    1,
+  );
+  assert.match(calls[4].text, /UPDATE transaction_imports/);
+  assert.match(calls[4].text, /RETURNING id/);
+  assert.deepEqual(transactionEvents, ["begin", "rollback"]);
 });
 
 test("returns edit-details markup for n8n interception", async () => {
@@ -2718,6 +2798,56 @@ test("does not mutate a pending row when corrected output is invalid", async () 
   );
 });
 
+test("rejects negative initial AI amounts before inserting", async () => {
+  for (const amount of [-25000, "-25.000"]) {
+    const { calls, service } = createService([
+      [{ id: "1", telegram_id: "976684739" }],
+      [{ category: "Food" }],
+      [{ id: "123" }],
+    ]);
+
+    await assert.rejects(
+      () =>
+        service.resolveEmailTransactionReview(
+          validAiReviewRequest({
+            transactionCandidate: { ...aiCandidate, amount },
+          }),
+        ),
+      BadRequestException,
+    );
+    assert.equal(
+      calls.some((call) => /INSERT INTO transactions/.test(call.text)),
+      false,
+    );
+  }
+});
+
+test("rejects negative AI correction amounts before updating", async () => {
+  for (const amount of [-30000, "-30.000"]) {
+    const { calls, service } = createService([
+      [{ id: "1", telegram_id: "976684739" }],
+      [{ id: "123", user_id: "1", source: "email", status: "pending" }],
+      [{ category: "Food" }],
+      [{ id: "123" }],
+    ]);
+
+    await assert.rejects(
+      () =>
+        service.resolveEmailTransactionReview(
+          validAiReviewRequest({
+            transactionId: "123",
+            transactionCandidate: { ...aiCandidate, amount },
+          }),
+        ),
+      BadRequestException,
+    );
+    assert.equal(
+      calls.some((call) => /UPDATE transactions/.test(call.text)),
+      false,
+    );
+  }
+});
+
 test("records needs_review when n8n reports AI failure", async () => {
   const { calls, service } = createService([
     [{ id: "1", telegram_id: "976684739" }],
@@ -2751,7 +2881,9 @@ test("keeps AI result pending when the template proposal is invalid", async () =
   const { calls, service } = createService([
     [{ id: "1", telegram_id: "976684739" }],
     [{ category: "Food" }],
+    [{ id: "import-1", transaction_id: null, status: "needs_ai" }],
     [{ id: "123" }],
+    [{ id: "import-1" }],
   ]);
 
   const result = await service.resolveEmailTransactionReview(
@@ -2764,7 +2896,28 @@ test("keeps AI result pending when the template proposal is invalid", async () =
   );
 
   assert.equal(result.status, "pending");
-  const rawPayload = calls[2].values[10] as Record<string, unknown>;
+  const rawPayload = calls[3].values[10] as Record<string, unknown>;
+  assert.equal(rawPayload.validatedTemplate, null);
+});
+
+test("keeps AI result pending when the template proposal is malformed", async () => {
+  const { calls, service } = createService([
+    [{ id: "1", telegram_id: "976684739" }],
+    [{ category: "Food" }],
+    [{ id: "import-1", transaction_id: null, status: "needs_ai" }],
+    [{ id: "123" }],
+    [{ id: "import-1" }],
+  ]);
+
+  const result = await service.resolveEmailTransactionReview(
+    validAiReviewRequest({
+      templateProposal: {} as EmailParserTemplateProposalDto,
+    }),
+  );
+
+  assert.equal(result.status, "pending");
+  const insert = calls.find((call) => /INSERT INTO transactions/.test(call.text));
+  const rawPayload = insert?.values[10] as Record<string, unknown>;
   assert.equal(rawPayload.validatedTemplate, null);
 });
 
@@ -2772,7 +2925,9 @@ test("resolves medium confidence email review as pending with production actions
   const { calls, service } = createService([
     [{ id: "1", telegram_id: "976684739" }],
     [{ category: "Food" }],
+    [{ id: "import-1", transaction_id: null, status: "needs_ai" }],
     [{ id: "123" }],
+    [{ id: "import-1" }],
   ]);
 
   const result = await service.resolveEmailTransactionReview({
@@ -2811,8 +2966,8 @@ test("resolves medium confidence email review as pending with production actions
       { text: "Cancel", callback_data: "cancel_transaction:123" },
     ],
   ]);
-  assert.equal(calls[2].values[8], "pending");
-  assert.equal(calls[2].values[9], 84);
+  assert.equal(calls[3].values[8], "pending");
+  assert.equal(calls[3].values[9], 84);
   assert.equal(
     calls.some((call) => /merchant_aliases|category_rules/.test(call.text)),
     false,
@@ -2823,7 +2978,9 @@ test("resolves low confidence email review as pending with LLM category", async 
   const { calls, service } = createService([
     [{ id: "1", telegram_id: "976684739" }],
     [{ category: "Food" }],
+    [{ id: "import-1", transaction_id: null, status: "needs_ai" }],
     [{ id: "123" }],
+    [{ id: "import-1" }],
   ]);
 
   const result = await service.resolveEmailTransactionReview({
@@ -2852,15 +3009,17 @@ test("resolves low confidence email review as pending with LLM category", async 
   assert.equal(result.transaction?.confidence, 74);
   assert.equal(result.actions?.confirm.transactionId, "123");
   assert.equal(result.replyMarkup?.inline_keyboard[0][0].text, "Save");
-  assert.equal(calls[2].values[8], "pending");
-  assert.equal(calls[2].values[9], 74);
+  assert.equal(calls[3].values[8], "pending");
+  assert.equal(calls[3].values[9], 74);
 });
 
 test("resolves low confidence email review with unknown LLM category as pending", async () => {
   const { calls, service } = createService([
     [{ id: "1", telegram_id: "976684739" }],
     [],
+    [{ id: "import-1", transaction_id: null, status: "needs_ai" }],
     [{ id: "123" }],
+    [{ id: "import-1" }],
   ]);
 
   const result = await service.resolveEmailTransactionReview({
@@ -2884,15 +3043,17 @@ test("resolves low confidence email review with unknown LLM category as pending"
 
   assert.equal(result.status, "pending");
   assert.equal(result.transaction?.category, "LLM Made Category");
-  assert.equal(calls[2].values[5], "LLM Made Category");
-  assert.equal(calls[2].values[8], "pending");
+  assert.equal(calls[3].values[5], "LLM Made Category");
+  assert.equal(calls[3].values[8], "pending");
 });
 
 test("keeps high confidence AI result pending when category is not in budgets", async () => {
   const { calls, service } = createService([
     [{ id: "1", telegram_id: "976684739" }],
     [],
+    [{ id: "import-1", transaction_id: null, status: "needs_ai" }],
     [{ id: "123" }],
+    [{ id: "import-1" }],
   ]);
 
   const result = await service.resolveEmailTransactionReview({
@@ -2918,7 +3079,7 @@ test("keeps high confidence AI result pending when category is not in budgets", 
   assert.equal(result.transaction?.category, "LLM Made Category");
   assert.equal(result.transaction?.confidence, 95);
   assert.match(calls[1].text, /FROM budgets/);
-  assert.match(calls[2].text, /INSERT INTO transactions/);
+  assert.match(calls[3].text, /INSERT INTO transactions/);
 });
 
 test("returns safe email review response when telegram user is not found", async () => {
@@ -3394,7 +3555,9 @@ test("email review AI result skips watchdog until confirmed", async () => {
   const { service } = createService([
     [{ id: "1", telegram_id: "976684739" }],
     [{ category: "Food" }],
+    [{ id: "import-1", transaction_id: null, status: "needs_ai" }],
     [{ id: "tx-review" }],
+    [{ id: "import-1" }],
   ]);
   const watchdogCalls = spyOnWatchdog(service);
 

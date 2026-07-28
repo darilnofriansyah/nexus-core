@@ -72,14 +72,39 @@ function isValidTransactionType(
   return TRANSACTION_TYPES.includes(value as NormalizedTransactionType);
 }
 
-function templateProblem(
-  proposal: EmailParserTemplateProposalDto,
-): string | null {
-  if (!proposal.provider.trim()) return "provider is required";
-  if (!proposal.templateKey.trim()) return "template key is required";
-  if (!proposal.paymentType.trim()) return "payment type is required";
-  if (!isValidTransactionType(proposal.transactionType)) {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function templateProblem(proposal: unknown): string | null {
+  if (!isRecord(proposal)) return "proposal is required";
+  if (typeof proposal.provider !== "string" || !proposal.provider.trim()) {
+    return "provider is required";
+  }
+  if (
+    typeof proposal.templateKey !== "string" ||
+    !proposal.templateKey.trim()
+  ) {
+    return "template key is required";
+  }
+  if (
+    typeof proposal.paymentType !== "string" ||
+    !proposal.paymentType.trim()
+  ) {
+    return "payment type is required";
+  }
+  if (
+    typeof proposal.transactionType !== "string" ||
+    !isValidTransactionType(proposal.transactionType)
+  ) {
     return "transaction type is invalid";
+  }
+  if (
+    !isRecord(proposal.amount) ||
+    !isRecord(proposal.merchant) ||
+    !isRecord(proposal.transactionDate)
+  ) {
+    return "capture rule is invalid";
   }
   if (
     proposal.amount.kind !== "idr_amount" ||
@@ -89,11 +114,26 @@ function templateProblem(
     return "capture rule kind is invalid";
   }
 
+  if (
+    !Array.isArray(proposal.requiredAnchors) ||
+    proposal.requiredAnchors.some((anchor) => typeof anchor !== "string") ||
+    (proposal.forbiddenAnchors !== undefined &&
+      (!Array.isArray(proposal.forbiddenAnchors) ||
+        proposal.forbiddenAnchors.some(
+          (anchor) => typeof anchor !== "string",
+        )))
+  ) {
+    return "anchors are invalid";
+  }
+
+  const validatedProposal =
+    proposal as unknown as EmailParserTemplateProposalDto;
   const anchors = [
-    ...proposal.requiredAnchors,
-    ...(proposal.forbiddenAnchors ?? []),
+    ...validatedProposal.requiredAnchors,
+    ...(validatedProposal.forbiddenAnchors ?? []),
   ];
-  if (!proposal.requiredAnchors.length) return "required anchors are empty";
+  if (!validatedProposal.requiredAnchors.length)
+    return "required anchors are empty";
   if (anchors.length > MAX_ANCHORS) return "too many anchors";
   if (anchors.some((anchor) => !anchor.trim())) return "anchor is empty";
   if (
@@ -103,7 +143,20 @@ function templateProblem(
     return "anchor is duplicated";
   }
 
-  const rules = [proposal.amount, proposal.merchant, proposal.transactionDate];
+  const rules = [
+    validatedProposal.amount,
+    validatedProposal.merchant,
+    validatedProposal.transactionDate,
+  ];
+  if (
+    rules.some(
+      (rule) =>
+        typeof rule.after !== "string" ||
+        (rule.before !== undefined && typeof rule.before !== "string"),
+    )
+  ) {
+    return "capture boundary is invalid";
+  }
   const boundaries = rules.flatMap((rule) =>
     rule.before === undefined ? [rule.after] : [rule.after, rule.before],
   );
@@ -206,32 +259,37 @@ export function hasAlignedSenderAuthentication(
 
 export function validateEmailTemplateProposal(
   input: EmailParserInput,
-  proposal: EmailParserTemplateProposalDto,
+  proposal: unknown,
 ): EmailTemplateValidationResult {
   const problem = templateProblem(proposal);
   if (problem) return { ok: false, reason: problem };
+  const validatedProposal = proposal as EmailParserTemplateProposalDto;
 
   const lower = input.normalizedText.toLowerCase();
   if (
-    proposal.requiredAnchors.some(
+    validatedProposal.requiredAnchors.some(
       (anchor) => !lower.includes(anchor.toLowerCase()),
     )
   ) {
     return { ok: false, reason: "required anchor was not found" };
   }
   if (
-    proposal.forbiddenAnchors?.some((anchor) =>
+    validatedProposal.forbiddenAnchors?.some((anchor) =>
       lower.includes(anchor.toLowerCase()),
     )
   ) {
     return { ok: false, reason: "forbidden anchor was found" };
   }
 
-  const parsed = parseProposal(input, proposal);
+  const parsed = parseProposal(input, validatedProposal);
   if (!parsed)
     return { ok: false, reason: "proposal did not produce a transaction" };
 
-  return { ok: true, fingerprint: fingerprint(input, proposal), parsed };
+  return {
+    ok: true,
+    fingerprint: fingerprint(input, validatedProposal),
+    parsed,
+  };
 }
 
 export function parseLearnedEmailTemplate(

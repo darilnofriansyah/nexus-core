@@ -176,6 +176,19 @@ interface InsertedTransactionRow extends QueryResultRow {
   id: string | number;
 }
 
+interface EmailReviewTransactionRow extends QueryResultRow {
+  id: string | number;
+  user_id: string | number;
+  transaction_type: NormalizedTransactionType;
+  amount: string | number;
+  merchant: string;
+  merchant_normalized: string;
+  category: string;
+  transaction_date: string | Date;
+  status: "pending";
+  confidence: string | number;
+}
+
 interface InsertedImportRow extends QueryResultRow {
   id: string | number;
 }
@@ -919,6 +932,7 @@ export class TransactionService {
     const transaction = await this.saveEmailReviewTransaction({
       userId: validated.userId,
       transactionId: validated.transactionId,
+      messageId: validated.email.messageId,
       candidate: {
         ...validated.candidate,
         category,
@@ -926,15 +940,6 @@ export class TransactionService {
       confidence: validated.resolution.confidence,
       rawPayload: validated.rawPayload,
     });
-
-    if (!validated.transactionId) {
-      await this.attachPendingEmailReviewImport({
-        userId: validated.userId,
-        messageId: validated.email.messageId,
-        transactionId: transaction.id,
-        rawPayload: validated.rawPayload,
-      });
-    }
 
     const telegramText = this.buildEmailReviewTelegramText({
       status: "pending",
@@ -1733,6 +1738,14 @@ export class TransactionService {
       );
     }
 
+    if (
+      (typeof candidate.amount === "number" && candidate.amount < 0) ||
+      (typeof candidate.amount === "string" &&
+        candidate.amount.trimStart().startsWith("-"))
+    ) {
+      throw new BadRequestException("amount must be positive");
+    }
+
     const amount = this.normalizeAmount(candidate.amount);
 
     if (amount <= 0) {
@@ -1815,6 +1828,7 @@ export class TransactionService {
   private async saveEmailReviewTransaction(input: {
     userId: string;
     transactionId: string | null;
+    messageId: string;
     candidate: ValidatedEmailCandidateReview["candidate"] & {
       category: string;
     };
@@ -1836,58 +1850,151 @@ export class TransactionService {
       input.confidence,
       input.rawPayload,
     ];
-    const result = input.transactionId
-      ? await this.database.query<InsertedTransactionRow>(
+
+    if (!input.transactionId) {
+      return this.database.withTransaction(async (client) => {
+        const importResult = await client.query<ExistingImportRow>(
           `
-            UPDATE transactions
-            SET transaction_type = $2,
-                amount = $3,
-                merchant = $4,
-                merchant_normalized = $5,
-                category = $6,
-                transaction_date = $7,
-                notes = $8,
-                status = 'pending',
-                confidence = $10,
-                raw_payload = $11,
-                updated_at = now()
-            WHERE id::text = $12
-              AND user_id::text = $1
+            SELECT id, transaction_id, status
+            FROM transaction_imports
+            WHERE user_id::text = $1
               AND source = 'email'
-              AND status = 'pending'
+              AND source_reference = $2
+            LIMIT 1
+            FOR UPDATE
+          `,
+          [input.userId, input.messageId],
+        );
+        const emailImport = importResult.rows[0];
+
+        if (!emailImport) {
+          throw new BadRequestException("email import was not found");
+        }
+
+        if (emailImport.transaction_id !== null) {
+          const existing = await client.query<EmailReviewTransactionRow>(
+            `
+              SELECT id,
+                     user_id,
+                     transaction_type,
+                     amount,
+                     merchant,
+                     merchant_normalized,
+                     category,
+                     transaction_date,
+                     status,
+                     confidence
+              FROM transactions
+              WHERE id::text = $1
+                AND user_id::text = $2
+                AND source = 'email'
+                AND status = 'pending'
+              LIMIT 1
+            `,
+            [String(emailImport.transaction_id), input.userId],
+          );
+          const existingTransaction = existing.rows[0];
+
+          if (!existingTransaction) {
+            throw new BadRequestException(
+              "import-linked pending transaction was not found",
+            );
+          }
+
+          return this.mapEmailReviewTransaction(existingTransaction);
+        }
+
+        const inserted = await client.query<InsertedTransactionRow>(
+          `
+            INSERT INTO transactions (
+              user_id,
+              transaction_type,
+              amount,
+              merchant,
+              merchant_normalized,
+              category,
+              transaction_date,
+              source,
+              notes,
+              status,
+              confidence,
+              raw_payload
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, 'email', $8, $9, $10, $11)
             RETURNING id
           `,
-          [...values, input.transactionId],
-        )
-      : await this.database.query<InsertedTransactionRow>(
-          `
-        INSERT INTO transactions (
-          user_id,
-          transaction_type,
-          amount,
-          merchant,
-          merchant_normalized,
-          category,
-          transaction_date,
-          source,
-          notes,
-          status,
-          confidence,
-          raw_payload
-        )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, 'email', $8, $9, $10, $11)
-        RETURNING id
-      `,
           values,
         );
-    const insertedId = result.rows[0]?.id;
+        const insertedId = inserted.rows[0]?.id;
 
-    if (insertedId === undefined) {
+        if (insertedId === undefined) {
+          throw new BadRequestException("pending email transaction save failed");
+        }
+
+        const attached = await client.query<InsertedImportRow>(
+          `
+            UPDATE transaction_imports
+            SET transaction_id = $1,
+                status = 'pending',
+                raw_payload = $2
+            WHERE id::text = $3
+              AND transaction_id IS NULL
+            RETURNING id
+          `,
+          [insertedId, input.rawPayload, String(emailImport.id)],
+        );
+
+        if (!attached.rows[0]) {
+          throw new BadRequestException("email import attachment failed");
+        }
+
+        return this.buildEmailReviewTransaction(input, insertedId);
+      });
+    }
+
+    const result = await this.database.query<InsertedTransactionRow>(
+      `
+        UPDATE transactions
+        SET transaction_type = $2,
+            amount = $3,
+            merchant = $4,
+            merchant_normalized = $5,
+            category = $6,
+            transaction_date = $7,
+            notes = $8,
+            status = 'pending',
+            confidence = $10,
+            raw_payload = $11,
+            updated_at = now()
+        WHERE id::text = $12
+          AND user_id::text = $1
+          AND source = 'email'
+          AND status = 'pending'
+        RETURNING id
+      `,
+      [...values, input.transactionId],
+    );
+    const updatedId = result.rows[0]?.id;
+
+    if (updatedId === undefined) {
       throw new BadRequestException("pending email transaction save failed");
     }
 
+    return this.buildEmailReviewTransaction(input, updatedId);
+  }
+
+  private buildEmailReviewTransaction(
+    input: {
+      userId: string;
+      candidate: ValidatedEmailCandidateReview["candidate"] & {
+        category: string;
+      };
+      confidence: number;
+    },
+    transactionId: string | number,
+  ): NonNullable<EmailTransactionResolveReviewResponseDto["transaction"]> {
     return {
-      id: String(insertedId),
+      id: String(transactionId),
       userId: input.userId,
       transactionType: input.candidate.transactionType,
       amount: input.candidate.amount,
@@ -1898,6 +2005,27 @@ export class TransactionService {
       source: "email",
       status: "pending",
       confidence: input.confidence,
+    };
+  }
+
+  private mapEmailReviewTransaction(
+    row: EmailReviewTransactionRow,
+  ): NonNullable<EmailTransactionResolveReviewResponseDto["transaction"]> {
+    return {
+      id: String(row.id),
+      userId: String(row.user_id),
+      transactionType: row.transaction_type,
+      amount: this.normalizeAmount(row.amount),
+      merchant: row.merchant,
+      merchantNormalized: row.merchant_normalized,
+      category: row.category,
+      transactionDate:
+        row.transaction_date instanceof Date
+          ? row.transaction_date.toISOString()
+          : this.normalizeTransactionDate(row.transaction_date),
+      source: "email",
+      status: "pending",
+      confidence: this.normalizeConfidence(Number(row.confidence)),
     };
   }
 
@@ -1919,26 +2047,6 @@ export class TransactionService {
     );
 
     return result.rows[0];
-  }
-
-  private async attachPendingEmailReviewImport(input: {
-    userId: string;
-    messageId: string;
-    transactionId: string;
-    rawPayload: ValidatedEmailCandidateReview["rawPayload"];
-  }): Promise<void> {
-    await this.database.query(
-      `
-        UPDATE transaction_imports
-        SET transaction_id = $1,
-            status = 'pending',
-            raw_payload = $2
-        WHERE user_id::text = $3
-          AND source = 'email'
-          AND source_reference = $4
-      `,
-      [input.transactionId, input.rawPayload, input.userId, input.messageId],
-    );
   }
 
   private async recordEmailAiFailure(

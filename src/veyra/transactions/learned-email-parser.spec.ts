@@ -168,6 +168,25 @@ test("requires the fixed capture kinds", () => {
   }
 });
 
+test("returns invalid for structurally malformed proposals", () => {
+  const parserInput = input(
+    "Merchant: Tuku Jumlah: Rp25.000 Tanggal: 25 Juni 2026 09:30",
+  );
+  const malformed = [
+    {},
+    { ...proposal(), requiredAnchors: "Merchant:" },
+    { ...proposal(), forbiddenAnchors: [1] },
+    { ...proposal(), amount: {} },
+    { ...proposal(), merchant: { kind: "text" } },
+    { ...proposal(), transactionDate: null },
+  ];
+
+  for (const value of malformed) {
+    const result = validateEmailTemplateProposal(parserInput, value);
+    assert.equal(result.ok, false);
+  }
+});
+
 test("detects transactions but rejects marketing email", () => {
   assert.equal(
     isLikelyTransactionEmail(
