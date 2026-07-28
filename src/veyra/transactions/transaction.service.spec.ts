@@ -185,7 +185,7 @@ function createManageStateStore(initialState?: {
 
 const pendingTransaction = {
   id: "pending-1",
-  user_id: "user-1",
+  user_id: "1",
   transaction_type: "expense",
   amount: "50000",
   merchant: "gopay",
@@ -200,8 +200,8 @@ const pendingTransaction = {
 };
 
 const transaction = {
-  id: "tx-1",
-  user_id: "user-1",
+  id: "101",
+  user_id: "1",
   amount: "50000",
   merchant: "gopay",
   merchant_normalized: "GoPay",
@@ -508,14 +508,14 @@ test("normalizes a basic expense transaction", async () => {
   const { service } = createService([[], []]);
 
   const result = await service.normalizeTransaction({
-    userId: "user-1",
+    userId: "1",
     transactionType: "expense",
     amount: "Rp50.000",
     merchant: " gopay ",
     transactionDate: "2026-06-17T10:00:00.000Z",
   });
 
-  assert.equal(result.userId, "user-1");
+  assert.equal(result.userId, "1");
   assert.equal(result.transactionType, "expense");
   assert.equal(result.amount, 50000);
   assert.equal(result.merchant, "gopay");
@@ -530,7 +530,7 @@ test("normalizes uppercase transaction type", async () => {
   const { service } = createService([[], []]);
 
   const result = await service.normalizeTransaction({
-    userId: "user-1",
+    userId: "1",
     transactionType: " INCOME ",
     amount: 75000,
     merchant: "Payroll",
@@ -543,7 +543,7 @@ test("normalizes income without merchant or category", async () => {
   const { calls, service } = createService();
 
   const result = await service.normalizeTransaction({
-    userId: "user-1",
+    userId: "1",
     transactionType: "income",
     amount: 19_828_000,
     merchant: "",
@@ -559,13 +559,13 @@ test("maps refund cashback and reversal cases safely", async () => {
   const { service } = createService([[], [], [], []]);
 
   const cashback = await service.normalizeTransaction({
-    userId: "user-1",
+    userId: "1",
     transactionType: "cashback",
     amount: 10000,
     merchant: "Bank Promo",
   });
   const reversal = await service.normalizeTransaction({
-    userId: "user-1",
+    userId: "1",
     transactionType: "expense",
     amount: 50000,
     merchant: "Card",
@@ -586,7 +586,7 @@ test("uses merchant alias lookup when available", async () => {
   const { calls, service } = createService([[{ canonical_name: "GoPay" }], []]);
 
   const result = await service.normalizeTransaction({
-    userId: "user-1",
+    userId: "1",
     transactionType: "expense",
     amount: 50000,
     merchant: "gopay",
@@ -606,7 +606,7 @@ test("keeps original merchant when alias lookup misses", async () => {
   const { calls, service } = createService([[], []]);
 
   const result = await service.normalizeTransaction({
-    userId: "user-1",
+    userId: "1",
     transactionType: "expense",
     amount: "IDR 50,000.00",
     merchant: "Coffee Shop",
@@ -626,7 +626,7 @@ test("uses category rule lookup when available", async () => {
   ]);
 
   const result = await service.normalizeTransaction({
-    userId: "user-1",
+    userId: "1",
     transactionType: "expense",
     amount: 50000,
     merchant: "gopay",
@@ -648,7 +648,7 @@ test("rejects invalid amount", async () => {
   await assert.rejects(
     () =>
       service.normalizeTransaction({
-        userId: "user-1",
+        userId: "1",
         transactionType: "expense",
         amount: 0,
         merchant: "gopay",
@@ -663,7 +663,7 @@ test("rejects missing merchant for expense", async () => {
   await assert.rejects(
     () =>
       service.normalizeTransaction({
-        userId: "user-1",
+        userId: "1",
         transactionType: "expense",
         amount: 50000,
         merchant: " ",
@@ -677,7 +677,7 @@ test("defaults optional fields", async () => {
 
   const before = Date.now();
   const result = await service.normalizeTransaction({
-    userId: "user-1",
+    userId: "1",
     transactionType: "expense",
     amount: 50000,
     merchant: "gopay",
@@ -693,7 +693,7 @@ test("defaults optional fields", async () => {
 });
 
 test("handles manual transaction with decimal confidence as confirmed", async () => {
-  const { calls, service } = createService([[], [{ id: "tx-123" }]]);
+  const { calls, service } = createService([[], [{ id: "10123" }]]);
 
   const result = await service.handleManualTransaction({
     telegramUserId: "976684739",
@@ -713,7 +713,7 @@ test("handles manual transaction with decimal confidence as confirmed", async ()
   });
 
   assert.equal(result.status, "confirmed");
-  assert.equal(result.transactionId, "tx-123");
+  assert.equal(result.transactionId, "10123");
   assert.match(
     result.message,
     /Recorded: Rp25\.000 at Kopi Tuku under Coffee\./,
@@ -1168,10 +1168,10 @@ test("rejects missing required transaction fields without saving", async () => {
 test("confirms a pending transaction created by manual handle", async () => {
   const { calls, service } = createService([
     [],
-    [{ id: "tx-created" }],
+    [{ id: "102" }],
     [
       {
-        id: "tx-created",
+        id: "102",
         user_id: "1",
         transaction_type: "expense",
         amount: "25000",
@@ -1184,7 +1184,7 @@ test("confirms a pending transaction created by manual handle", async () => {
     ],
     [
       {
-        id: "tx-created",
+        id: "102",
         user_id: "1",
         amount: "25000",
         merchant: "kopi tuku",
@@ -1214,7 +1214,7 @@ test("confirms a pending transaction created by manual handle", async () => {
 
   assert.equal(handleResult.status, "pending");
   assert.equal(confirmResult.status, "confirmed");
-  assert.deepEqual(calls[4].values, ["confirmed", "tx-created", "1"]);
+  assert.deepEqual(calls[4].values, ["confirmed", "102", "1"]);
   assert.match(calls[4].text, /UPDATE transactions/);
 });
 
@@ -1223,8 +1223,8 @@ test("builds confirmation payload for normal pending transaction", () => {
 
   const result = service.buildConfirmationPayload({
     pendingTransactionId: "pending-1",
-    transactionId: "tx-1",
-    userId: "user-1",
+    transactionId: "101",
+    userId: "1",
     transactionType: "expense",
     amount: 50000,
     merchant: "gopay",
@@ -1245,10 +1245,10 @@ test("builds confirmation payload for normal pending transaction", () => {
   assert.equal(result.parseMode, "HTML");
   assert.deepEqual(result.replyMarkup.inline_keyboard, [
     [
-      { text: "Save", callback_data: "save_transaction:tx-1" },
-      { text: "Change Category", callback_data: "change_categories:tx-1" },
+      { text: "Save", callback_data: "save_transaction:101" },
+      { text: "Change Category", callback_data: "change_categories:101" },
     ],
-    [{ text: "Cancel", callback_data: "cancel_transaction:tx-1" }],
+    [{ text: "Cancel", callback_data: "cancel_transaction:101" }],
   ]);
   assert.equal(
     result.replyMarkup.inline_keyboard
@@ -1270,7 +1270,7 @@ test("builds readable confirmation payload without pendingTransactionId", () => 
   const { service } = createService();
 
   const result = service.buildConfirmationPayload({
-    userId: "user-1",
+    userId: "1",
     transactionType: "expense",
     amount: 50000,
     merchant: "gopay",
@@ -1295,7 +1295,7 @@ test("builds experimental tx callbacks only in experimental mode", () => {
     pendingTransactionId: "pending-1",
     callbackMode: "experimental",
     format: "plain",
-    userId: "user-1",
+    userId: "1",
     transactionType: "expense",
     amount: 50000,
     merchant: "gopay",
@@ -1319,8 +1319,8 @@ test("includes low confidence transaction in confirmation text", () => {
 
   const result = service.buildConfirmationPayload({
     pendingTransactionId: "pending-1",
-    transactionId: "tx-1",
-    userId: "user-1",
+    transactionId: "101",
+    userId: "1",
     transactionType: "expense",
     amount: 50000,
     merchant: "gopay",
@@ -1341,7 +1341,7 @@ test("builds income confirmation payload", () => {
 
   const result = service.buildConfirmationPayload({
     pendingTransactionId: "pending-income",
-    userId: "user-1",
+    userId: "1",
     transactionType: "income",
     amount: 2500000,
     merchant: "Payroll",
@@ -1362,7 +1362,7 @@ test("builds expense confirmation payload", () => {
 
   const result = service.buildConfirmationPayload({
     pendingTransactionId: "pending-expense",
-    userId: "user-1",
+    userId: "1",
     transactionType: "expense",
     amount: 125000,
     merchant: "Coffee Shop",
@@ -1380,8 +1380,8 @@ test("builds manual confirmation payload snapshot with wallet and notes", () => 
   const { service } = createService();
 
   const result = service.buildConfirmationPayload({
-    transactionId: "tx-manual",
-    userId: "user-1",
+    transactionId: "103",
+    userId: "1",
     transactionType: "expense",
     amount: 75000,
     merchant: "Coffee Shop",
@@ -1399,13 +1399,13 @@ test("builds manual confirmation payload snapshot with wallet and notes", () => 
   assert.equal(result.parseMode, null);
   assert.deepEqual(result.replyMarkup.inline_keyboard, [
     [
-      { text: "Save", callback_data: "save_transaction:tx-manual" },
+      { text: "Save", callback_data: "save_transaction:103" },
       {
         text: "Change Category",
-        callback_data: "change_categories:tx-manual",
+        callback_data: "change_categories:103",
       },
     ],
-    [{ text: "Cancel", callback_data: "cancel_transaction:tx-manual" }],
+    [{ text: "Cancel", callback_data: "cancel_transaction:103" }],
   ]);
 });
 
@@ -1414,7 +1414,7 @@ test("builds email confirmation payload snapshot with escaped HTML", () => {
 
   const result = service.buildConfirmationPayload({
     transactionId: "tx-email",
-    userId: "user-1",
+    userId: "1",
     transactionType: "expense",
     amount: 125000,
     merchant: "R&D <Cafe>",
@@ -1438,7 +1438,7 @@ test("displays normalization warnings in confirmation text", () => {
   const result = service.buildConfirmationPayload({
     pendingTransactionId: "pending-warning",
     transactionId: "tx-warning",
-    userId: "user-1",
+    userId: "1",
     transactionType: "income",
     amount: 10000,
     merchant: "Bank Promo",
@@ -1457,8 +1457,8 @@ test("confirms a pending transaction row", async () => {
   const { calls, service } = createService([
     [
       {
-        id: "tx-1",
-        user_id: "user-1",
+        id: "101",
+        user_id: "1",
         amount: "50000",
         merchant: "gopay",
         merchant_normalized: "GoPay",
@@ -1470,30 +1470,30 @@ test("confirms a pending transaction row", async () => {
   ]);
 
   const result = await service.confirmTransaction({
-    transactionId: "tx-1",
-    userId: "user-1",
+    transactionId: "101",
+    userId: "1",
   });
 
   assert.deepEqual(result, {
     status: "confirmed",
-    transactionId: "tx-1",
-    userId: "user-1",
+    transactionId: "101",
+    userId: "1",
     summary: {
       amount: 50000,
       merchant: "GoPay",
       category: "Transport",
     },
     editMessage: {
-      text: "Transaction tx-1 confirmed: GoPay • Rp50.000",
+      text: "Transaction 101 confirmed: GoPay • Rp50.000",
       parseMode: null,
     },
     notifications: [],
   });
-  assert.deepEqual(calls[0].values, ["tx-1", "user-1"]);
+  assert.deepEqual(calls[0].values, ["101", "1"]);
   assert.match(calls[0].text, /FROM transactions/);
   assert.match(calls[1].text, /UPDATE transactions/);
   assert.match(calls[1].text, /updated_at = now\(\)/);
-  assert.deepEqual(calls[1].values, ["confirmed", "tx-1", "user-1"]);
+  assert.deepEqual(calls[1].values, ["confirmed", "101", "1"]);
 });
 
 test("confirmed transaction appends watchdog warning text", async () => {
@@ -1525,8 +1525,8 @@ test("confirmed transaction appends watchdog warning text", async () => {
     [
       [
         {
-          id: "tx-1",
-          user_id: "user-1",
+          id: "101",
+          user_id: "1",
           transaction_type: "expense",
           transaction_date: "2026-06-25",
           amount: "50000",
@@ -1539,8 +1539,8 @@ test("confirmed transaction appends watchdog warning text", async () => {
       [],
       [
         {
-          id: "tx-1",
-          user_id: "user-1",
+          id: "101",
+          user_id: "1",
           transaction_type: "expense",
           transaction_date: "2026-06-25",
           amount: "50000",
@@ -1555,8 +1555,8 @@ test("confirmed transaction appends watchdog warning text", async () => {
   );
 
   const result = await service.confirmTransaction({
-    transactionId: "tx-1",
-    userId: "user-1",
+    transactionId: "101",
+    userId: "1",
   });
 
   assert.equal(result.watchdog, watchdog);
@@ -1576,8 +1576,8 @@ test("cancels a pending transaction row", async () => {
   const { calls, service } = createService([
     [
       {
-        id: "tx-1",
-        user_id: "user-1",
+        id: "101",
+        user_id: "1",
         amount: "50000",
         merchant: "gopay",
         merchant_normalized: "GoPay",
@@ -1589,8 +1589,8 @@ test("cancels a pending transaction row", async () => {
   ]);
 
   const result = await service.cancelTransaction({
-    transactionId: "tx-1",
-    userId: "user-1",
+    transactionId: "101",
+    userId: "1",
   });
 
   assert.equal(result.status, "rejected");
@@ -1600,19 +1600,19 @@ test("cancels a pending transaction row", async () => {
     category: "Transport",
   });
   assert.deepEqual(result.editMessage, {
-    text: "Transaction tx-1 cancelled.",
+    text: "Transaction 101 cancelled.",
     parseMode: null,
   });
   assert.match(calls[1].text, /UPDATE transactions/);
-  assert.deepEqual(calls[1].values, ["rejected", "tx-1", "user-1"]);
+  assert.deepEqual(calls[1].values, ["rejected", "101", "1"]);
 });
 
 test("returns already_confirmed without updating transaction row", async () => {
   const { calls, service } = createService([
     [
       {
-        id: "tx-1",
-        user_id: "user-1",
+        id: "101",
+        user_id: "1",
         amount: "50000",
         merchant: "gopay",
         merchant_normalized: "GoPay",
@@ -1623,8 +1623,8 @@ test("returns already_confirmed without updating transaction row", async () => {
   ]);
 
   const result = await service.confirmTransaction({
-    transactionId: "tx-1",
-    userId: "user-1",
+    transactionId: "101",
+    userId: "1",
   });
 
   assert.equal(result.status, "already_confirmed");
@@ -1635,8 +1635,8 @@ test("returns already_rejected without updating transaction row", async () => {
   const { calls, service } = createService([
     [
       {
-        id: "tx-1",
-        user_id: "user-1",
+        id: "101",
+        user_id: "1",
         amount: "50000",
         merchant: "gopay",
         merchant_normalized: "GoPay",
@@ -1647,8 +1647,8 @@ test("returns already_rejected without updating transaction row", async () => {
   ]);
 
   const result = await service.cancelTransaction({
-    transactionId: "tx-1",
-    userId: "user-1",
+    transactionId: "101",
+    userId: "1",
   });
 
   assert.equal(result.status, "already_rejected");
@@ -1659,14 +1659,14 @@ test("returns not_found when transaction row does not exist", async () => {
   const { calls, service } = createService([[]]);
 
   const result = await service.confirmTransaction({
-    transactionId: "missing",
-    userId: "user-1",
+    transactionId: "999",
+    userId: "1",
   });
 
   assert.deepEqual(result, {
     status: "not_found",
-    transactionId: "missing",
-    userId: "user-1",
+    transactionId: "999",
+    userId: "1",
     summary: null,
     editMessage: null,
   });
@@ -1677,18 +1677,18 @@ test("returns not_found for transaction owned by a different user", async () => 
   const { calls, service } = createService([[]]);
 
   const result = await service.confirmTransaction({
-    transactionId: "tx-1",
-    userId: "user-2",
+    transactionId: "101",
+    userId: "2",
   });
 
   assert.deepEqual(result, {
     status: "not_found",
-    transactionId: "tx-1",
-    userId: "user-2",
+    transactionId: "101",
+    userId: "2",
     summary: null,
     editMessage: null,
   });
-  assert.deepEqual(calls[0].values, ["tx-1", "user-2"]);
+  assert.deepEqual(calls[0].values, ["101", "2"]);
   assert.match(calls[0].text, /AND user_id = \$2/);
   assert.doesNotMatch(calls[0].text, /::text/);
   assert.equal(calls.length, 1);
@@ -1703,8 +1703,8 @@ test("builds category options for pending transaction", async () => {
 
   const result = await service.buildCategoryOptions({
     pendingTransactionId: "pending-1",
-    transactionId: "tx-1",
-    userId: "user-1",
+    transactionId: "101",
+    userId: "1",
   });
 
   assert.equal(result.status, "ok");
@@ -1718,7 +1718,7 @@ test("returns not_found for missing category options pending transaction", async
 
   const result = await service.buildCategoryOptions({
     pendingTransactionId: "missing",
-    userId: "user-1",
+    userId: "1",
   });
 
   assert.deepEqual(result, {
@@ -1736,7 +1736,7 @@ test("returns already_resolved for category options resolved transaction", async
 
   const result = await service.buildCategoryOptions({
     pendingTransactionId: "pending-1",
-    userId: "user-1",
+    userId: "1",
   });
 
   assert.deepEqual(result, {
@@ -1754,7 +1754,7 @@ test("rejects invalid category selection", async () => {
     () =>
       service.setPendingTransactionCategory({
         pendingTransactionId: "pending-1",
-        userId: "user-1",
+        userId: "1",
         category: "Travel",
       }),
     BadRequestException,
@@ -1766,14 +1766,14 @@ test("sets pending transaction category and returns confirmation payload", async
 
   const result = await service.setPendingTransactionCategory({
     pendingTransactionId: "pending-1",
-    userId: "user-1",
+    userId: "1",
     category: "Food",
   });
 
   assert.equal(result.status, "updated");
   assert.equal(result.confirmationPayload?.summary.category, "Food");
   assert.match(result.confirmationPayload?.text ?? "", /Category: Food/);
-  assert.deepEqual(calls[1].values, ["Food", "pending-1", "user-1"]);
+  assert.deepEqual(calls[1].values, ["Food", "pending-1", "1"]);
   assert.match(calls[1].text, /UPDATE pending_transactions/);
   assert.match(calls[1].text, /category_suggested/);
 });
@@ -1787,8 +1787,8 @@ test("formats production category callback data with budget and transaction ids"
 
   const result = await service.buildCategoryOptions({
     pendingTransactionId: "pending-1",
-    transactionId: "tx-1",
-    userId: "user-1",
+    transactionId: "101",
+    userId: "1",
   });
 
   const buttons = result.replyMarkup?.inline_keyboard.flat() ?? [];
@@ -1796,15 +1796,15 @@ test("formats production category callback data with budget and transaction ids"
   assert.deepEqual(
     buttons.map((button) => button.callback_data),
     [
-      "catid:budget-food:tx-1",
-      "catid:budget-transport:tx-1",
-      "catid:budget-groceries:tx-1",
-      "catid:budget-bills:tx-1",
-      "catid:budget-health:tx-1",
-      "catid:budget-shopping:tx-1",
-      "catid:budget-entertainment:tx-1",
-      "catid:budget-transfer:tx-1",
-      "catid:budget-other:tx-1",
+      "catid:budget-food:101",
+      "catid:budget-transport:101",
+      "catid:budget-groceries:101",
+      "catid:budget-bills:101",
+      "catid:budget-health:101",
+      "catid:budget-shopping:101",
+      "catid:budget-entertainment:101",
+      "catid:budget-transfer:101",
+      "catid:budget-other:101",
     ],
   );
   assert.equal(
@@ -1829,15 +1829,15 @@ test("builds production category options from custom leaf budgets", async () => 
 
   const result = await service.buildCategoryOptions({
     pendingTransactionId: "pending-1",
-    transactionId: "tx-1",
-    userId: "user-1",
+    transactionId: "101",
+    userId: "1",
   });
 
   const buttons = result.replyMarkup?.inline_keyboard.flat() ?? [];
 
   assert.deepEqual(
     buttons.map((button) => button.callback_data),
-    ["catid:budget-dining:tx-1", "catid:budget-meds:tx-1"],
+    ["catid:budget-dining:101", "catid:budget-meds:101"],
   );
   assert.equal(buttons[0].text.length, 32);
   assert.equal(buttons[0].text, "Food / Dining Out With A Very...");
@@ -1851,8 +1851,8 @@ test("falls back to production default categories when user has no active leaf b
 
   const result = await service.buildCategoryOptions({
     pendingTransactionId: "pending-1",
-    transactionId: "tx-1",
-    userId: "user-1",
+    transactionId: "101",
+    userId: "1",
   });
 
   const buttons = result.replyMarkup?.inline_keyboard.flat() ?? [];
@@ -1877,13 +1877,13 @@ test("rejects category selection with unauthorized budget id", async () => {
   const { service } = createService([[transaction], []]);
 
   const result = await service.setPendingTransactionCategory({
-    transactionId: "tx-1",
+    transactionId: "101",
     budgetId: "budget-other-user",
-    userId: "user-1",
+    userId: "1",
   });
 
   assert.equal(result.status, "unauthorized_budget");
-  assert.equal(result.transactionId, "tx-1");
+  assert.equal(result.transactionId, "101");
   assert.equal(result.editMessage, null);
 });
 
@@ -1895,19 +1895,19 @@ test("sets transaction category and confirms on production category selection", 
   ]);
 
   const result = await service.setPendingTransactionCategory({
-    transactionId: "tx-1",
+    transactionId: "101",
     budgetId: "budget-food",
-    userId: "user-1",
+    userId: "1",
   });
 
   assert.equal(result.status, "updated");
-  assert.equal(result.transactionId, "tx-1");
+  assert.equal(result.transactionId, "101");
   assert.equal(result.summary?.category, "Food");
   assert.equal(
     result.editMessage?.text,
-    "Transaction tx-1 confirmed: GoPay • Rp50.000",
+    "Transaction 101 confirmed: GoPay • Rp50.000",
   );
-  assert.deepEqual(calls[2].values, ["Food", "tx-1", "user-1"]);
+  assert.deepEqual(calls[2].values, ["Food", "101", "1"]);
   assert.match(calls[2].text, /UPDATE transactions/);
   assert.match(calls[2].text, /status = 'confirmed'/);
 });
@@ -2701,7 +2701,7 @@ test("formats experimental set category callback data only in experimental mode"
   const result = await service.buildCategoryOptions({
     pendingTransactionId: "pending-1",
     callbackMode: "experimental",
-    userId: "user-1",
+    userId: "1",
   });
 
   const buttons = result.replyMarkup?.inline_keyboard.flat() ?? [];
@@ -2768,6 +2768,265 @@ test("keeps every AI result pending and stores only a validated proposal", async
   );
   assert.match(calls[4].text, /UPDATE transaction_imports/);
   assert.deepEqual(calls[4].values, ["123", rawPayload, "import-1"]);
+});
+
+test("preserves the exact legacy candidate-only review contract without learning", async () => {
+  const legacyRequest = {
+    telegramUserId: "976684739",
+    transactionCandidate: aiCandidate,
+    resolution: { category: "Food", confidence: 98, resolver: "llm" },
+  } as unknown as EmailTransactionResolveReviewRequestDto;
+  const resolved = createService([
+    [
+      {
+        id: "1",
+        telegram_id: "976684739",
+        timezone: "Asia/Jakarta",
+      },
+    ],
+    [{ category: "Food" }],
+    [{ id: "123" }],
+  ]);
+
+  const result =
+    await resolved.service.resolveEmailTransactionReview(legacyRequest);
+
+  assert.equal(result.status, "pending");
+  assert.equal(result.transaction?.id, "123");
+  assert.equal(
+    resolved.calls.some((call) => /transaction_imports/.test(call.text)),
+    false,
+  );
+  const insert = resolved.calls.find((call) =>
+    /INSERT INTO transactions/.test(call.text),
+  );
+  assert.ok(insert);
+  const rawPayload = insert.values.at(-1) as Record<string, unknown>;
+  assert.equal(rawPayload.parserSource, undefined);
+  assert.equal(rawPayload.validatedTemplate, undefined);
+  assert.equal(rawPayload.email, undefined);
+
+  const legacyPending = {
+    ...pendingAiTransaction,
+    raw_payload: rawPayload,
+  };
+  const templates = createTemplateRepository();
+  const confirmation = createService(
+    [
+      [legacyPending],
+      [{ ...legacyPending, status: "confirmed" }],
+      [],
+    ],
+    undefined,
+    undefined,
+    templates.repository,
+  );
+  spyOnWatchdog(confirmation.service);
+
+  const confirmed = await confirmation.service.confirmTransaction({
+    transactionId: "123",
+    userId: "1",
+  });
+
+  assert.equal(confirmed.status, "confirmed");
+  assert.equal(
+    templates.calls.some((call) => call.method === "activate"),
+    false,
+  );
+});
+
+test("legacy compatibility does not admit adaptive requests without email identity", async () => {
+  for (const adaptiveFields of [
+    { templateProposal: learnedProposal },
+    { transactionId: "123" },
+    { aiError: "model unavailable" },
+    { isTransaction: false },
+    { futureMode: "legacy" },
+  ]) {
+    const request = {
+      telegramUserId: "976684739",
+      transactionCandidate: aiCandidate,
+      resolution: { category: "Food", confidence: 98, resolver: "llm" },
+      ...adaptiveFields,
+    } as unknown as EmailTransactionResolveReviewRequestDto;
+    const { calls, service } = createService([
+      [{ id: "1", telegram_id: "976684739" }],
+    ]);
+
+    await assert.rejects(
+      () => service.resolveEmailTransactionReview(request),
+      /email is required/,
+    );
+    assert.equal(
+      calls.some((call) => /INSERT|UPDATE/.test(call.text)),
+      false,
+    );
+  }
+});
+
+test("whitelists runtime email authentication before transaction and import persistence", async () => {
+  const injectedEmail = {
+    ...authenticatedUnknownKromEmail.email,
+    rawHeaders: { received: "must not persist" },
+    body: "must not persist",
+    authentication: {
+      dkim: " PASS ",
+      spf: 123,
+      dmarc: "fail",
+      domain: " KROM.ID. ",
+      emailText: "must not persist",
+      rawHeaders: { authenticationResults: "must not persist" },
+      body: "<html>must not persist</html>",
+    },
+  } as unknown as EmailTransactionMessageDto;
+  const { calls, service } = createService([
+    [{ id: "1", telegram_id: "976684739" }],
+    [{ category: "Food" }],
+    [{ id: "import-1", transaction_id: null, status: "needs_ai" }],
+    [{ id: "123" }],
+    [{ id: "import-1" }],
+  ]);
+
+  await service.resolveEmailTransactionReview(
+    validAiReviewRequest({
+      email: injectedEmail,
+      templateProposal: undefined,
+    }),
+  );
+
+  const transactionInsert = calls.find((call) =>
+    /INSERT INTO transactions/.test(call.text),
+  );
+  const importUpdate = calls.find(
+    (call) =>
+      /UPDATE transaction_imports/.test(call.text) &&
+      /raw_payload = \$2/.test(call.text),
+  );
+  const transactionPayload = transactionInsert?.values[10] as Record<
+    string,
+    unknown
+  >;
+  const importPayload = importUpdate?.values[1] as Record<string, unknown>;
+  const expectedAuthentication = {
+    dkim: "pass",
+    spf: "unknown",
+    dmarc: "fail",
+    domain: "krom.id",
+  };
+  assert.deepEqual(
+    (transactionPayload.email as Record<string, unknown>).authentication,
+    expectedAuthentication,
+  );
+  assert.deepEqual(importPayload, transactionPayload);
+  assert.doesNotMatch(
+    JSON.stringify([transactionPayload, importPayload]),
+    /emailText|rawHeaders|must not persist|<html>/,
+  );
+});
+
+test("drops an invalid or oversized authentication domain", async () => {
+  for (const domain of ["not a domain", "a".repeat(254)]) {
+    const email = {
+      ...authenticatedUnknownKromEmail.email,
+      authentication: {
+        dkim: "pass" as const,
+        spf: "pass" as const,
+        dmarc: "pass" as const,
+        domain,
+      },
+    };
+    const { calls, service } = createService([
+      [{ id: "1", telegram_id: "976684739" }],
+      [{ category: "Food" }],
+      [{ id: "import-1", transaction_id: null, status: "needs_ai" }],
+      [{ id: "123" }],
+      [{ id: "import-1" }],
+    ]);
+
+    await service.resolveEmailTransactionReview(
+      validAiReviewRequest({
+        email,
+        templateProposal: undefined,
+      }),
+    );
+
+    const insert = calls.find((call) =>
+      /INSERT INTO transactions/.test(call.text),
+    );
+    const rawPayload = insert?.values[10] as Record<string, unknown>;
+    const authentication = (
+      rawPayload.email as Record<string, unknown>
+    ).authentication as Record<string, unknown>;
+    assert.equal(authentication.domain, undefined);
+    assert.deepEqual(Object.keys(authentication).sort(), [
+      "dkim",
+      "dmarc",
+      "spf",
+    ]);
+  }
+});
+
+test("rejects unresolved expense merchants before initial or correction persistence", async () => {
+  for (const candidate of [
+    { ...aiCandidate, merchant: undefined, merchantNormalized: undefined },
+    { ...aiCandidate, merchant: " ", merchantNormalized: " " },
+    {
+      ...aiCandidate,
+      merchant: "Unknown",
+      merchantNormalized: "Unknown",
+    },
+  ]) {
+    for (const request of [
+      validAiReviewRequest({ transactionCandidate: candidate }),
+      validAiReviewRequest({
+        transactionId: "123",
+        transactionCandidate: candidate,
+      }),
+    ]) {
+      const { calls, service } = createService([
+        [{ id: "1", telegram_id: "976684739" }],
+      ]);
+
+      await assert.rejects(
+        () => service.resolveEmailTransactionReview(request),
+        /merchant is required for expense/,
+      );
+      assert.equal(
+        calls.some((call) => /INSERT|UPDATE transactions/.test(call.text)),
+        false,
+      );
+      assert.equal(
+        calls.some((call) => /FROM transactions/.test(call.text)),
+        false,
+      );
+    }
+  }
+});
+
+test("preserves missing merchant behavior for a non-expense AI candidate", async () => {
+  const { service } = createService([
+    [{ id: "1", telegram_id: "976684739" }],
+    [{ category: "Salary" }],
+    [{ id: "import-1", transaction_id: null, status: "needs_ai" }],
+    [{ id: "123" }],
+    [{ id: "import-1" }],
+  ]);
+
+  const result = await service.resolveEmailTransactionReview(
+    validAiReviewRequest({
+      transactionCandidate: {
+        ...aiCandidate,
+        transactionType: "income",
+        merchant: undefined,
+        merchantNormalized: undefined,
+      },
+      resolution: { category: "Salary", confidence: 98 },
+      templateProposal: undefined,
+    }),
+  );
+
+  assert.equal(result.status, "pending");
+  assert.equal(result.transaction?.merchant, "Unknown");
 });
 
 test("reuses the import-linked pending transaction on an initial AI retry", async () => {
@@ -3289,7 +3548,7 @@ test("uses a learned template after hard-coded parsers and skips AI", async () =
       [{ canonical_name: "Kopi Tuku" }],
       [{ category: "Food" }],
       [{ id: "import-1" }],
-      [{ id: "tx-1" }],
+      [{ id: "101" }],
       [],
       [],
     ],
@@ -3320,7 +3579,7 @@ test("learned auto-save succeeds when marking the template match fails", async (
       [{ canonical_name: "Kopi Tuku" }],
       [{ category: "Food" }],
       [{ id: "import-1" }],
-      [{ id: "tx-1" }],
+      [{ id: "101" }],
       [],
       [],
     ],
@@ -3334,7 +3593,7 @@ test("learned auto-save succeeds when marking the template match fails", async (
   );
 
   assert.equal(result.status, "confirmed");
-  assert.equal(result.transaction?.id, "tx-1");
+  assert.equal(result.transaction?.id, "101");
 });
 
 test("returns needs_ai for a likely transaction with no deterministic parser", async () => {
@@ -3699,7 +3958,7 @@ function spyOnWatchdog(
 }
 
 test("manual transaction save triggers watchdog", async () => {
-  const { service } = createService([[], [{ id: "tx-manual" }]]);
+  const { service } = createService([[], [{ id: "103" }]]);
   const watchdogCalls = spyOnWatchdog(service);
 
   const result = await service.handleManualTransaction({
@@ -3715,7 +3974,7 @@ test("manual transaction save triggers watchdog", async () => {
   });
 
   assert.equal(result.status, "confirmed");
-  assert.deepEqual(watchdogCalls, ["tx-manual"]);
+  assert.deepEqual(watchdogCalls, ["103"]);
 });
 
 test("email confirmed save triggers watchdog", async () => {
@@ -3912,12 +4171,12 @@ test("pending transaction confirm triggers watchdog", async () => {
   const watchdogCalls = spyOnWatchdog(service);
 
   const result = await service.confirmTransaction({
-    transactionId: "tx-1",
-    userId: "user-1",
+    transactionId: "101",
+    userId: "1",
   });
 
   assert.equal(result.status, "confirmed");
-  assert.deepEqual(watchdogCalls, ["tx-1"]);
+  assert.deepEqual(watchdogCalls, ["101"]);
 });
 
 test("pending transaction cancel skips watchdog", async () => {
@@ -3925,8 +4184,8 @@ test("pending transaction cancel skips watchdog", async () => {
   const watchdogCalls = spyOnWatchdog(service);
 
   const result = await service.cancelTransaction({
-    transactionId: "tx-1",
-    userId: "user-1",
+    transactionId: "101",
+    userId: "1",
   });
 
   assert.equal(result.status, "rejected");
@@ -4464,7 +4723,92 @@ test("clears the stored proposal after a material correction no longer matches i
   assert.equal(rawPayload.validatedTemplate, null);
 });
 
-test("AI failure cannot downgrade an import with a transaction", async () => {
+test("records a bound correction AI failure without downgrading its pending import", async () => {
+  const { calls, service } = createService([
+    [{ id: "1", telegram_id: "976684739" }],
+    [{ id: "123" }],
+    [{ id: "import-1" }],
+    [],
+  ]);
+
+  const result = await service.resolveEmailTransactionReview({
+    telegramUserId: "976684739",
+    reviewToken: authenticatedUnknownKromEmail.email.messageId,
+    transactionId: "123",
+    email: authenticatedUnknownKromEmail.email,
+    aiError: "model unavailable",
+  });
+
+  assert.equal(result.status, "needs_review");
+  assert.equal(result.reason, "ai_failed");
+  const binding = calls.find((call) =>
+    /JOIN transaction_imports/.test(call.text),
+  );
+  const update = calls.find((call) =>
+    /UPDATE transaction_imports/.test(call.text),
+  );
+  assert.ok(binding);
+  assert.match(binding.text, /transaction\.status = 'pending'/);
+  assert.match(binding.text, /email_import\.source_reference = \$3/);
+  assert.ok(update);
+  assert.match(update.text, /FROM transactions AS transaction/);
+  assert.match(update.text, /transaction_id = \$4/);
+  assert.match(update.text, /transaction\.status = 'pending'/);
+  assert.match(
+    update.text,
+    /FOR UPDATE OF transaction, email_import/,
+  );
+  assert.match(update.text, /status = 'pending'/);
+  assert.doesNotMatch(update.text, /SET status = 'needs_review'/);
+  assert.match(update.text, /RETURNING email_import\.id/);
+  assert.deepEqual(update.values, [
+    "1",
+    authenticatedUnknownKromEmail.email.messageId,
+    "model unavailable",
+    "123",
+  ]);
+  assert.equal(
+    calls.some((call) => /UPDATE transactions/.test(call.text)),
+    false,
+  );
+});
+
+test("retries a bound correction after its AI failure", async () => {
+  const { service } = createService([
+    [{ id: "1", telegram_id: "976684739" }],
+    [{ id: "123" }],
+    [{ id: "import-1" }],
+    [],
+    [{ id: "1", telegram_id: "976684739" }],
+    [{ id: "123" }],
+    [{ category: "Food" }],
+    [{ id: "123" }],
+  ]);
+  const failure = {
+    telegramUserId: "976684739",
+    reviewToken: correctionEmail.messageId,
+    transactionId: "123",
+    email: correctionEmail,
+    aiError: "model unavailable",
+  };
+
+  const failed = await service.resolveEmailTransactionReview(failure);
+  const retried = await service.resolveEmailTransactionReview(
+    validAiReviewRequest({
+      transactionId: "123",
+      email: correctionEmail,
+      reviewToken: correctionEmail.messageId,
+      transactionCandidate: { ...aiCandidate, amount: 30000 },
+      templateProposal: correctedKromProposal,
+    }),
+  );
+
+  assert.equal(failed.status, "needs_review");
+  assert.equal(retried.status, "pending");
+  assert.equal(retried.transaction?.id, "123");
+});
+
+test("correction AI failure rejects cross-email or terminal transaction binding", async () => {
   const { calls, service } = createService([
     [{ id: "1", telegram_id: "976684739" }],
     [],
@@ -4474,24 +4818,53 @@ test("AI failure cannot downgrade an import with a transaction", async () => {
     () =>
       service.resolveEmailTransactionReview({
         telegramUserId: "976684739",
-        reviewToken: authenticatedUnknownKromEmail.email.messageId,
-        email: authenticatedUnknownKromEmail.email,
+        reviewToken: correctionEmail.messageId,
+        transactionId: "123",
+        email: correctionEmail,
         aiError: "model unavailable",
       }),
-    /email import is not eligible for AI failure/,
+    /pending email transaction was not found/,
   );
 
-  const update = calls.find((call) =>
-    /UPDATE transaction_imports/.test(call.text),
+  const binding = calls.find((call) =>
+    /JOIN transaction_imports/.test(call.text),
   );
-  assert.ok(update);
-  assert.match(update.text, /transaction_id IS NULL/);
-  assert.match(update.text, /status IN \('needs_ai', 'needs_review'\)/);
-  assert.match(update.text, /RETURNING id/);
+  assert.ok(binding);
+  assert.match(binding.text, /transaction\.status = 'pending'/);
+  assert.match(binding.text, /email_import\.status = 'pending'/);
   assert.equal(
-    calls.some((call) => /UPDATE email_parse_attempts/.test(call.text)),
+    calls.some((call) => /UPDATE transaction_imports/.test(call.text)),
     false,
   );
+});
+
+test("rejects malformed bigint IDs before direct PostgreSQL comparisons", async () => {
+  for (const telegramUserId of [
+    "not-a-bigint",
+    "9223372036854775808",
+  ]) {
+    const invalidTelegram = createService();
+    await assert.rejects(
+      () =>
+        invalidTelegram.service.resolveEmailTransactionReview(
+          validAiReviewRequest({ telegramUserId }),
+        ),
+      /telegramUserId must be a positive integer/,
+    );
+    assert.deepEqual(invalidTelegram.calls, []);
+  }
+
+  for (const request of [
+    { transactionId: "not-a-bigint", userId: "1" },
+    { transactionId: "123", userId: "not-a-bigint" },
+    { transactionId: "9223372036854775808", userId: "1" },
+    { transactionId: "123", userId: "9223372036854775808" },
+  ]) {
+    const invalidTransaction = createService();
+    const result = await invalidTransaction.service.confirmTransaction(request);
+    assert.equal(result.status, "not_found");
+    assert.deepEqual(invalidTransaction.calls, []);
+  }
 });
 
 test("a failed AI import without a transaction resumes the AI handoff", async () => {
@@ -5293,13 +5666,13 @@ test("category confirmation triggers watchdog", async () => {
   });
 
   const result = await service.setPendingTransactionCategory({
-    transactionId: "tx-1",
+    transactionId: "101",
     budgetId: "budget-food",
-    userId: "user-1",
+    userId: "1",
   });
 
   assert.equal(result.status, "updated");
-  assert.deepEqual(watchdogCalls, ["tx-1"]);
+  assert.deepEqual(watchdogCalls, ["101"]);
   assert.equal(result.editMessage?.parseMode, "HTML");
 });
 
@@ -5326,15 +5699,15 @@ test("budget alert and risk review can return together", async () => {
   const riskReviews = createRiskReviewRepository({
     ...riskReview,
     id: "55",
-    transactionId: "tx-1",
+    transactionId: "101",
   });
   const { service } = createService(
     [
       [
         {
           ...transaction,
-          id: "tx-1",
-          user_id: "user-1",
+          id: "101",
+          user_id: "1",
           transaction_type: "expense",
           transaction_date: "2026-06-25",
           status: "confirmed",
@@ -5377,7 +5750,7 @@ test("budget alert and risk review can return together", async () => {
     riskReviews.repository,
   );
 
-  const result = await service.evaluateTransactionWatchdog("tx-1");
+  const result = await service.evaluateTransactionWatchdog("101");
 
   assert.deepEqual(
     result.notifications.map((notification) => notification.type),
@@ -5397,11 +5770,11 @@ test("watchdog failure does not fail transaction save", async () => {
   const { service } = createService(
     [
       [],
-      [{ id: "tx-manual" }],
+      [{ id: "103" }],
       [
         {
           ...transaction,
-          id: "tx-manual",
+          id: "103",
           user_id: "1",
           transaction_type: "expense",
           transaction_date: "2026-06-25",

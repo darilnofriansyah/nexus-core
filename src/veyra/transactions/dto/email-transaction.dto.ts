@@ -102,7 +102,7 @@ export interface EmailTransactionResolveReviewRequestDto {
   telegramUserId: string;
   reviewToken?: string;
   transactionId?: string;
-  email: EmailTransactionMessageDto;
+  email?: EmailTransactionMessageDto;
   isTransaction?: boolean;
   transactionCandidate?: EmailReviewTransactionCandidateDto;
   resolution?: EmailReviewResolutionDto;

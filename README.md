@@ -1414,6 +1414,22 @@ Example pending response:
 
 `reviewToken` must exactly equal `email.messageId`. `templateProposal` is optional. A malformed proposal, a proposal that cannot replay the email, or a proposal whose replayed amount, merchant, date, or transaction type differs from `transactionCandidate` does not block the user review; Core API stores no validated template for it. A retained proposal is activated only after the user confirms the pending transaction and aligned sender authentication is present.
 
+For rollout compatibility only, the previously deployed initial request shape
+with exactly `telegramUserId`, `transactionCandidate`, and `resolution` remains
+accepted without `email` or `reviewToken`. It creates a pending transaction
+without an import binding, sender authentication, parser source, or validated
+template, so it can never activate or learn an email parser template. This
+compatibility path is deprecated; n8n should migrate to the identity-bound
+request above. Adding any adaptive field such as `templateProposal`,
+`transactionId`, `aiError`, or `isTransaction` requires the normal
+`reviewToken`/`email.messageId` binding.
+
+Runtime `email.authentication` is reduced before persistence to normalized
+`dkim`, `spf`, `dmarc`, and a validated domain. Unknown properties, headers,
+and body-like values are discarded. Expense candidates must include a
+resolved merchant; blank or `Unknown` merchants are rejected before a pending
+row is inserted or corrected.
+
 AI correction uses the preceding structured submission plus the existing pending row:
 
 ```json
@@ -1443,6 +1459,12 @@ When the AI node fails, n8n submits:
 ```
 
 Core API returns `status: "needs_review"` with `reason: "ai_failed"`, records the import and parse attempt as the AI failure, and inserts neither a transaction nor a template.
+
+If AI fails while correcting an existing pending review, include that
+`transactionId` in the same failure payload. Core API binds the transaction,
+user, Gmail message, and pending import before recording body-free failure
+diagnostics. The existing candidate remains pending and can be retried; a
+cross-email or already-terminal transaction is rejected.
 
 When AI explicitly classifies the email as a non-transaction, n8n submits the same identity and email metadata with no candidate, resolution, or proposal:
 

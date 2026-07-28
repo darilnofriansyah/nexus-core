@@ -264,11 +264,26 @@ interface RiskCountRow extends QueryResultRow {
   count: string | number;
 }
 
+type ValidatedEmailCandidate = EmailReviewTransactionCandidateDto & {
+  source: "email";
+  transactionType: NormalizedTransactionType;
+  amount: number;
+  merchant: string;
+  merchantNormalized: string;
+  transactionDate: string;
+};
+
+type ValidatedEmailResolution = EmailReviewResolutionDto & {
+  category: string;
+  confidence: number;
+};
+
 type ValidatedEmailReview =
   | {
       kind: "failure";
       userId: string;
       email: EmailTransactionMessageDto;
+      transactionId: string | null;
       errorReason: string;
     }
   | {
@@ -281,18 +296,8 @@ type ValidatedEmailReview =
       userId: string;
       email: EmailTransactionMessageDto;
       transactionId: string | null;
-      candidate: EmailReviewTransactionCandidateDto & {
-        source: "email";
-        transactionType: NormalizedTransactionType;
-        amount: number;
-        merchant: string;
-        merchantNormalized: string;
-        transactionDate: string;
-      };
-      resolution: EmailReviewResolutionDto & {
-        category: string;
-        confidence: number;
-      };
+      candidate: ValidatedEmailCandidate;
+      resolution: ValidatedEmailResolution;
       rawPayload: {
         email: {
           messageId: string;
@@ -307,6 +312,19 @@ type ValidatedEmailReview =
         validatedTemplate: EmailValidatedTemplatePayloadDto | null;
       };
     };
+
+interface ValidatedLegacyEmailReview {
+  kind: "legacy_candidate";
+  userId: string;
+  candidate: ValidatedEmailCandidate;
+  resolution: ValidatedEmailResolution;
+  rawPayload: {
+    reviewContext: {
+      timeZone: string | null;
+      originalTransactionDate: string;
+    };
+  };
+}
 
 type ValidatedEmailCandidateReview = Extract<
   ValidatedEmailReview,
@@ -923,6 +941,12 @@ export class TransactionService {
       throw new BadRequestException("telegramUserId is required");
     }
 
+    if (!this.isPositiveBigintId(telegramUserId)) {
+      throw new BadRequestException(
+        "telegramUserId must be a positive integer",
+      );
+    }
+
     const user = await this.findTelegramUserByTelegramId(telegramUserId);
 
     if (!user) {
@@ -935,18 +959,18 @@ export class TransactionService {
       };
     }
 
-    const validated = this.validateEmailReviewRequest(
-      request,
-      String(user.id),
-      this.cleanString(user.timezone) ?? null,
-    );
+    const userId = String(user.id);
+    const timeZone = this.cleanString(user.timezone) ?? null;
+    const validated = this.isLegacyInitialEmailReview(request)
+      ? this.validateLegacyEmailReviewRequest(request, userId, timeZone)
+      : this.validateEmailReviewRequest(request, userId, timeZone);
 
     if (
-      validated.kind === "candidate" &&
+      (validated.kind === "candidate" || validated.kind === "failure") &&
       validated.transactionId &&
       !(await this.findPendingEmailReviewTransaction(
         validated.transactionId,
-        String(user.id),
+        userId,
         validated.email.messageId,
       ))
     ) {
@@ -976,17 +1000,28 @@ export class TransactionService {
       validated.resolution.category,
     );
     const category = budgetCategory ?? validated.resolution.category;
-    const transaction = await this.saveEmailReviewTransaction({
-      userId: validated.userId,
-      transactionId: validated.transactionId,
-      messageId: validated.email.messageId,
-      candidate: {
-        ...validated.candidate,
-        category,
-      },
-      confidence: validated.resolution.confidence,
-      rawPayload: validated.rawPayload,
-    });
+    const transaction =
+      validated.kind === "legacy_candidate"
+        ? await this.saveLegacyEmailReviewTransaction({
+            userId: validated.userId,
+            candidate: {
+              ...validated.candidate,
+              category,
+            },
+            confidence: validated.resolution.confidence,
+            rawPayload: validated.rawPayload,
+          })
+        : await this.saveEmailReviewTransaction({
+            userId: validated.userId,
+            transactionId: validated.transactionId,
+            messageId: validated.email.messageId,
+            candidate: {
+              ...validated.candidate,
+              category,
+            },
+            confidence: validated.resolution.confidence,
+            rawPayload: validated.rawPayload,
+          });
 
     const telegramText = this.buildEmailReviewTelegramText({
       status: "pending",
@@ -1774,6 +1809,50 @@ export class TransactionService {
     });
   }
 
+  private isLegacyInitialEmailReview(
+    request: EmailTransactionResolveReviewRequestDto,
+  ): boolean {
+    const legacyKeys = new Set([
+      "telegramUserId",
+      "transactionCandidate",
+      "resolution",
+    ]);
+    const requestKeys = Object.keys(request);
+
+    return (
+      requestKeys.length === legacyKeys.size &&
+      requestKeys.every((key) => legacyKeys.has(key)) &&
+      request.transactionCandidate !== undefined &&
+      request.resolution !== undefined
+    );
+  }
+
+  private validateLegacyEmailReviewRequest(
+    request: EmailTransactionResolveReviewRequestDto,
+    userId: string,
+    timeZone: string | null,
+  ): ValidatedLegacyEmailReview {
+    const validated = this.validateEmailReviewCandidate(
+      request.transactionCandidate,
+      request.resolution,
+    );
+
+    return {
+      kind: "legacy_candidate",
+      userId,
+      ...validated,
+      rawPayload: {
+        reviewContext: {
+          timeZone,
+          originalTransactionDate:
+            this.cleanString(
+              request.transactionCandidate?.transactionDate,
+            ) ?? validated.candidate.transactionDate,
+        },
+      },
+    };
+  }
+
   private validateEmailReviewRequest(
     request: EmailTransactionResolveReviewRequestDto,
     userId: string,
@@ -1822,10 +1901,38 @@ export class TransactionService {
       );
     }
 
-    const validatedEmail = { ...email, messageId, from, subject };
+    const authentication = this.sanitizeEmailAuthentication(
+      email.authentication,
+    );
+    const validatedEmail: EmailTransactionMessageDto = {
+      messageId,
+      ...(this.cleanString(email.threadId)
+        ? { threadId: this.cleanString(email.threadId) }
+        : {}),
+      from,
+      subject,
+      ...(this.cleanString(email.date)
+        ? { date: this.cleanString(email.date) }
+        : {}),
+      emailText:
+        typeof email.emailText === "string" ? email.emailText : "",
+      ...(typeof email.emailHtml === "string"
+        ? { emailHtml: email.emailHtml }
+        : {}),
+      ...(authentication ? { authentication } : {}),
+    };
     const candidate = request.transactionCandidate;
     const resolution = request.resolution;
-    const errorReason = this.cleanString(request.aiError);
+    const errorReason = this.cleanString(request.aiError)?.slice(0, 500);
+    const transactionId =
+      this.cleanString(request.transactionId) ?? null;
+
+    if (transactionId && !this.isPositiveBigintId(transactionId)) {
+      throw new BadRequestException(
+        "transactionId must be a positive integer",
+      );
+    }
+
     const candidateMode =
       request.isTransaction === true ||
       candidate !== undefined ||
@@ -1846,6 +1953,7 @@ export class TransactionService {
         kind: "failure",
         userId,
         email: validatedEmail,
+        transactionId,
         errorReason,
       };
     }
@@ -1864,6 +1972,74 @@ export class TransactionService {
       };
     }
 
+    const validated = this.validateEmailReviewCandidate(
+      candidate,
+      resolution,
+    );
+    const transactionDate = validated.candidate.transactionDate;
+    const originalTransactionDate =
+      this.cleanString(candidate?.transactionDate) ?? transactionDate;
+
+    const templateValidation = request.templateProposal
+      ? validateEmailTemplateProposal(
+          {
+            email: validatedEmail,
+            text: body.text,
+            normalizedText: normalizeEmailWhitespace(body.text),
+            bodySource: body.source,
+            bodyWarnings: body.warnings,
+          },
+          request.templateProposal,
+        )
+      : null;
+    const retainedTemplate =
+      templateValidation?.ok &&
+      this.emailTemplateMatchesCandidate(
+        templateValidation.parsed,
+        {
+          amount: validated.candidate.amount,
+          merchant: validated.candidate.merchant,
+          transactionDate,
+          transactionType: validated.candidate.transactionType,
+        },
+      )
+        ? templateValidation
+        : null;
+
+    return {
+      kind: "candidate",
+      userId,
+      email: validatedEmail,
+      transactionId,
+      ...validated,
+      rawPayload: {
+        email: {
+          messageId,
+          from,
+          authentication: authentication ?? null,
+        },
+        parserSource: "ai",
+        reviewContext: {
+          timeZone,
+          originalTransactionDate,
+        },
+        validatedTemplate: retainedTemplate
+          ? {
+              fingerprint: retainedTemplate.fingerprint,
+              proposal: retainedTemplate.proposal,
+            }
+          : null,
+      },
+    };
+  }
+
+  private validateEmailReviewCandidate(
+    candidate: EmailReviewTransactionCandidateDto | undefined,
+    resolution: EmailReviewResolutionDto | undefined,
+  ): {
+    candidate: ValidatedEmailCandidate;
+    resolution: ValidatedEmailResolution;
+  } {
     if (!candidate || typeof candidate !== "object") {
       throw new BadRequestException("transactionCandidate is required");
     }
@@ -1890,9 +2066,11 @@ export class TransactionService {
       throw new BadRequestException("amount must be positive");
     }
 
-    const transactionDate = this.cleanString(candidate.transactionDate);
+    const originalTransactionDate = this.cleanString(
+      candidate.transactionDate,
+    );
 
-    if (!transactionDate) {
+    if (!originalTransactionDate) {
       throw new BadRequestException("transactionDate is required");
     }
 
@@ -1908,43 +2086,24 @@ export class TransactionService {
       "Unknown";
     const merchantNormalized =
       this.cleanString(candidate.merchantNormalized) ?? merchant;
+
+    if (
+      transactionType === "expense" &&
+      (this.isUnknownMerchant(merchant) ||
+        this.isUnknownMerchant(merchantNormalized))
+    ) {
+      throw new BadRequestException(
+        "merchant is required for expense",
+      );
+    }
+
     const category = this.cleanString(resolution.category);
 
     if (!category) {
       throw new BadRequestException("resolution.category is required");
     }
 
-    const templateValidation = request.templateProposal
-      ? validateEmailTemplateProposal(
-          {
-            email: validatedEmail,
-            text: body.text,
-            normalizedText: normalizeEmailWhitespace(body.text),
-            bodySource: body.source,
-            bodyWarnings: body.warnings,
-          },
-          request.templateProposal,
-        )
-      : null;
-    const retainedTemplate =
-      templateValidation?.ok &&
-      this.emailTemplateMatchesCandidate(
-        templateValidation.parsed,
-        {
-          amount,
-          merchant,
-          transactionDate: this.normalizeTransactionDate(transactionDate),
-          transactionType,
-        },
-      )
-        ? templateValidation
-        : null;
-
     return {
-      kind: "candidate",
-      userId,
-      email: validatedEmail,
-      transactionId: this.cleanString(request.transactionId) ?? null,
       candidate: {
         ...candidate,
         source: "email",
@@ -1952,30 +2111,14 @@ export class TransactionService {
         amount,
         merchant,
         merchantNormalized,
-        transactionDate: this.normalizeTransactionDate(transactionDate),
+        transactionDate: this.normalizeTransactionDate(
+          originalTransactionDate,
+        ),
       },
       resolution: {
         ...resolution,
         category,
         confidence: this.normalizeConfidence(resolution.confidence),
-      },
-      rawPayload: {
-        email: {
-          messageId,
-          from,
-          authentication: email.authentication ?? null,
-        },
-        parserSource: "ai",
-        reviewContext: {
-          timeZone,
-          originalTransactionDate: transactionDate,
-        },
-        validatedTemplate: retainedTemplate
-          ? {
-              fingerprint: retainedTemplate.fingerprint,
-              proposal: retainedTemplate.proposal,
-            }
-          : null,
       },
     };
   }
@@ -2008,13 +2151,60 @@ export class TransactionService {
     return normalizeEmailWhitespace(value ?? "").toLowerCase();
   }
 
+  private async saveLegacyEmailReviewTransaction(input: {
+    userId: string;
+    candidate: ValidatedEmailCandidate & { category: string };
+    confidence: number;
+    rawPayload: ValidatedLegacyEmailReview["rawPayload"];
+  }): Promise<
+    NonNullable<EmailTransactionResolveReviewResponseDto["transaction"]>
+  > {
+    const result = await this.database.query<InsertedTransactionRow>(
+      `
+        INSERT INTO transactions (
+          user_id,
+          transaction_type,
+          amount,
+          merchant,
+          merchant_normalized,
+          category,
+          transaction_date,
+          source,
+          notes,
+          status,
+          confidence,
+          raw_payload
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, 'email', $8, 'pending', $9, $10)
+        RETURNING id
+      `,
+      [
+        input.userId,
+        input.candidate.transactionType,
+        input.candidate.amount,
+        input.candidate.merchant,
+        input.candidate.merchantNormalized,
+        input.candidate.category,
+        input.candidate.transactionDate,
+        this.cleanString(input.candidate.description) ?? null,
+        input.confidence,
+        input.rawPayload,
+      ],
+    );
+    const insertedId = result.rows[0]?.id;
+
+    if (insertedId === undefined) {
+      throw new BadRequestException("pending email transaction save failed");
+    }
+
+    return this.buildEmailReviewTransaction(input, insertedId);
+  }
+
   private async saveEmailReviewTransaction(input: {
     userId: string;
     transactionId: string | null;
     messageId: string;
-    candidate: ValidatedEmailCandidateReview["candidate"] & {
-      category: string;
-    };
+    candidate: ValidatedEmailCandidate & { category: string };
     confidence: number;
     rawPayload: ValidatedEmailCandidateReview["rawPayload"];
   }): Promise<
@@ -2192,9 +2382,7 @@ export class TransactionService {
   private buildEmailReviewTransaction(
     input: {
       userId: string;
-      candidate: ValidatedEmailCandidateReview["candidate"] & {
-        category: string;
-      };
+      candidate: ValidatedEmailCandidate & { category: string };
       confidence: number;
     },
     transactionId: string | number,
@@ -2265,38 +2453,73 @@ export class TransactionService {
   private async recordEmailAiFailure(
     input: Extract<ValidatedEmailReview, { kind: "failure" }>,
   ): Promise<void> {
-    const emailImport = await this.database.query<InsertedImportRow>(
-      `
-        UPDATE transaction_imports
-        SET status = 'needs_review',
-            raw_payload = raw_payload || jsonb_build_object('aiError', $3::text)
-        WHERE user_id = $1
-          AND source = 'email'
-          AND source_reference = $2
-          AND transaction_id IS NULL
-          AND status IN ('needs_ai', 'needs_review')
-        RETURNING id
-      `,
-      [input.userId, input.email.messageId, input.errorReason],
-    );
-
-    if (!emailImport.rows[0]) {
-      throw new BadRequestException(
-        "email import is not eligible for AI failure",
+    await this.database.withTransaction(async (client) => {
+      const values = [
+        input.userId,
+        input.email.messageId,
+        input.errorReason,
+        ...(input.transactionId ? [input.transactionId] : []),
+      ];
+      const emailImport = await client.query<InsertedImportRow>(
+        input.transactionId
+          ? `
+            WITH eligible_failure AS (
+              SELECT email_import.id
+              FROM transactions AS transaction
+              JOIN transaction_imports AS email_import
+                ON email_import.transaction_id = transaction.id
+               AND email_import.user_id = transaction.user_id
+              WHERE email_import.transaction_id = $4
+                AND transaction.id = $4
+                AND transaction.user_id = $1
+                AND transaction.source = 'email'
+                AND transaction.status = 'pending'
+                AND email_import.source = 'email'
+                AND email_import.source_reference = $2
+                AND email_import.status = 'pending'
+              FOR UPDATE OF transaction, email_import
+            )
+            UPDATE transaction_imports AS email_import
+            SET raw_payload =
+                  email_import.raw_payload ||
+                  jsonb_build_object('aiError', $3::text)
+            FROM eligible_failure
+            WHERE email_import.id = eligible_failure.id
+            RETURNING email_import.id
+          `
+          : `
+            UPDATE transaction_imports
+            SET status = 'needs_review',
+                raw_payload =
+                  raw_payload || jsonb_build_object('aiError', $3::text)
+            WHERE user_id = $1
+              AND source = 'email'
+              AND source_reference = $2
+              AND transaction_id IS NULL
+              AND status IN ('needs_ai', 'needs_review')
+            RETURNING id
+          `,
+        values,
       );
-    }
 
-    await this.database.query(
-      `
-        UPDATE email_parse_attempts
-        SET status = 'needs_review',
-            error_reason = $3
-        WHERE user_id = $1
-          AND source_reference = $2
-          AND status IN ('needs_ai', 'needs_review')
-      `,
-      [input.userId, input.email.messageId, input.errorReason],
-    );
+      if (!emailImport.rows[0]) {
+        throw new BadRequestException(
+          "email import is not eligible for AI failure",
+        );
+      }
+
+      await client.query(
+        `
+          UPDATE email_parse_attempts
+          SET status = 'needs_review',
+              error_reason = $3
+          WHERE user_id = $1
+            AND source_reference = $2
+            AND status IN ('needs_ai', 'needs_review', 'pending')
+        `,
+        [input.userId, input.email.messageId, input.errorReason],
+      );
+    });
   }
 
   private async recordEmailNonTransaction(
@@ -2467,6 +2690,12 @@ export class TransactionService {
       throw new BadRequestException("telegramUserId is required");
     }
 
+    if (!this.isPositiveBigintId(telegramUserId)) {
+      throw new BadRequestException(
+        "telegramUserId must be a positive integer",
+      );
+    }
+
     if (source !== "email") {
       throw new BadRequestException("source must be email");
     }
@@ -2529,7 +2758,9 @@ export class TransactionService {
         date: this.cleanString(email.date),
         emailText: emailText ?? "",
         emailHtml,
-        authentication: email.authentication,
+        authentication: this.sanitizeEmailAuthentication(
+          email.authentication,
+        ),
       },
     };
   }
@@ -2759,6 +2990,61 @@ export class TransactionService {
     const normalized = merchant.trim().toLowerCase();
 
     return normalized === "unknown";
+  }
+
+  private isPositiveBigintId(value: string): boolean {
+    if (!/^[1-9]\d*$/.test(value)) {
+      return false;
+    }
+
+    return BigInt(value) <= 9_223_372_036_854_775_807n;
+  }
+
+  private sanitizeEmailAuthentication(
+    value: unknown,
+  ): EmailTransactionMessageDto["authentication"] | undefined {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return undefined;
+    }
+
+    const authentication = value as Record<string, unknown>;
+    const status = (
+      candidate: unknown,
+    ): "pass" | "fail" | "unknown" => {
+      if (typeof candidate !== "string") {
+        return "unknown";
+      }
+
+      const normalized = candidate.trim().toLowerCase();
+      return normalized === "pass" ||
+        normalized === "fail" ||
+        normalized === "unknown"
+        ? normalized
+        : "unknown";
+    };
+    const candidateDomain =
+      typeof authentication.domain === "string"
+        ? authentication.domain.trim().toLowerCase().replace(/\.$/, "")
+        : "";
+    const labels = candidateDomain.split(".");
+    const domain =
+      candidateDomain.length <= 253 &&
+      labels.length >= 2 &&
+      labels.every(
+        (label) =>
+          label.length > 0 &&
+          label.length <= 63 &&
+          /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label),
+      )
+        ? candidateDomain
+        : undefined;
+
+    return {
+      dkim: status(authentication.dkim),
+      spf: status(authentication.spf),
+      dmarc: status(authentication.dmarc),
+      ...(domain ? { domain } : {}),
+    };
   }
 
   private async recordUnconfirmedEmailAttempt(input: {
@@ -5621,6 +5907,13 @@ export class TransactionService {
     transactionId: string,
     userId: string,
   ): Promise<TransactionRow | undefined> {
+    if (
+      !this.isPositiveBigintId(transactionId) ||
+      !this.isPositiveBigintId(userId)
+    ) {
+      return undefined;
+    }
+
     const result = await this.database.query<TransactionRow>(
       `
         SELECT
