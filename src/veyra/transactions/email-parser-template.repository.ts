@@ -1,10 +1,10 @@
-import { Injectable } from '@nestjs/common';
-import { QueryResultRow } from 'pg';
-import { DatabaseService } from '../../database/database.service';
+import { Injectable } from "@nestjs/common";
+import { QueryResultRow } from "pg";
+import { DatabaseService } from "../../database/database.service";
 import {
   EmailParserTemplateProposalDto,
   LearnedEmailTemplate,
-} from './dto/email-transaction.dto';
+} from "./dto/email-transaction.dto";
 
 export interface ActivateEmailParserTemplateInput {
   userId: string;
@@ -51,8 +51,10 @@ export class EmailParserTemplateRepository {
 
   async activate(
     input: ActivateEmailParserTemplateInput,
+    query: EmailTemplateQuery = (text, values) =>
+      this.database.query(text, values),
   ): Promise<LearnedEmailTemplate> {
-    const result = await this.database.query<EmailParserTemplateRow>(
+    const result = (await query(
       `
         INSERT INTO email_parser_templates (
           user_id,
@@ -81,7 +83,7 @@ export class EmailParserTemplateRepository {
         input.fingerprint,
         JSON.stringify(input.proposal),
       ],
-    );
+    )) as { rows: EmailParserTemplateRow[] };
 
     return this.mapRow(result.rows[0]);
   }

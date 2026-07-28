@@ -155,6 +155,13 @@ export interface EmailTransactionHandleResponseDto {
   transaction?: EmailTransactionResponseTransactionDto;
   parsed?: ParsedEmailTransactionDto;
   aiRequest?: EmailAiHandoffDto;
+  actions?: {
+    confirm: EmailReviewActionDto;
+    cancel: EmailReviewActionDto;
+    changeCategory: EmailReviewActionDto;
+    editDetails: EmailReviewActionDto;
+  };
+  replyMarkup?: TelegramReplyMarkupDto;
   telegram: {
     text: string;
     parseMode: "HTML";

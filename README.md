@@ -1199,9 +1199,11 @@ Delete is a soft delete: Core API updates `transactions.status = 'rejected'` and
 
 Handles one Gmail-sourced transaction notification. Core API tries existing hard-coded bank parsers first, then active user-scoped learned templates. It never invokes an LLM. An AI-created candidate remains pending until the user confirms it; confirmation activates its validated learned template only when the stored Gmail sender metadata has aligned DKIM or DMARC authentication.
 
-The handler derives the internal `userId` from `telegramUserId`; an included `userId` is treated as a compatibility assertion and must match. It deduplicates Gmail messages through `transaction_imports` using `source = "email"` and `source_reference = email.messageId`. It normalizes the email body, parses `emailText` first, then falls back to `emailHtml` converted with `html-to-text` when the text body is missing, too short, or not parseable. A likely transaction that neither the hard-coded nor learned parser can handle returns `needs_ai`, including an unknown template from a known provider; `unsupported_template` is reserved for non-likely, unsupported input. Parse outcomes are logged to `email_parse_attempts` with structured diagnostics and a trimmed `body_sample`, not the full email body. The table definitions are in `docs/migration/2026-06-23-email-transaction-imports.sql` and should be applied separately.
+The handler derives the internal `userId` from `telegramUserId`; an included `userId` is treated as a compatibility assertion and must match. It deduplicates Gmail messages through `transaction_imports` using `source = "email"` and `source_reference = email.messageId`. It normalizes the email body, parses `emailText` first, then falls back to `emailHtml` converted with `html-to-text` when the text body is missing, too short, or not parseable. Import metadata stores only the normalized sender, sanitized authentication, and a SHA-256 binding of the normalized subject and body; it does not store subject or body content. Resolve and correction submissions must match that stored sender, authentication, and binding before they can persist a result. Imports created before the binding was introduced remain review-compatible only when sender and authentication match, but they cannot learn or activate a template.
 
-Confirmed saves insert into `transactions` with `source = "email"` and `status = "confirmed"` only when the parser returns a valid transaction, amount is positive, merchant is known or an allowed fallback, and category resolves from `category_rules` or an allowed existing fallback budget category. If category cannot be resolved, Core API returns `needs_review` instead of inserting a confirmed transaction.
+The `needs_ai` detector evaluates subject and body together, but admits only known providers with aligned sender authentication. This allows a trusted notification whose body contains only an amount to use a transactional subject as the missing signal, while marketing messages and arbitrary authenticated senders remain outside AI fallback. Parse outcomes are logged to `email_parse_attempts` with structured diagnostics and a trimmed `body_sample`, not the full email body. The table definitions are in `docs/migration/2026-06-23-email-transaction-imports.sql` and should be applied separately.
+
+Confirmed saves insert into `transactions` with `source = "email"` and `status = "confirmed"` only when the parser returns a valid transaction, amount is positive, merchant is known or an allowed fallback, and category resolves from `category_rules` or an allowed existing fallback budget category. A valid deterministic parse that still needs sender-authentication, merchant, alias, or category review creates one pending transaction and returns the normal confirmation actions. Expense reviews with an unresolved merchant or category must be corrected before Save; income retains its existing optional merchant/category behavior. Redelivery, including the loser of a concurrent import race, resumes the same pending transaction instead of escalating it to AI.
 
 Initial Gmail HTTP Request body:
 
@@ -1414,6 +1416,17 @@ Example pending response:
 
 `reviewToken` must exactly equal `email.messageId`. `templateProposal` is optional. A malformed proposal, a proposal that cannot replay the email, or a proposal whose replayed amount, merchant, date, or transaction type differs from `transactionCandidate` does not block the user review; Core API stores no validated template for it. A retained proposal is activated only after the user confirms the pending transaction and aligned sender authentication is present.
 
+`transactionCandidate.description` is untrusted model prose. Adaptive initial and
+correction requests neither persist nor return it. The deprecated exact legacy
+candidate-only request shape below preserves its historical description behavior
+until that compatibility path is removed.
+
+Template activation is retryable. A failed activation leaves the validated
+proposal on the confirmed transaction; repeating Save (or the category
+confirmation path) retries it. Activation and pending-marker removal share one
+locked database transaction, so a successful activation consumes the marker
+exactly once and later callback redelivery cannot reactivate the template.
+
 For rollout compatibility only, the previously deployed initial request shape
 with exactly `telegramUserId`, `transactionCandidate`, and `resolution` remains
 accepted without `email` or `reviewToken`. It creates a pending transaction
@@ -1428,7 +1441,9 @@ Runtime `email.authentication` is reduced before persistence to normalized
 `dkim`, `spf`, `dmarc`, and a validated domain. Unknown properties, headers,
 and body-like values are discarded. Expense candidates must include a
 resolved merchant; blank or `Unknown` merchants are rejected before a pending
-row is inserted or corrected.
+row is inserted or corrected. Successful initial and correction submissions
+also clear any stale failure status for the same parse attempt in the same
+database transaction.
 
 AI correction uses the preceding structured submission plus the existing pending row:
 

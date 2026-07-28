@@ -233,7 +233,13 @@ test("detects transactions but rejects marketing email", () => {
   assert.equal(
     isLikelyTransactionEmail(
       input("Pembayaran berhasil sebesar Rp25.000", {
-        from: "bank@example.com",
+        from: "alerts@krom.id",
+        authentication: {
+          dkim: "pass",
+          spf: "pass",
+          dmarc: "pass",
+          domain: "krom.id",
+        },
       }),
     ),
     true,
@@ -241,7 +247,13 @@ test("detects transactions but rejects marketing email", () => {
   assert.equal(
     isLikelyTransactionEmail(
       input("Promo diskon belanja hingga Rp25.000", {
-        from: "bank@example.com",
+        from: "alerts@krom.id",
+        authentication: {
+          dkim: "pass",
+          spf: "pass",
+          dmarc: "pass",
+          domain: "krom.id",
+        },
       }),
     ),
     false,
@@ -282,9 +294,7 @@ test("requires aligned DKIM or DMARC for automatic learned parsing", () => {
 test("requires ordered anchors and a closing boundary after its opening boundary", () => {
   assert.deepEqual(
     validateEmailTemplateProposal(
-      input(
-        "Jumlah: Rp25.000 Merchant: Tuku Tanggal: 25 Juni 2026 09:30",
-      ),
+      input("Jumlah: Rp25.000 Merchant: Tuku Tanggal: 25 Juni 2026 09:30"),
       proposal({
         requiredAnchors: ["Merchant:", "Jumlah:", "Tanggal:"],
       }),
@@ -294,9 +304,7 @@ test("requires ordered anchors and a closing boundary after its opening boundary
 
   assert.deepEqual(
     validateEmailTemplateProposal(
-      input(
-        "Merchant: Tuku Jumlah: Rp25.000 Tanggal: 25 Juni 2026 09:30",
-      ),
+      input("Merchant: Tuku Jumlah: Rp25.000 Tanggal: 25 Juni 2026 09:30"),
       proposal({
         amount: {
           kind: "idr_amount",
@@ -312,9 +320,7 @@ test("requires ordered anchors and a closing boundary after its opening boundary
 test("rejects a non-positive captured amount", () => {
   for (const amount of ["Rp0", "Rp-25.000", "Rp−25.000"]) {
     const result = validateEmailTemplateProposal(
-      input(
-        `Merchant: Tuku Jumlah: ${amount} Tanggal: 25 Juni 2026 09:30`,
-      ),
+      input(`Merchant: Tuku Jumlah: ${amount} Tanggal: 25 Juni 2026 09:30`),
       proposal({
         amount: {
           kind: "idr_amount",
@@ -368,6 +374,57 @@ test("does not treat Rp punctuation without a digit as money", () => {
     isLikelyTransactionEmail(
       input("Pembayaran berhasil, nilai transaksi Rp.", {
         from: "bank@example.com",
+      }),
+    ),
+    false,
+  );
+});
+
+test("uses trusted sender context plus subject and body for AI fallback detection", () => {
+  assert.equal(
+    isLikelyTransactionEmail(
+      input("Rp25.000", {
+        from: "alerts@krom.id",
+        subject: "Transaksi berhasil",
+        authentication: {
+          dkim: "pass",
+          spf: "pass",
+          dmarc: "pass",
+          domain: "krom.id",
+        },
+      }),
+    ),
+    true,
+  );
+});
+
+test("does not route marketing or arbitrary senders to AI fallback", () => {
+  assert.equal(
+    isLikelyTransactionEmail(
+      input("Rp25.000", {
+        from: "alerts@krom.id",
+        subject: "Promo transaksi hari ini",
+        authentication: {
+          dkim: "pass",
+          spf: "pass",
+          dmarc: "pass",
+          domain: "krom.id",
+        },
+      }),
+    ),
+    false,
+  );
+  assert.equal(
+    isLikelyTransactionEmail(
+      input("Transaksi berhasil Rp25.000", {
+        from: "attacker@example.com",
+        subject: "Transaction notification",
+        authentication: {
+          dkim: "pass",
+          spf: "pass",
+          dmarc: "pass",
+          domain: "example.com",
+        },
       }),
     ),
     false,

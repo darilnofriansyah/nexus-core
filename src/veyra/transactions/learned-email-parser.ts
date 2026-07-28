@@ -120,9 +120,7 @@ function templateProblem(proposal: unknown): string | null {
     proposal.requiredAnchors.some((anchor) => typeof anchor !== "string") ||
     (proposal.forbiddenAnchors !== undefined &&
       (!Array.isArray(proposal.forbiddenAnchors) ||
-        proposal.forbiddenAnchors.some(
-          (anchor) => typeof anchor !== "string",
-        )))
+        proposal.forbiddenAnchors.some((anchor) => typeof anchor !== "string")))
   ) {
     return "anchors are invalid";
   }
@@ -282,13 +280,22 @@ function occurrenceCount(text: string, literal: string): number {
 }
 
 export function isLikelyTransactionEmail(input: EmailParserInput): boolean {
-  const text = input.normalizedText.toLowerCase();
+  const text = normalizeEmailWhitespace(
+    `${input.email.subject} ${input.normalizedText}`,
+  ).toLowerCase();
   const hasMoney =
     /\b(?:rp\.?|idr)\s*\d[\d.,]*\b|\b\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{2})?\b/.test(
       text,
     );
+  const domain = senderDomain(input.email.from);
+  const trustedDomain =
+    domain === "bca.co.id" ||
+    domain === "bankmandiri.co.id" ||
+    domain === "krom.id";
 
   return (
+    trustedDomain &&
+    hasAlignedSenderAuthentication(input.email) &&
     hasMoney &&
     TRANSACTION_SIGNALS.some((signal) => text.includes(signal)) &&
     !MARKETING_SIGNALS.some((signal) => text.includes(signal))
