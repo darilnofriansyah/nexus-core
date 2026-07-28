@@ -3879,7 +3879,7 @@ test("Save activates the validated user template after confirming the transactio
   const { calls, service } = createService(
     [
       [pendingAiTransaction],
-      [{ id: "123" }],
+      [{ ...pendingAiTransaction, status: "confirmed" }],
       [{ id: "import-1" }],
       [],
       [],
@@ -3915,15 +3915,19 @@ test("Save activates the validated user template after confirming the transactio
 test("only the winning pending email confirmation activates its template", async () => {
   const templates = createTemplateRepository();
   const confirmedTransaction = {
-    ...pendingTemplateTransaction,
+    ...pendingAiTransaction,
     status: "confirmed",
   };
-  const { service } = createService(
+  const { calls, service } = createService(
     [
-      [pendingTemplateTransaction],
-      [{ id: "123" }],
+      [pendingAiTransaction],
+      [confirmedTransaction],
       [{ id: "import-1" }],
-      [pendingTemplateTransaction],
+      [],
+      [],
+      [],
+      [],
+      [pendingAiTransaction],
       [],
       [confirmedTransaction],
     ],
@@ -3948,6 +3952,95 @@ test("only the winning pending email confirmation activates its template", async
     templates.calls.filter((call) => call.method === "activate").length,
     1,
   );
+  const transitions = calls.filter(
+    (call) =>
+      /UPDATE transactions/.test(call.text) &&
+      /source = 'email'/.test(call.text),
+  );
+  assert.equal(transitions.length, 2);
+  assert.equal(
+    transitions.every((call) => /status = 'pending'/.test(call.text)),
+    true,
+  );
+  assert.equal(
+    calls.filter((call) => /INSERT INTO merchant_aliases/.test(call.text))
+      .length,
+    1,
+  );
+  assert.equal(
+    calls.filter((call) => /INSERT INTO category_rules/.test(call.text)).length,
+    1,
+  );
+});
+
+test("winning transition row drives confirmation response, activation, and learning", async () => {
+  const authoritativeProposal: EmailParserTemplateProposalDto = {
+    ...learnedProposal,
+    templateKey: "authoritative-krom-qris",
+  };
+  const authoritativeTransaction = {
+    ...pendingAiTransaction,
+    merchant: "Authoritative Merchant",
+    merchant_normalized: "Authoritative Canonical",
+    category: "Dining",
+    status: "confirmed",
+    raw_payload: {
+      ...pendingAiTransaction.raw_payload,
+      validatedTemplate: {
+        fingerprint: validatedFingerprint(
+          authenticatedUnknownKromEmail.email,
+          authoritativeProposal,
+        ),
+        proposal: authoritativeProposal,
+      },
+    },
+  };
+  const templates = createTemplateRepository();
+  const { calls, service } = createService(
+    [
+      [pendingAiTransaction],
+      [authoritativeTransaction],
+      [{ id: "import-1" }],
+      [],
+      [],
+      [],
+      [],
+    ],
+    undefined,
+    undefined,
+    templates.repository,
+  );
+  spyOnWatchdog(service);
+
+  const result = await service.confirmTransaction({
+    transactionId: "123",
+    userId: "1",
+  });
+
+  assert.equal(result.summary?.merchant, "Authoritative Canonical");
+  assert.equal(result.summary?.category, "Dining");
+  const activation = templates.calls.find(
+    (call) => call.method === "activate",
+  )?.input as ActivateEmailParserTemplateInput;
+  assert.equal(
+    activation.proposal.templateKey,
+    "authoritative-krom-qris",
+  );
+  const aliasInsert = calls.find((call) =>
+    /INSERT INTO merchant_aliases/.test(call.text),
+  );
+  const categoryInsert = calls.find((call) =>
+    /INSERT INTO category_rules/.test(call.text),
+  );
+  assert.deepEqual(aliasInsert?.values, [
+    "Authoritative Merchant",
+    "Authoritative Canonical",
+  ]);
+  assert.deepEqual(categoryInsert?.values, [
+    "1",
+    "Authoritative Canonical",
+    "Dining",
+  ]);
 });
 
 test("confirmation cannot apply after another cancellation wins", async () => {
@@ -3959,7 +4052,7 @@ test("confirmation cannot apply after another cancellation wins", async () => {
   const { service } = createService(
     [
       [pendingTemplateTransaction],
-      [{ id: "123" }],
+      [rejectedTransaction],
       [{ id: "import-1" }],
       [pendingTemplateTransaction],
       [],
@@ -3993,10 +4086,10 @@ test("email confirmation rolls back when its import cannot transition and retrie
   const { service, transactionEvents } = createService(
     [
       [pendingTemplateTransaction],
-      [{ id: "123" }],
+      [{ ...pendingTemplateTransaction, status: "confirmed" }],
       new Error("import unavailable"),
       [pendingTemplateTransaction],
-      [{ id: "123" }],
+      [{ ...pendingTemplateTransaction, status: "confirmed" }],
       [{ id: "import-1" }],
     ],
     undefined,
@@ -4036,7 +4129,7 @@ test("email import transition uses typed ids and email source", async () => {
   const { calls, service } = createService(
     [
       [pendingTemplateTransaction],
-      [{ id: "123" }],
+      [{ ...pendingTemplateTransaction, status: "confirmed" }],
       [{ id: "import-1" }],
     ],
     undefined,
@@ -4073,7 +4166,7 @@ test("malformed stored template does not activate after confirmation", async () 
     },
   };
   const { service } = createService(
-    [[malformed], [{ id: "123" }], [{ id: "import-1" }]],
+    [[malformed], [{ ...malformed, status: "confirmed" }], [{ id: "import-1" }]],
     undefined,
     undefined,
     templates.repository,
@@ -4105,7 +4198,11 @@ test("stored template fingerprint must match its proposal before activation", as
     },
   };
   const { service } = createService(
-    [[mismatched], [{ id: "123" }], [{ id: "import-1" }]],
+    [
+      [mismatched],
+      [{ ...mismatched, status: "confirmed" }],
+      [{ id: "import-1" }],
+    ],
     undefined,
     undefined,
     templates.repository,
@@ -4129,7 +4226,7 @@ test("confirmed AI email learns a global alias and user category rule", async ()
   const { calls, service } = createService(
     [
       [pendingAiTransaction],
-      [{ id: "123" }],
+      [{ ...pendingAiTransaction, status: "confirmed" }],
       [{ id: "import-1" }],
       [],
       [],
@@ -4165,7 +4262,7 @@ test("confirmation succeeds when template activation fails", async () => {
   const { service, transactionEvents } = createService(
     [
       [pendingAiTransaction],
-      [{ id: "123" }],
+      [{ ...pendingAiTransaction, status: "confirmed" }],
       [{ id: "import-1" }],
       [],
       [],
@@ -4191,7 +4288,7 @@ test("Cancel never activates a proposed template", async () => {
   const { calls, service } = createService(
     [
       [pendingAiTransaction],
-      [{ id: "123" }],
+      [{ ...pendingAiTransaction, status: "rejected" }],
       [{ id: "import-1" }],
     ],
     undefined,
@@ -4221,7 +4318,7 @@ test("category confirmation activates the proposal exactly once", async () => {
     [
       [pendingAiTransaction],
       [{ id: "budget-food", category: "Dining", parent_category: null }],
-      [{ id: "123" }],
+      [{ ...pendingAiTransaction, category: "Dining", status: "confirmed" }],
       [{ id: "import-1" }],
       [],
       [],
@@ -4262,7 +4359,7 @@ test("only the winning category confirmation activates its template", async () =
     [
       [pendingTemplateTransaction],
       [budget],
-      [{ id: "123" }],
+      [confirmedTransaction],
       [{ id: "import-1" }],
       [pendingTemplateTransaction],
       [budget],
@@ -4291,6 +4388,63 @@ test("only the winning category confirmation activates its template", async () =
   assert.equal(
     templates.calls.filter((call) => call.method === "activate").length,
     1,
+  );
+});
+
+test("category confirmation uses the authoritative transition row", async () => {
+  const authoritativeProposal: EmailParserTemplateProposalDto = {
+    ...learnedProposal,
+    templateKey: "authoritative-category-krom",
+  };
+  const authoritativeTransaction = {
+    ...pendingAiTransaction,
+    merchant: "Corrected Merchant",
+    merchant_normalized: "Corrected Canonical",
+    category: "Dining",
+    status: "confirmed",
+    raw_payload: {
+      ...pendingAiTransaction.raw_payload,
+      validatedTemplate: {
+        fingerprint: validatedFingerprint(
+          authenticatedUnknownKromEmail.email,
+          authoritativeProposal,
+        ),
+        proposal: authoritativeProposal,
+      },
+    },
+  };
+  const templates = createTemplateRepository();
+  const { service } = createService(
+    [
+      [pendingAiTransaction],
+      [{ id: "budget-food", category: "Dining", parent_category: null }],
+      [authoritativeTransaction],
+      [{ id: "import-1" }],
+      [],
+      [],
+      [],
+      [],
+    ],
+    undefined,
+    undefined,
+    templates.repository,
+  );
+  spyOnWatchdog(service);
+
+  const result = await service.setPendingTransactionCategory({
+    transactionId: "123",
+    budgetId: "budget-food",
+    userId: "1",
+  });
+
+  assert.equal(result.summary?.merchant, "Corrected Canonical");
+  assert.equal(result.summary?.category, "Dining");
+  const activation = templates.calls.find(
+    (call) => call.method === "activate",
+  )?.input as ActivateEmailParserTemplateInput;
+  assert.equal(
+    activation.proposal.templateKey,
+    "authoritative-category-krom",
   );
 });
 

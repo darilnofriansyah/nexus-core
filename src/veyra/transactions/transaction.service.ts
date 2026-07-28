@@ -5062,7 +5062,7 @@ export class TransactionService {
     transaction: TransactionRow;
     status: "confirmed" | "rejected";
     category?: string;
-  }): Promise<boolean> {
+  }): Promise<TransactionRow | null> {
     return this.database.withTransaction(async (client) => {
       const values: unknown[] = [
         input.status,
@@ -5073,7 +5073,7 @@ export class TransactionService {
         input.category === undefined
           ? ""
           : `category = $${values.push(input.category)},`;
-      const transaction = await client.query<InsertedTransactionRow>(
+      const transaction = await client.query<TransactionRow>(
         `
           UPDATE transactions
           SET ${categoryAssignment}
@@ -5083,13 +5083,28 @@ export class TransactionService {
             AND user_id = $3
             AND source = 'email'
             AND status = 'pending'
-          RETURNING id
+          RETURNING id,
+                    user_id,
+                    transaction_type,
+                    amount,
+                    merchant,
+                    merchant_normalized,
+                    category,
+                    transaction_date,
+                    notes,
+                    status,
+                    source,
+                    confidence,
+                    raw_payload,
+                    created_at
         `,
         values,
       );
 
-      if (!transaction.rows[0]) {
-        return false;
+      const transitioned = transaction.rows[0];
+
+      if (!transitioned) {
+        return null;
       }
 
       const emailImport = await client.query<InsertedImportRow>(
@@ -5112,7 +5127,7 @@ export class TransactionService {
         throw new BadRequestException("linked email import was not found");
       }
 
-      return true;
+      return transitioned;
     });
   }
 
@@ -5161,12 +5176,13 @@ export class TransactionService {
       };
     }
 
-    const summary = this.transactionSummary(transaction);
     const terminalResponse = this.terminalTransactionResponse(transaction);
 
     if (terminalResponse) {
       return terminalResponse;
     }
+
+    let winningTransaction = transaction;
 
     if (transaction.source === "email") {
       const transitioned = await this.transitionPendingEmailTransaction({
@@ -5185,6 +5201,8 @@ export class TransactionService {
 
         throw new BadRequestException("transaction status transition failed");
       }
+
+      winningTransaction = transitioned;
     } else {
       await this.database.query(
         `
@@ -5198,25 +5216,27 @@ export class TransactionService {
       );
     }
 
+    const summary = this.transactionSummary(winningTransaction);
+
     if (nextStatus === "confirmed") {
-      await this.activateValidatedEmailTemplate(transaction);
-      await this.learnConfirmedEmailTransaction(transaction);
+      await this.activateValidatedEmailTemplate(winningTransaction);
+      await this.learnConfirmedEmailTransaction(winningTransaction);
     }
 
     const watchdog =
       nextStatus === "confirmed"
-        ? await this.evaluateTransactionWatchdog(String(transaction.id))
+        ? await this.evaluateTransactionWatchdog(String(winningTransaction.id))
         : this.emptyTransactionWatchdogResponse();
     const editMessage = this.transactionEditMessage(
-      String(transaction.id),
+      String(winningTransaction.id),
       summary,
       nextStatus,
     );
 
     return {
       status: nextStatus,
-      transactionId: String(transaction.id),
-      userId: String(transaction.user_id),
+      transactionId: String(winningTransaction.id),
+      userId: String(winningTransaction.user_id),
       summary,
       editMessage: {
         ...editMessage,
@@ -5893,6 +5913,8 @@ export class TransactionService {
       };
     }
 
+    let confirmedTransaction: TransactionRow;
+
     if (transaction.source === "email") {
       const transitioned = await this.transitionPendingEmailTransaction({
         transaction,
@@ -5924,6 +5946,8 @@ export class TransactionService {
           editMessage: null,
         };
       }
+
+      confirmedTransaction = transitioned;
     } else {
       await this.database.query(
         `
@@ -5940,18 +5964,15 @@ export class TransactionService {
           String(transaction.user_id),
         ],
       );
+
+      confirmedTransaction = {
+        ...transaction,
+        category: budgetCategory.category,
+        status: "confirmed",
+      };
     }
 
-    const summary = this.transactionSummary({
-      ...transaction,
-      category: budgetCategory.category,
-      status: "confirmed",
-    });
-    const confirmedTransaction: TransactionRow = {
-      ...transaction,
-      category: budgetCategory.category,
-      status: "confirmed",
-    };
+    const summary = this.transactionSummary(confirmedTransaction);
 
     if (transaction.source === "email") {
       await this.activateValidatedEmailTemplate(confirmedTransaction);
@@ -5959,10 +5980,10 @@ export class TransactionService {
     }
 
     const watchdog = await this.evaluateTransactionWatchdog(
-      String(transaction.id),
+      String(confirmedTransaction.id),
     );
     const editMessage = this.transactionEditMessage(
-      String(transaction.id),
+      String(confirmedTransaction.id),
       summary,
       "confirmed",
     );
@@ -5970,7 +5991,7 @@ export class TransactionService {
     return {
       status: "updated",
       pendingTransactionId: null,
-      transactionId: String(transaction.id),
+      transactionId: String(confirmedTransaction.id),
       confirmationPayload: null,
       summary,
       editMessage: {
