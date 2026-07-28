@@ -1738,12 +1738,7 @@ export class TransactionService {
       );
     }
 
-    const normalizedAmount =
-      typeof candidate.amount === "number"
-        ? String(candidate.amount)
-        : this.normalizeAmountString(candidate.amount);
-
-    if (normalizedAmount.includes("-")) {
+    if (/[-−]/u.test(String(candidate.amount))) {
       throw new BadRequestException("amount must be positive");
     }
 

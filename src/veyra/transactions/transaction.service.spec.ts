@@ -2799,7 +2799,7 @@ test("does not mutate a pending row when corrected output is invalid", async () 
 });
 
 test("rejects negative initial AI amounts before inserting", async () => {
-  for (const amount of [-25000, "-25.000", "Rp -25.000"]) {
+  for (const amount of [-25000, "-25.000", "Rp -25.000", "Rp −25.000"]) {
     const { calls, service } = createService([
       [{ id: "1", telegram_id: "976684739" }],
       [{ category: "Food" }],
@@ -2825,7 +2825,7 @@ test("rejects negative initial AI amounts before inserting", async () => {
 });
 
 test("rejects negative AI correction amounts before updating", async () => {
-  for (const amount of [-30000, "-30.000", "Rp -25.000"]) {
+  for (const amount of [-30000, "-30.000", "Rp -25.000", "Rp −25.000"]) {
     const { calls, service } = createService([
       [{ id: "1", telegram_id: "976684739" }],
       [{ id: "123", user_id: "1", source: "email", status: "pending" }],
