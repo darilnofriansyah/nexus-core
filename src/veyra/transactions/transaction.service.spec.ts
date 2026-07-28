@@ -419,6 +419,15 @@ test("rejects invalid email source reference identifiers", async () => {
 
   await assert.rejects(
     () =>
+      service.getEmailSourceReference(
+        undefined as unknown as EmailSourceReferenceRequestDto,
+      ),
+    (error: unknown) =>
+      error instanceof BadRequestException &&
+      error.message === "telegramUserId must be a positive integer",
+  );
+  await assert.rejects(
+    () =>
       service.getEmailSourceReference({
         telegramUserId: "invalid",
         transactionId: "123",
@@ -432,6 +441,16 @@ test("rejects invalid email source reference identifiers", async () => {
       service.getEmailSourceReference({
         telegramUserId: "976684739",
         transactionId: "0",
+      }),
+    (error: unknown) =>
+      error instanceof BadRequestException &&
+      error.message === "transactionId must be a positive integer",
+  );
+  await assert.rejects(
+    () =>
+      service.getEmailSourceReference({
+        telegramUserId: "976684739",
+        transactionId: Number.MAX_SAFE_INTEGER + 1,
       }),
     (error: unknown) =>
       error instanceof BadRequestException &&

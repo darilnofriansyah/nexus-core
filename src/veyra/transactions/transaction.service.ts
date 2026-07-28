@@ -723,17 +723,29 @@ export class TransactionService {
   async getEmailSourceReference(
     request: EmailSourceReferenceRequestDto,
   ): Promise<EmailSourceReferenceResponseDto> {
+    const rawTelegramUserId = request?.telegramUserId;
+    const rawTransactionId = request?.transactionId;
     const telegramUserId = this.cleanString(
-      String(request.telegramUserId ?? ""),
+      String(rawTelegramUserId ?? ""),
     );
-    const transactionId = this.cleanString(String(request.transactionId ?? ""));
+    const transactionId = this.cleanString(String(rawTransactionId ?? ""));
 
-    if (!telegramUserId || !this.isPositiveBigintId(telegramUserId)) {
+    if (
+      (typeof rawTelegramUserId === "number" &&
+        !Number.isSafeInteger(rawTelegramUserId)) ||
+      !telegramUserId ||
+      !this.isPositiveBigintId(telegramUserId)
+    ) {
       throw new BadRequestException(
         "telegramUserId must be a positive integer",
       );
     }
-    if (!transactionId || !this.isPositiveBigintId(transactionId)) {
+    if (
+      (typeof rawTransactionId === "number" &&
+        !Number.isSafeInteger(rawTransactionId)) ||
+      !transactionId ||
+      !this.isPositiveBigintId(transactionId)
+    ) {
       throw new BadRequestException("transactionId must be a positive integer");
     }
 
