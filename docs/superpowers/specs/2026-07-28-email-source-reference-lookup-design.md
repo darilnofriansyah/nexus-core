@@ -41,15 +41,18 @@ looks up the transaction through:
 - `transactions.id = transactionId`;
 - `transactions.user_id = resolved telegram_users.id`;
 - `transactions.source = 'email'`;
+- `transactions.status = 'pending'`;
 - `transaction_imports.transaction_id = transactions.id`;
 - `transaction_imports.user_id = transactions.user_id`;
 - `transaction_imports.source = 'email'`.
+- `transaction_imports.status = 'pending'`.
 
 The response `messageId` is `transaction_imports.source_reference`.
 
-Missing users, transactions owned by another user, non-email transactions, and
-email transactions without a linked import all return the same `404 Not Found`
-response. This avoids exposing whether another user's transaction exists.
+Missing users, transactions owned by another user, non-email or non-pending
+transactions, and email transactions without a linked pending import all
+return the same `404 Not Found` response. This avoids exposing whether another
+user's transaction exists and rejects stale Edit Details callbacks.
 
 No schema change is needed. The existing `transaction_imports` foreign key and
 email source reference provide the mapping.
