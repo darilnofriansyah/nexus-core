@@ -1458,7 +1458,11 @@ When the AI node fails, n8n submits:
 }
 ```
 
-Core API returns `status: "needs_review"` with `reason: "ai_failed"`, records the import and parse attempt as the AI failure, and inserts neither a transaction nor a template.
+Core API returns `status: "needs_review"` with `reason: "ai_failed"` and the
+fixed message `AI processing failed`, records that same safe diagnostic on the
+import and parse attempt, and inserts neither a transaction nor a template.
+The caller-provided `aiError` is treated only as a failure signal and is never
+persisted or returned.
 
 If AI fails while correcting an existing pending review, include that
 `transactionId` in the same failure payload. Core API binds the transaction,

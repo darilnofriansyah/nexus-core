@@ -3224,7 +3224,9 @@ test("accepts a positive formatted AI amount", async () => {
   assert.equal(result.transaction?.amount, 25000);
 });
 
-test("records needs_review when n8n reports AI failure", async () => {
+test("does not persist or return caller text from an initial AI failure", async () => {
+  const privateAiError =
+    "model saw email body: card 4111 1111 1111 1111 secret-token";
   const { calls, service } = createService([
     [{ id: "1", telegram_id: "976684739" }],
     [{ id: "import-1" }],
@@ -3235,19 +3237,23 @@ test("records needs_review when n8n reports AI failure", async () => {
     telegramUserId: "976684739",
     reviewToken: "gmail-learned-1",
     email: authenticatedUnknownKromEmail.email,
-    aiError: "model unavailable",
+    aiError: privateAiError,
   });
 
   assert.equal(result.status, "needs_review");
   assert.equal(result.reason, "ai_failed");
+  assert.equal(result.message, "AI processing failed");
   assert.match(calls[1].text, /UPDATE transaction_imports/);
   assert.match(calls[2].text, /UPDATE email_parse_attempts/);
   assert.deepEqual(calls[1].values, [
     "1",
     "gmail-learned-1",
-    "model unavailable",
+    "AI processing failed",
   ]);
   assert.deepEqual(calls[2].values, calls[1].values);
+  assert.doesNotMatch(JSON.stringify(result), /4111|secret-token/);
+  assert.doesNotMatch(JSON.stringify(calls[1].values), /4111|secret-token/);
+  assert.doesNotMatch(JSON.stringify(calls[2].values), /4111|secret-token/);
   assert.equal(
     calls.some((call) => /INSERT INTO transactions/.test(call.text)),
     false,
@@ -4723,7 +4729,9 @@ test("clears the stored proposal after a material correction no longer matches i
   assert.equal(rawPayload.validatedTemplate, null);
 });
 
-test("records a bound correction AI failure without downgrading its pending import", async () => {
+test("does not persist or return caller text from a correction AI failure", async () => {
+  const privateAiError =
+    "email body leaked: password=hunter2 account=99887766";
   const { calls, service } = createService([
     [{ id: "1", telegram_id: "976684739" }],
     [{ id: "123" }],
@@ -4736,11 +4744,12 @@ test("records a bound correction AI failure without downgrading its pending impo
     reviewToken: authenticatedUnknownKromEmail.email.messageId,
     transactionId: "123",
     email: authenticatedUnknownKromEmail.email,
-    aiError: "model unavailable",
+    aiError: privateAiError,
   });
 
   assert.equal(result.status, "needs_review");
   assert.equal(result.reason, "ai_failed");
+  assert.equal(result.message, "AI processing failed");
   const binding = calls.find((call) =>
     /JOIN transaction_imports/.test(call.text),
   );
@@ -4764,9 +4773,24 @@ test("records a bound correction AI failure without downgrading its pending impo
   assert.deepEqual(update.values, [
     "1",
     authenticatedUnknownKromEmail.email.messageId,
-    "model unavailable",
+    "AI processing failed",
     "123",
   ]);
+  const attemptUpdate = calls.find((call) =>
+    /UPDATE email_parse_attempts/.test(call.text),
+  );
+  assert.ok(attemptUpdate);
+  assert.deepEqual(attemptUpdate.values, [
+    "1",
+    authenticatedUnknownKromEmail.email.messageId,
+    "AI processing failed",
+  ]);
+  assert.doesNotMatch(JSON.stringify(result), /hunter2|99887766/);
+  assert.doesNotMatch(JSON.stringify(update.values), /hunter2|99887766/);
+  assert.doesNotMatch(
+    JSON.stringify(attemptUpdate.values),
+    /hunter2|99887766/,
+  );
   assert.equal(
     calls.some((call) => /UPDATE transactions/.test(call.text)),
     false,

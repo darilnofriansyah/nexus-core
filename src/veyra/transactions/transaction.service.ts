@@ -118,6 +118,7 @@ const TRANSACTION_CATEGORY_OPTIONS = [
 const PRODUCTION_CALLBACK_MODE: TransactionCallbackMode = "production";
 const EXPERIMENTAL_CALLBACK_MODE: TransactionCallbackMode = "experimental";
 const EMPTY_CONFIRMATION_FIELD = "-";
+const AI_FAILURE_DIAGNOSTIC = "AI processing failed";
 const LARGE_TRANSACTION_EVALUATOR_VERSION = "large_transaction_v1";
 const LARGE_TRANSACTION_RISK_TYPE = "large_transaction";
 const RISK_HISTORY_WINDOW_DAYS = 90;
@@ -284,7 +285,6 @@ type ValidatedEmailReview =
       userId: string;
       email: EmailTransactionMessageDto;
       transactionId: string | null;
-      errorReason: string;
     }
   | {
       kind: "non_transaction";
@@ -982,7 +982,7 @@ export class TransactionService {
       return {
         status: "needs_review",
         reason: "ai_failed",
-        message: validated.errorReason,
+        message: AI_FAILURE_DIAGNOSTIC,
       };
     }
 
@@ -1923,7 +1923,7 @@ export class TransactionService {
     };
     const candidate = request.transactionCandidate;
     const resolution = request.resolution;
-    const errorReason = this.cleanString(request.aiError)?.slice(0, 500);
+    const hasAiError = Boolean(this.cleanString(request.aiError));
     const transactionId =
       this.cleanString(request.transactionId) ?? null;
 
@@ -1939,7 +1939,7 @@ export class TransactionService {
       resolution !== undefined ||
       request.templateProposal !== undefined;
     const resultModeCount = [
-      Boolean(errorReason),
+      hasAiError,
       request.isTransaction === false,
       candidateMode,
     ].filter(Boolean).length;
@@ -1948,13 +1948,12 @@ export class TransactionService {
       throw new BadRequestException("AI result modes are mutually exclusive");
     }
 
-    if (errorReason) {
+    if (hasAiError) {
       return {
         kind: "failure",
         userId,
         email: validatedEmail,
         transactionId,
-        errorReason,
       };
     }
 
@@ -2457,7 +2456,7 @@ export class TransactionService {
       const values = [
         input.userId,
         input.email.messageId,
-        input.errorReason,
+        AI_FAILURE_DIAGNOSTIC,
         ...(input.transactionId ? [input.transactionId] : []),
       ];
       const emailImport = await client.query<InsertedImportRow>(
@@ -2517,7 +2516,7 @@ export class TransactionService {
             AND source_reference = $2
             AND status IN ('needs_ai', 'needs_review', 'pending')
         `,
-        [input.userId, input.email.messageId, input.errorReason],
+        [input.userId, input.email.messageId, AI_FAILURE_DIAGNOSTIC],
       );
     });
   }
