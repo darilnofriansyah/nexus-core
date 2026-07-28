@@ -595,14 +595,6 @@ const learnedProposal: EmailParserTemplateProposalDto = {
   paymentType: "QRIS",
 };
 
-const learnedTemplate: LearnedEmailTemplate = {
-  id: "7",
-  userId: "1",
-  senderAddress: "alerts@krom.id",
-  fingerprint: "a".repeat(64),
-  proposal: learnedProposal,
-};
-
 const authenticatedUnknownKromEmail: EmailTransactionHandleRequestDto = {
   telegramUserId: "976684739",
   userId: "1",
@@ -621,6 +613,37 @@ const authenticatedUnknownKromEmail: EmailTransactionHandleRequestDto = {
       domain: "krom.id",
     },
   },
+};
+
+function validatedFingerprint(
+  email: EmailTransactionMessageDto,
+  proposal: EmailParserTemplateProposalDto,
+): string {
+  const normalizedText = normalizeEmailWhitespace(email.emailText);
+  const result = validateEmailTemplateProposal(
+    {
+      email,
+      text: email.emailText,
+      normalizedText,
+      bodySource: "text",
+      bodyWarnings: [],
+    },
+    proposal,
+  );
+  assert.equal(result.ok, true);
+  if (!result.ok) throw new Error(result.reason);
+  return result.fingerprint;
+}
+
+const learnedTemplate: LearnedEmailTemplate = {
+  id: "7",
+  userId: "1",
+  senderAddress: "alerts@krom.id",
+  fingerprint: validatedFingerprint(
+    authenticatedUnknownKromEmail.email,
+    learnedProposal,
+  ),
+  proposal: learnedProposal,
 };
 
 const authenticatedUnknownBankTransaction: EmailTransactionHandleRequestDto = {
@@ -1150,7 +1173,7 @@ const pendingAiTransaction = {
     },
     parserSource: "ai",
     validatedTemplate: {
-      fingerprint: "a".repeat(64),
+      fingerprint: learnedTemplate.fingerprint,
       proposal: learnedProposal,
     },
   },
