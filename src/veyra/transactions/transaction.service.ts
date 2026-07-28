@@ -133,6 +133,13 @@ const RISK_SIGNAL_SCORES = {
   unsafeBurnRate: 20,
   lowFrequencyMerchant: 10,
 } as const;
+const EMAIL_MATERIAL_KEYS = [
+  "amount",
+  "merchant",
+  "merchant_normalized",
+  "transaction_date",
+  "transaction_type",
+] as const;
 const RISK_LEVEL_BOUNDS = {
   medium: 30,
   high: 50,
@@ -152,6 +159,7 @@ interface CategoryRuleRow extends QueryResultRow {
 interface TelegramUserRow extends QueryResultRow {
   id: string | number;
   telegram_id: string | number | null;
+  timezone?: string | null;
 }
 
 interface ExistingImportRow extends QueryResultRow {
@@ -292,6 +300,10 @@ type ValidatedEmailReview =
           authentication: EmailTransactionMessageDto["authentication"] | null;
         };
         parserSource: "ai";
+        reviewContext: {
+          timeZone: string | null;
+          originalTransactionDate: string;
+        };
         validatedTemplate: EmailValidatedTemplatePayloadDto | null;
       };
     };
@@ -923,7 +935,11 @@ export class TransactionService {
       };
     }
 
-    const validated = this.validateEmailReviewRequest(request, String(user.id));
+    const validated = this.validateEmailReviewRequest(
+      request,
+      String(user.id),
+      this.cleanString(user.timezone) ?? null,
+    );
 
     if (
       validated.kind === "candidate" &&
@@ -979,6 +995,9 @@ export class TransactionService {
       merchant: transaction.merchantNormalized,
       category: transaction.category,
       transactionDate: transaction.transactionDate,
+      timeZone: validated.rawPayload.reviewContext.timeZone,
+      originalTransactionDate:
+        validated.rawPayload.reviewContext.originalTransactionDate,
     });
     const watchdog = this.emptyTransactionWatchdogResponse();
 
@@ -998,7 +1017,7 @@ export class TransactionService {
   ): Promise<TelegramUserRow | undefined> {
     const result = await this.database.query<TelegramUserRow>(
       `
-        SELECT id, telegram_id
+        SELECT id, telegram_id, timezone
         FROM telegram_users
         WHERE telegram_id = $1
         LIMIT 1
@@ -1331,13 +1350,14 @@ export class TransactionService {
       changes.transaction_date !== undefined &&
       changes.transaction_date !== null
     ) {
-      const date = new Date(changes.transaction_date);
+      const transactionDate = this.cleanString(changes.transaction_date);
+      const date = transactionDate ? new Date(transactionDate) : null;
 
-      if (Number.isNaN(date.getTime())) {
+      if (!date || Number.isNaN(date.getTime())) {
         return null;
       }
 
-      validated.transaction_date = date.toISOString();
+      validated.transaction_date = transactionDate;
     }
 
     return Object.keys(validated).length > 0 ? validated : null;
@@ -1366,22 +1386,68 @@ export class TransactionService {
 
     const values: unknown[] = [];
     const assignments = entries.map(([key, value], index) => {
-      values.push(value);
+      values.push(
+        key === "transaction_date"
+          ? new Date(String(value)).toISOString()
+          : value,
+      );
       return `${allowedColumns[key]} = $${index + 1}`;
     });
+    const rawPayload = this.readRecord(transaction.raw_payload);
+    const clearsAiProposal =
+      transaction.source === "email" &&
+      transaction.status === "pending" &&
+      rawPayload.parserSource === "ai" &&
+      EMAIL_MATERIAL_KEYS.some((key) => key in (changes ?? {}));
+
+    if (clearsAiProposal) {
+      const originalTransactionDate = this.cleanString(
+        changes?.transaction_date,
+      );
+      const reviewContext = this.readRecord(rawPayload.reviewContext);
+      values.push({
+        ...rawPayload,
+        ...(originalTransactionDate
+          ? {
+              reviewContext: {
+                ...reviewContext,
+                timeZone: this.cleanString(reviewContext.timeZone) ?? null,
+                originalTransactionDate,
+              },
+            }
+          : {}),
+        validatedTemplate: null,
+      });
+      assignments.push(`raw_payload = $${values.length}`);
+    }
+
     values.push(String(transaction.id), String(transaction.user_id));
 
     await this.database.withTransaction(async (client) => {
-      await client.query(
+      const edit = await client.query<{ id: string | number }>(
         `
           UPDATE transactions
           SET ${assignments.join(", ")},
               updated_at = now()
           WHERE id = $${values.length - 1}
             AND user_id = $${values.length}
+            ${
+              clearsAiProposal
+                ? `
+            AND status = 'pending'
+            AND source = 'email'
+            AND raw_payload ->> 'parserSource' = 'ai'`
+                : ""
+            }
+          RETURNING id
         `,
         values,
       );
+      if (clearsAiProposal && !edit.rows[0]) {
+        throw new BadRequestException(
+          "transaction changed before the edit completed",
+        );
+      }
       await this.disableLearnedTemplateAfterMaterialEdit(
         transaction,
         changes,
@@ -1711,6 +1777,7 @@ export class TransactionService {
   private validateEmailReviewRequest(
     request: EmailTransactionResolveReviewRequestDto,
     userId: string,
+    timeZone: string | null,
   ): ValidatedEmailReview {
     const email = request.email;
 
@@ -1759,14 +1826,22 @@ export class TransactionService {
     const candidate = request.transactionCandidate;
     const resolution = request.resolution;
     const errorReason = this.cleanString(request.aiError);
+    const candidateMode =
+      request.isTransaction === true ||
+      candidate !== undefined ||
+      resolution !== undefined ||
+      request.templateProposal !== undefined;
+    const resultModeCount = [
+      Boolean(errorReason),
+      request.isTransaction === false,
+      candidateMode,
+    ].filter(Boolean).length;
+
+    if (resultModeCount > 1) {
+      throw new BadRequestException("AI result modes are mutually exclusive");
+    }
 
     if (errorReason) {
-      if (candidate || resolution || request.templateProposal) {
-        throw new BadRequestException(
-          "aiError cannot be combined with an AI review result",
-        );
-      }
-
       return {
         kind: "failure",
         userId,
@@ -1891,6 +1966,10 @@ export class TransactionService {
           authentication: email.authentication ?? null,
         },
         parserSource: "ai",
+        reviewContext: {
+          timeZone,
+          originalTransactionDate: transactionDate,
+        },
         validatedTemplate: retainedTemplate
           ? {
               fingerprint: retainedTemplate.fingerprint,
@@ -2223,42 +2302,52 @@ export class TransactionService {
   private async recordEmailNonTransaction(
     input: Extract<ValidatedEmailReview, { kind: "non_transaction" }>,
   ): Promise<void> {
-    const emailImport = await this.database.query<InsertedImportRow>(
-      `
-        UPDATE transaction_imports
-        SET status = 'ignored_non_transaction',
-            raw_payload = raw_payload || jsonb_build_object(
-              'aiDecision',
-              jsonb_build_object('isTransaction', false)
+    await this.database.withTransaction(async (client) => {
+      const emailImport = await client.query<InsertedImportRow>(
+        `
+          UPDATE transaction_imports
+          SET status = 'ignored_non_transaction',
+              raw_payload = raw_payload || jsonb_build_object(
+                'aiDecision',
+                jsonb_build_object('isTransaction', false)
+              )
+          WHERE user_id = $1
+            AND source = 'email'
+            AND source_reference = $2
+            AND transaction_id IS NULL
+            AND status IN (
+              'needs_ai',
+              'needs_review',
+              'ignored_non_transaction'
             )
-        WHERE user_id = $1
-          AND source = 'email'
-          AND source_reference = $2
-          AND transaction_id IS NULL
-          AND status IN ('needs_ai', 'ignored_non_transaction')
-        RETURNING id
-      `,
-      [input.userId, input.email.messageId],
-    );
-
-    if (!emailImport.rows[0]) {
-      throw new BadRequestException(
-        "email import is not eligible for non-transaction review",
+          RETURNING id
+        `,
+        [input.userId, input.email.messageId],
       );
-    }
 
-    await this.database.query(
-      `
-        UPDATE email_parse_attempts
-        SET status = 'ignored_non_transaction',
-            error_reason = NULL
-        WHERE user_id = $1
-          AND source_reference = $2
-          AND status IN ('needs_ai', 'ignored_non_transaction')
-        RETURNING id
-      `,
-      [input.userId, input.email.messageId],
-    );
+      if (!emailImport.rows[0]) {
+        throw new BadRequestException(
+          "email import is not eligible for non-transaction review",
+        );
+      }
+
+      await client.query(
+        `
+          UPDATE email_parse_attempts
+          SET status = 'ignored_non_transaction',
+              error_reason = NULL
+          WHERE user_id = $1
+            AND source_reference = $2
+            AND status IN (
+              'needs_ai',
+              'needs_review',
+              'ignored_non_transaction'
+            )
+          RETURNING id
+        `,
+        [input.userId, input.email.messageId],
+      );
+    });
   }
 
   private buildEmailReviewReplyMarkup(
@@ -2297,10 +2386,16 @@ export class TransactionService {
     merchant: string;
     category: string;
     transactionDate: string;
+    timeZone: string | null;
+    originalTransactionDate: string;
     reason?: string;
   }): string {
     const type = `${input.transactionType[0].toUpperCase()}${input.transactionType.slice(1)}`;
-    const date = input.transactionDate.slice(0, 10);
+    const date = this.formatDateForTelegram(
+      input.transactionDate,
+      input.timeZone,
+      input.originalTransactionDate,
+    );
 
     if (input.status === "confirmed") {
       return this.formatConfirmationHtml([
@@ -5043,10 +5138,15 @@ export class TransactionService {
     transactionId: string,
     summary: ConfirmTransactionSummaryDto,
     nextStatus: "confirmed" | "rejected",
+    transaction?: TransactionRow,
   ): ConfirmTransactionEditMessageDto {
+    const emailDate =
+      nextStatus === "confirmed" && transaction?.source === "email"
+        ? this.emailTransactionDisplayDate(transaction)
+        : null;
     const text =
       nextStatus === "confirmed"
-        ? `Transaction ${transactionId} confirmed: ${summary.merchant} • ${this.formatCurrency(summary.amount)}`
+        ? `Transaction ${transactionId} confirmed: ${summary.merchant} • ${this.formatCurrency(summary.amount)}${emailDate ? `\nDate: ${emailDate}` : ""}`
         : `Transaction ${transactionId} cancelled.`;
 
     return {
@@ -5133,15 +5233,7 @@ export class TransactionService {
       return;
     }
 
-    const materialKeys = [
-      "amount",
-      "merchant",
-      "merchant_normalized",
-      "transaction_date",
-      "transaction_type",
-    ];
-
-    if (!materialKeys.some((key) => key in (changes ?? {}))) {
+    if (!EMAIL_MATERIAL_KEYS.some((key) => key in (changes ?? {}))) {
       return;
     }
 
@@ -5507,6 +5599,7 @@ export class TransactionService {
       String(winningTransaction.id),
       summary,
       nextStatus,
+      winningTransaction,
     );
 
     return {
@@ -6262,6 +6355,7 @@ export class TransactionService {
       String(confirmedTransaction.id),
       summary,
       "confirmed",
+      confirmedTransaction,
     );
 
     return {
@@ -6314,11 +6408,67 @@ export class TransactionService {
     return `Rp${amount.toLocaleString("id-ID")}`;
   }
 
-  private formatDateForTelegram(value: string): string {
+  private emailTransactionDisplayDate(
+    transaction: TransactionRow,
+  ): string | null {
+    const transactionDate = this.formatNullableTimestamp(
+      transaction.transaction_date,
+    );
+
+    if (!transactionDate) {
+      return null;
+    }
+
+    const rawPayload = this.readRecord(transaction.raw_payload);
+    const reviewContext = this.readRecord(rawPayload.reviewContext);
+
+    return this.formatDateForTelegram(
+      transactionDate,
+      this.cleanString(reviewContext.timeZone) ?? null,
+      this.cleanString(reviewContext.originalTransactionDate) ?? undefined,
+    );
+  }
+
+  private formatDateForTelegram(
+    value: string,
+    timeZone: string | null = null,
+    originalValue?: string,
+  ): string {
     const date = new Date(value);
 
     if (Number.isNaN(date.getTime())) {
       return value;
+    }
+
+    if (timeZone) {
+      try {
+        const parts = new Intl.DateTimeFormat("en-US", {
+          timeZone,
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+        }).formatToParts(date);
+        const part = (type: Intl.DateTimeFormatPartTypes) =>
+          parts.find((item) => item.type === type)?.value;
+        const year = part("year");
+        const month = part("month");
+        const day = part("day");
+
+        if (year && month && day) {
+          return `${year}-${month}-${day}`;
+        }
+      } catch {
+        // Fall back to the validated original offset below.
+      }
+    }
+
+    const originalDate =
+      /^(\d{4}-\d{2}-\d{2})(?:T.*(?:Z|[+-]\d{2}:\d{2}))?$/.exec(
+        originalValue ?? "",
+      )?.[1];
+
+    if (originalDate) {
+      return originalDate;
     }
 
     return date.toISOString().slice(0, 10);

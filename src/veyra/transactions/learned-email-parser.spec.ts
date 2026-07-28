@@ -373,3 +373,29 @@ test("does not treat Rp punctuation without a digit as money", () => {
     false,
   );
 });
+
+test("rejects duplicate capture boundaries that could select an earlier value", () => {
+  const result = validateEmailTemplateProposal(
+    input(
+      "Jumlah: Rp1 Pembayaran QR berhasil Merchant: Tuku Jumlah: Rp25.000 Tanggal: 25 Juni 2026 09:30",
+    ),
+    proposal({
+      requiredAnchors: [
+        "Pembayaran QR berhasil",
+        "Merchant:",
+        "Jumlah:",
+        "Tanggal:",
+      ],
+      amount: {
+        kind: "idr_amount",
+        after: "Jumlah:",
+        before: "Tanggal:",
+      },
+    }),
+  );
+
+  assert.deepEqual(result, {
+    ok: false,
+    reason: "anchor or capture boundary is ambiguous",
+  });
+});

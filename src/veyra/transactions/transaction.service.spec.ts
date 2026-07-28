@@ -29,6 +29,7 @@ function createService(
   resolvedEmailUserId: string | null = "1",
 ) {
   const calls: Array<{ text: string; values: unknown[] }> = [];
+  const transactionCalls: Array<{ text: string; values: unknown[] }> = [];
   const transactionEvents: Array<"begin" | "commit" | "rollback"> = [];
   const query = async (text: string, values: unknown[] = []) => {
     if (/resolve_email_caller/.test(text)) {
@@ -51,7 +52,12 @@ function createService(
     ) => {
       transactionEvents.push("begin");
       try {
-        const result = await callback({ query });
+        const result = await callback({
+          query: async (text: string, values: unknown[] = []) => {
+            transactionCalls.push({ text, values });
+            return query(text, values);
+          },
+        });
         transactionEvents.push("commit");
         return result;
       } catch (error) {
@@ -63,6 +69,7 @@ function createService(
 
   return {
     calls,
+    transactionCalls,
     transactionEvents,
     service: new TransactionService(
       database,
@@ -94,8 +101,16 @@ function createTemplateRepository(
       markMatched: async (templateId: string, userId: string) => {
         calls.push({ method: "markMatched", input: { templateId, userId } });
       },
-      disable: async (templateId: string, userId: string) => {
+      disable: async (
+        templateId: string,
+        userId: string,
+        query?: (text: string, values?: unknown[]) => Promise<unknown>,
+      ) => {
         calls.push({ method: "disable", input: { templateId, userId } });
+        await query?.(
+          "UPDATE email_parser_templates SET status = 'disabled' WHERE id = $1 AND user_id = $2",
+          [templateId, userId],
+        );
         if (disableError) throw disableError;
       },
     } as unknown as EmailParserTemplateRepository,
@@ -4655,7 +4670,7 @@ test("rolls back a learned material edit when template disable fails", async () 
       changes: { amount: 30000 },
     },
   });
-  const { service, transactionEvents } = createService(
+  const { service, transactionCalls, transactionEvents } = createService(
     [
       [{ id: "1", telegram_id: "976684739" }],
       [learnedParsedTransaction],
@@ -4680,6 +4695,12 @@ test("rolls back a learned material edit when template disable fails", async () 
   );
 
   assert.deepEqual(transactionEvents, ["begin", "rollback"]);
+  assert.equal(
+    transactionCalls.some((call) =>
+      /UPDATE email_parser_templates/.test(call.text),
+    ),
+    true,
+  );
   assert.equal(state.state.stateName, "confirm_action");
 });
 
@@ -4703,6 +4724,416 @@ test("derives the email owner from telegramUserId and rejects a claimed mismatch
     false,
   );
   assert.deepEqual(templates.calls, []);
+});
+
+test("completes failure redelivery as non-transaction and keeps the retry idempotent", async () => {
+  const failedImport = {
+    id: "import-1",
+    transaction_id: null,
+    status: "needs_review",
+    raw_payload: {
+      aiRequest: {
+        reviewToken: authenticatedUnknownKromEmail.email.messageId,
+        reason: "unsupported_template",
+      },
+    },
+  };
+  const { calls, service } = createService([
+    [{ id: "1", telegram_id: "976684739" }],
+    [{ id: "import-1" }],
+    [],
+    [failedImport],
+    [{ id: "1", telegram_id: "976684739" }],
+    [{ id: "import-1" }],
+    [{ id: "attempt-1" }],
+    [{ id: "1", telegram_id: "976684739" }],
+    [{ id: "import-1" }],
+    [{ id: "attempt-1" }],
+  ]);
+  const failure = {
+    telegramUserId: "976684739",
+    reviewToken: authenticatedUnknownKromEmail.email.messageId,
+    email: authenticatedUnknownKromEmail.email,
+    aiError: "model unavailable",
+  };
+  const nonTransaction: EmailTransactionResolveReviewRequestDto = {
+    telegramUserId: "976684739",
+    reviewToken: authenticatedUnknownKromEmail.email.messageId,
+    email: authenticatedUnknownKromEmail.email,
+    isTransaction: false,
+  };
+
+  const failed = await service.resolveEmailTransactionReview(failure);
+  const redelivery = await service.handleEmailTransaction(originalAiEmail);
+  const resolved =
+    await service.resolveEmailTransactionReview(nonTransaction);
+  const retry = await service.resolveEmailTransactionReview(nonTransaction);
+
+  assert.equal(failed.status, "needs_review");
+  assert.equal(redelivery.status, "needs_ai");
+  assert.equal(resolved.status, "ignored_non_transaction");
+  assert.equal(retry.status, "ignored_non_transaction");
+  const importResolutions = calls.filter(
+    (call) =>
+      /UPDATE transaction_imports/.test(call.text) &&
+      /SET status = 'ignored_non_transaction'/.test(call.text),
+  );
+  assert.equal(importResolutions.length, 2);
+  assert.ok(
+    importResolutions.every(
+      (call) =>
+        /transaction_id IS NULL/.test(call.text) &&
+        /'needs_review'/.test(call.text) &&
+        /'ignored_non_transaction'/.test(call.text),
+    ),
+  );
+});
+
+test("rejects contradictory AI result modes before persistence", async () => {
+  for (const request of [
+    {
+      telegramUserId: "976684739",
+      reviewToken: authenticatedUnknownKromEmail.email.messageId,
+      email: authenticatedUnknownKromEmail.email,
+      aiError: "model unavailable",
+      isTransaction: false,
+    },
+    {
+      ...validAiReviewRequest(),
+      isTransaction: false,
+    },
+  ] as EmailTransactionResolveReviewRequestDto[]) {
+    const { calls, service } = createService([
+      [{ id: "1", telegram_id: "976684739" }],
+    ]);
+
+    await assert.rejects(
+      () => service.resolveEmailTransactionReview(request),
+      /result mode/,
+    );
+    assert.equal(
+      calls.some((call) => /UPDATE|INSERT/.test(call.text)),
+      false,
+    );
+  }
+});
+
+test("material AI edit clears its proposal so later Save cannot activate it", async () => {
+  const clearedPayload = {
+    ...pendingAiTransaction.raw_payload,
+    validatedTemplate: null,
+  };
+  const edited = {
+    ...pendingAiTransaction,
+    amount: "30000",
+    raw_payload: clearedPayload,
+  };
+  const templates = createTemplateRepository();
+  const state = createManageStateStore({
+    stateName: "confirm_action",
+    stateData: {
+      action: "edit",
+      transaction_id: "123",
+      before: pendingAiTransaction,
+      changes: { amount: 30000 },
+    },
+  });
+  const { calls, service } = createService(
+    [
+      [{ id: "1", telegram_id: "976684739" }],
+      [pendingAiTransaction],
+      [{ id: "123" }],
+      [edited],
+      [{ ...edited, status: "confirmed" }],
+      [{ id: "import-1" }],
+      [],
+      [],
+      [],
+      [],
+    ],
+    undefined,
+    undefined,
+    templates.repository,
+  );
+  spyOnWatchdog(service);
+
+  await service.handleManagedTransaction(
+    {
+      telegramUserId: "976684739",
+      text: "veyra_tx_manage:confirm",
+      llmResult: null,
+    },
+    state.store,
+  );
+  const saved = await service.confirmTransaction({
+    transactionId: "123",
+    userId: "1",
+  });
+
+  const edit = calls.find(
+    (call) =>
+      /UPDATE transactions/.test(call.text) &&
+      /amount = \$1/.test(call.text),
+  );
+  assert.ok(edit);
+  assert.match(edit.text, /raw_payload = \$2/);
+  assert.deepEqual(edit.values[1], clearedPayload);
+  assert.equal(saved.status, "confirmed");
+  assert.equal(
+    templates.calls.some((call) => call.method === "activate"),
+    false,
+  );
+});
+
+test("material AI edit rejects a concurrent status change", async () => {
+  const state = createManageStateStore({
+    stateName: "confirm_action",
+    stateData: {
+      action: "edit",
+      transaction_id: "123",
+      before: pendingAiTransaction,
+      changes: { amount: 30000 },
+    },
+  });
+  const { calls, service, transactionEvents } = createService([
+    [{ id: "1", telegram_id: "976684739" }],
+    [pendingAiTransaction],
+    [],
+  ]);
+
+  await assert.rejects(
+    () =>
+      service.handleManagedTransaction(
+        {
+          telegramUserId: "976684739",
+          text: "veyra_tx_manage:confirm",
+          llmResult: null,
+        },
+        state.store,
+      ),
+    /transaction changed before the edit completed/,
+  );
+
+  const edit = calls.find(
+    (call) =>
+      /UPDATE transactions/.test(call.text) &&
+      /amount = \$1/.test(call.text),
+  );
+  assert.ok(edit);
+  assert.match(edit.text, /status = 'pending'/);
+  assert.match(edit.text, /source = 'email'/);
+  assert.match(edit.text, /raw_payload ->> 'parserSource' = 'ai'/);
+  assert.deepEqual(transactionEvents, ["begin", "rollback"]);
+  assert.equal(state.state.stateName, "confirm_action");
+});
+
+test("material AI date edit refreshes the body-free fallback date", async () => {
+  const originalDate = "2026-07-28T00:30:00+07:00";
+  const oldPayload = {
+    ...pendingAiTransaction.raw_payload,
+    reviewContext: {
+      timeZone: null,
+      originalTransactionDate: "2026-07-27T00:30:00+07:00",
+    },
+  };
+  const pending = {
+    ...pendingAiTransaction,
+    transaction_date: "2026-07-26T17:30:00.000Z",
+    raw_payload: oldPayload,
+  };
+  const editedPayload = {
+    ...oldPayload,
+    reviewContext: {
+      timeZone: null,
+      originalTransactionDate: originalDate,
+    },
+    validatedTemplate: null,
+  };
+  const edited = {
+    ...pending,
+    transaction_date: "2026-07-27T17:30:00.000Z",
+    raw_payload: editedPayload,
+  };
+  const state = createManageStateStore({
+    stateName: "confirm_action",
+    stateData: {
+      action: "edit",
+      transaction_id: "123",
+      before: pending,
+      changes: { transaction_date: originalDate },
+    },
+  });
+  const manage = createService([
+    [{ id: "1", telegram_id: "976684739" }],
+    [pending],
+    [{ id: "123" }],
+  ]);
+  spyOnWatchdog(manage.service);
+  const save = createService([
+    [edited],
+    [{ ...edited, status: "confirmed" }],
+    [{ id: "import-1" }],
+  ]);
+  spyOnWatchdog(save.service);
+
+  await manage.service.handleManagedTransaction(
+    {
+      telegramUserId: "976684739",
+      text: "veyra_tx_manage:confirm",
+      llmResult: null,
+    },
+    state.store,
+  );
+  const saved = await save.service.confirmTransaction({
+    transactionId: "123",
+    userId: "1",
+  });
+
+  const edit = manage.calls.find(
+    (call) =>
+      /UPDATE transactions/.test(call.text) &&
+      /transaction_date = \$1/.test(call.text),
+  );
+  assert.ok(edit);
+  assert.equal(edit.values[0], "2026-07-27T17:30:00.000Z");
+  assert.deepEqual(edit.values[1], editedPayload);
+  assert.match(saved.editMessage?.text ?? "", /Date: 2026-07-28/);
+});
+
+test("failed material AI edit rolls back without clearing its proposal", async () => {
+  const state = createManageStateStore({
+    stateName: "confirm_action",
+    stateData: {
+      action: "edit",
+      transaction_id: "123",
+      before: pendingAiTransaction,
+      changes: { amount: 30000 },
+    },
+  });
+  const { service, transactionEvents } = createService([
+    [{ id: "1", telegram_id: "976684739" }],
+    [pendingAiTransaction],
+    new Error("edit unavailable"),
+  ]);
+
+  await assert.rejects(
+    () =>
+      service.handleManagedTransaction(
+        {
+          telegramUserId: "976684739",
+          text: "veyra_tx_manage:confirm",
+          llmResult: null,
+        },
+        state.store,
+      ),
+    /edit unavailable/,
+  );
+
+  assert.deepEqual(transactionEvents, ["begin", "rollback"]);
+  assert.ok(pendingAiTransaction.raw_payload.validatedTemplate);
+  assert.equal(state.state.stateName, "confirm_action");
+});
+
+test("rolls back non-transaction import state when attempt update fails", async () => {
+  const { service, transactionEvents } = createService([
+    [{ id: "1", telegram_id: "976684739" }],
+    [{ id: "import-1" }],
+    new Error("attempt unavailable"),
+  ]);
+
+  await assert.rejects(
+    () =>
+      service.resolveEmailTransactionReview({
+        telegramUserId: "976684739",
+        reviewToken: authenticatedUnknownKromEmail.email.messageId,
+        email: authenticatedUnknownKromEmail.email,
+        isTransaction: false,
+      }),
+    /attempt unavailable/,
+  );
+
+  assert.deepEqual(transactionEvents, ["begin", "rollback"]);
+});
+
+test("formats AI review dates in the resolved Telegram user timezone", async () => {
+  const midnightCandidate = {
+    ...aiCandidate,
+    transactionDate: "2026-07-27T00:30:00+07:00",
+  };
+  const { calls, service } = createService([
+    [
+      {
+        id: "1",
+        telegram_id: "976684739",
+        timezone: "Asia/Jakarta",
+      },
+    ],
+    [{ category: "Food" }],
+    [{ id: "import-1", transaction_id: null, status: "needs_ai" }],
+    [{ id: "123" }],
+    [{ id: "import-1" }],
+  ]);
+
+  const result = await service.resolveEmailTransactionReview(
+    validAiReviewRequest({
+      transactionCandidate: midnightCandidate,
+      templateProposal: undefined,
+    }),
+  );
+
+  assert.match(result.telegramText ?? "", /Date: 2026-07-27/);
+  const insert = calls.find((call) => /INSERT INTO transactions/.test(call.text));
+  const rawPayload = insert?.values[10] as Record<string, unknown>;
+  assert.deepEqual(rawPayload.reviewContext, {
+    timeZone: "Asia/Jakarta",
+    originalTransactionDate: "2026-07-27T00:30:00+07:00",
+  });
+});
+
+test("Save and category confirmation preserve the Jakarta transaction date", async () => {
+  const rawPayload = {
+    email: {
+      messageId: "gmail-midnight",
+      from: "alerts@krom.id",
+    },
+    parserSource: "review",
+    reviewContext: {
+      timeZone: "Asia/Jakarta",
+      originalTransactionDate: "2026-07-27T00:30:00+07:00",
+    },
+  };
+  const pending = {
+    ...pendingAiTransaction,
+    transaction_date: "2026-07-26T17:30:00.000Z",
+    raw_payload: rawPayload,
+  };
+  const confirmed = { ...pending, status: "confirmed" };
+  const save = createService([
+    [pending],
+    [confirmed],
+    [{ id: "import-save" }],
+  ]);
+  spyOnWatchdog(save.service);
+  const category = createService([
+    [pending],
+    [{ id: "budget-food", category: "Dining", parent_category: null }],
+    [{ ...confirmed, category: "Dining" }],
+    [{ id: "import-category" }],
+  ]);
+  spyOnWatchdog(category.service);
+
+  const saved = await save.service.confirmTransaction({
+    transactionId: "123",
+    userId: "1",
+  });
+  const categorized = await category.service.setPendingTransactionCategory({
+    transactionId: "123",
+    budgetId: "budget-food",
+    userId: "1",
+  });
+
+  assert.match(saved.editMessage?.text ?? "", /Date: 2026-07-27/);
+  assert.match(categorized.editMessage?.text ?? "", /Date: 2026-07-27/);
 });
 
 test("category confirmation activates the proposal exactly once", async () => {

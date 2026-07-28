@@ -269,6 +269,18 @@ function templateFingerprint(
     .digest("hex");
 }
 
+function occurrenceCount(text: string, literal: string): number {
+  let count = 0;
+  let offset = 0;
+
+  while ((offset = text.indexOf(literal, offset)) >= 0) {
+    count += 1;
+    offset += literal.length;
+  }
+
+  return count;
+}
+
 export function isLikelyTransactionEmail(input: EmailParserInput): boolean {
   const text = input.normalizedText.toLowerCase();
   const hasMoney =
@@ -322,6 +334,28 @@ export function validateEmailTemplateProposal(
       };
     }
     anchorOffset = index + anchor.length;
+  }
+  const captureBoundaries = [
+    validatedProposal.amount,
+    validatedProposal.merchant,
+    validatedProposal.transactionDate,
+  ].flatMap((rule) =>
+    rule.before === undefined ? [rule.after] : [rule.after, rule.before],
+  );
+  const selectionLiterals = new Set(
+    [...validatedProposal.requiredAnchors, ...captureBoundaries].map((value) =>
+      value.toLowerCase(),
+    ),
+  );
+  if (
+    [...selectionLiterals].some(
+      (literal) => occurrenceCount(lower, literal) > 1,
+    )
+  ) {
+    return {
+      ok: false,
+      reason: "anchor or capture boundary is ambiguous",
+    };
   }
   if (
     validatedProposal.forbiddenAnchors?.some((anchor) =>
