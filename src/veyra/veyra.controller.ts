@@ -62,6 +62,8 @@ import {
   TransactionHandleResponseDto,
 } from './transactions/dto/handle-transaction.dto';
 import {
+  EmailSourceReferenceRequestDto,
+  EmailSourceReferenceResponseDto,
   EmailTransactionHandleRequestDto,
   EmailTransactionHandleResponseDto,
   EmailTransactionResolveReviewRequestDto,
@@ -211,6 +213,13 @@ export class VeyraController {
     @Body() body: EmailTransactionHandleRequestDto,
   ): Promise<EmailTransactionHandleResponseDto> {
     return this.transactionService.handleEmailTransaction(body);
+  }
+
+  @Post('transactions/email/source-reference')
+  getEmailSourceReference(
+    @Body() body: EmailSourceReferenceRequestDto,
+  ): Promise<EmailSourceReferenceResponseDto> {
+    return this.transactionService.getEmailSourceReference(body);
   }
 
   @Post('transactions/email/resolve-review')

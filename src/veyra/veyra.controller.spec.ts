@@ -33,6 +33,10 @@ function createController() {
     },
   };
   const transactionService = {
+    getEmailSourceReference: async (request: unknown) => {
+      calls.push({ method: 'getEmailSourceReference', request });
+      return { transactionId: '123', messageId: 'gmail-message-id' };
+    },
     handleManagedTransaction: async (request: unknown) => {
       calls.push({ method: 'handleManagedTransaction', request });
       return manageResponse;
@@ -73,6 +77,25 @@ function createController() {
 
   return { calls, controller, manageResponse, callbackResponse };
 }
+
+test('/transactions/email/source-reference delegates lookup', async () => {
+  const { calls, controller } = createController();
+  const request = {
+    telegramUserId: '976684739',
+    transactionId: '123',
+  };
+
+  const result = await controller.getEmailSourceReference(request);
+
+  assert.deepEqual(result, {
+    transactionId: '123',
+    messageId: 'gmail-message-id',
+  });
+  assert.deepEqual(calls.at(-1), {
+    method: 'getEmailSourceReference',
+    request,
+  });
+});
 
 test('/transactions/callback/handle routes manage select callback to transaction manage handler', async () => {
   const { calls, controller } = createController();
