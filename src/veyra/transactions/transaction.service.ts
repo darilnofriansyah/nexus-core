@@ -1738,11 +1738,12 @@ export class TransactionService {
       );
     }
 
-    if (
-      (typeof candidate.amount === "number" && candidate.amount < 0) ||
-      (typeof candidate.amount === "string" &&
-        candidate.amount.trimStart().startsWith("-"))
-    ) {
+    const normalizedAmount =
+      typeof candidate.amount === "number"
+        ? String(candidate.amount)
+        : this.normalizeAmountString(candidate.amount);
+
+    if (normalizedAmount.includes("-")) {
       throw new BadRequestException("amount must be positive");
     }
 

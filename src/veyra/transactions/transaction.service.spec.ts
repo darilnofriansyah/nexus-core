@@ -2799,11 +2799,13 @@ test("does not mutate a pending row when corrected output is invalid", async () 
 });
 
 test("rejects negative initial AI amounts before inserting", async () => {
-  for (const amount of [-25000, "-25.000"]) {
+  for (const amount of [-25000, "-25.000", "Rp -25.000"]) {
     const { calls, service } = createService([
       [{ id: "1", telegram_id: "976684739" }],
       [{ category: "Food" }],
+      [{ id: "import-1", transaction_id: null, status: "needs_ai" }],
       [{ id: "123" }],
+      [{ id: "import-1" }],
     ]);
 
     await assert.rejects(
@@ -2823,7 +2825,7 @@ test("rejects negative initial AI amounts before inserting", async () => {
 });
 
 test("rejects negative AI correction amounts before updating", async () => {
-  for (const amount of [-30000, "-30.000"]) {
+  for (const amount of [-30000, "-30.000", "Rp -25.000"]) {
     const { calls, service } = createService([
       [{ id: "1", telegram_id: "976684739" }],
       [{ id: "123", user_id: "1", source: "email", status: "pending" }],
@@ -2846,6 +2848,24 @@ test("rejects negative AI correction amounts before updating", async () => {
       false,
     );
   }
+});
+
+test("accepts a positive formatted AI amount", async () => {
+  const { service } = createService([
+    [{ id: "1", telegram_id: "976684739" }],
+    [{ category: "Food" }],
+    [{ id: "import-1", transaction_id: null, status: "needs_ai" }],
+    [{ id: "123" }],
+    [{ id: "import-1" }],
+  ]);
+
+  const result = await service.resolveEmailTransactionReview(
+    validAiReviewRequest({
+      transactionCandidate: { ...aiCandidate, amount: "Rp 25.000" },
+    }),
+  );
+
+  assert.equal(result.transaction?.amount, 25000);
 });
 
 test("records needs_review when n8n reports AI failure", async () => {
