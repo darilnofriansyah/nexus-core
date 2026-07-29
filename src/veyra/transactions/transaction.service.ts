@@ -582,7 +582,10 @@ export class TransactionService {
       };
     }
 
-    const missingField = this.firstMissingLlmField(llmResult);
+    const missingField =
+      llmResult.intent === "unknown"
+        ? null
+        : this.firstMissingLlmField(llmResult);
 
     if (missingField) {
       const pendingPayload = this.buildPendingTransactionPayload(

@@ -1029,6 +1029,42 @@ test("AI extraction failure writes no transaction and preserves conversation sta
   assert.deepEqual(state.calls, []);
 });
 
+test("rejects an unknown AI intent without writing or mutating state", async () => {
+  const veyraAiService = {
+    extractTransaction: async () => ({
+      intent: "unknown",
+      transaction_type: null,
+      amount: null,
+      merchant: null,
+      category: null,
+      wallet: null,
+      notes: null,
+      missing_fields: ["amount"],
+      confidence: 0,
+    }),
+  } as unknown as VeyraAiService;
+  const { calls, service } = createService(
+    [],
+    undefined,
+    undefined,
+    undefined,
+    "1",
+    veyraAiService,
+  );
+  const state = createStateStore();
+
+  await assert.rejects(
+    () =>
+      service.handleManualTransaction(
+        { userId: 1, source: "manual", text: "hello" },
+        state.store,
+      ),
+    BadRequestException,
+  );
+  assert.equal(calls.length, 0);
+  assert.deepEqual(state.calls, []);
+});
+
 test("deterministic reset and unsupported source never call OpenAI", async () => {
   let extractionCalls = 0;
   const veyraAiService = {
