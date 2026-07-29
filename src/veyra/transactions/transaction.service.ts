@@ -1165,7 +1165,7 @@ export class TransactionService {
       notifications: watchdog.notifications,
       ...(watchdog.watchdog ? { watchdog: watchdog.watchdog } : {}),
       actions: this.buildEmailReviewActions(transaction.id),
-      replyMarkup: this.buildEmailReviewReplyMarkup(transaction.id),
+      replyMarkup: this.buildEmailReviewReplyMarkup(transaction),
     };
   }
 
@@ -2766,28 +2766,41 @@ export class TransactionService {
   }
 
   private buildEmailReviewReplyMarkup(
-    transactionId: string,
+    transaction: NonNullable<EmailTransactionHandleResponseDto["transaction"]>,
   ): TelegramReplyMarkupDto {
+    const error = this.emailTransactionConfirmationError({
+      transactionType: transaction.transactionType,
+      merchant: transaction.merchant,
+      merchantNormalized: transaction.merchantNormalized,
+      category: transaction.category,
+    });
+
     return {
       inline_keyboard: [
         [
-          {
-            text: "Save",
-            callback_data: this.saveTransactionCallbackData(transactionId),
-          },
+          ...(!error
+            ? [
+                {
+                  text: "Save",
+                  callback_data: this.saveTransactionCallbackData(
+                    transaction.id,
+                  ),
+                },
+              ]
+            : []),
           {
             text: "Edit Details",
-            callback_data: `edit_email_details:${transactionId}`,
+            callback_data: `edit_email_details:${transaction.id}`,
           },
         ],
         [
           {
             text: "Change Category",
-            callback_data: this.changeCategoriesCallbackData(transactionId),
+            callback_data: this.changeCategoriesCallbackData(transaction.id),
           },
           {
             text: "Cancel",
-            callback_data: this.cancelTransactionCallbackData(transactionId),
+            callback_data: this.cancelTransactionCallbackData(transaction.id),
           },
         ],
       ],
@@ -4054,9 +4067,9 @@ export class TransactionService {
     watchdog?: TransactionWatchdogResponseDto;
     aiRequest?: EmailTransactionHandleResponseDto["aiRequest"];
   }): EmailTransactionHandleResponseDto {
-    const pendingReviewId =
+    const pendingReview =
       input.status === "needs_review" && input.transaction?.status === "pending"
-        ? input.transaction.id
+        ? input.transaction
         : null;
 
     return {
@@ -4067,10 +4080,10 @@ export class TransactionService {
       transaction: input.transaction,
       parsed: input.parsed,
       ...(input.aiRequest ? { aiRequest: input.aiRequest } : {}),
-      ...(pendingReviewId
+      ...(pendingReview
         ? {
-            actions: this.buildEmailReviewActions(pendingReviewId),
-            replyMarkup: this.buildEmailReviewReplyMarkup(pendingReviewId),
+            actions: this.buildEmailReviewActions(pendingReview.id),
+            replyMarkup: this.buildEmailReviewReplyMarkup(pendingReview),
           }
         : {}),
       telegram: {
@@ -5899,23 +5912,25 @@ export class TransactionService {
     };
   }
 
-  private assertConfirmableEmailTransaction(transaction: TransactionRow): void {
+  private emailTransactionConfirmationError(input: {
+    transactionType: string | null | undefined;
+    merchant: string | null | undefined;
+    merchantNormalized: string | null | undefined;
+    category: string | null | undefined;
+  }): string | null {
     if (
-      this.cleanString(transaction.transaction_type)?.toLowerCase() !==
-      "expense"
+      this.cleanString(input.transactionType)?.toLowerCase() !== "expense"
     ) {
-      return;
+      return null;
     }
 
     const merchant = this.cleanString(
-      transaction.merchant_normalized ?? transaction.merchant ?? undefined,
+      input.merchantNormalized ?? input.merchant ?? undefined,
     );
-    const category = this.cleanString(transaction.category ?? undefined);
+    const category = this.cleanString(input.category ?? undefined);
 
     if (!merchant || this.isUnknownMerchant(merchant)) {
-      throw new BadRequestException(
-        "email transaction merchant must be corrected before confirmation",
-      );
+      return "email transaction merchant must be corrected before confirmation";
     }
 
     if (
@@ -5923,9 +5938,22 @@ export class TransactionService {
       category.toLowerCase() === "uncategorized" ||
       category.toLowerCase() === "unknown"
     ) {
-      throw new BadRequestException(
-        "email transaction category must be selected before confirmation",
-      );
+      return "email transaction category must be selected before confirmation";
+    }
+
+    return null;
+  }
+
+  private assertConfirmableEmailTransaction(transaction: TransactionRow): void {
+    const error = this.emailTransactionConfirmationError({
+      transactionType: transaction.transaction_type,
+      merchant: transaction.merchant,
+      merchantNormalized: transaction.merchant_normalized,
+      category: transaction.category,
+    });
+
+    if (error) {
+      throw new BadRequestException(error);
     }
   }
 
