@@ -79,7 +79,7 @@ export class VeyraAiService {
       outputTokens = response.usage?.output_tokens;
 
       if (
-        response.status === "incomplete" ||
+        response.status !== "completed" ||
         this.hasRefusal(response.output) ||
         !response.output_text.trim()
       ) {

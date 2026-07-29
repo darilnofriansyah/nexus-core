@@ -118,7 +118,7 @@ test("rejects malformed structured output without exposing input data", async ()
   }
 });
 
-test("maps refusal, incomplete, empty, timeout, and API failures to 503", async () => {
+test("maps refusal and non-completed responses to 503", async () => {
   const cases: Array<unknown | Error> = [
     {
       status: "completed",
@@ -126,6 +126,10 @@ test("maps refusal, incomplete, empty, timeout, and API failures to 503", async 
       output: [{ type: "message", content: [{ type: "refusal" }] }],
     },
     { status: "incomplete", output_text: JSON.stringify(validResult) },
+    { status: "failed", output_text: JSON.stringify(validResult) },
+    { status: "cancelled", output_text: JSON.stringify(validResult) },
+    { status: "queued", output_text: JSON.stringify(validResult) },
+    { status: "in_progress", output_text: JSON.stringify(validResult) },
     { status: "completed", output_text: "" },
     new Error("request timed out"),
     new Error("OpenAI API failed"),
