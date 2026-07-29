@@ -28,6 +28,64 @@ function clientFor(response: unknown): OpenAI {
   } as unknown as OpenAI;
 }
 
+test("disables SDK logging even when OPENAI_LOG is debug", () => {
+  const previousApiKey = process.env.OPENAI_API_KEY;
+  const previousLogLevel = process.env.OPENAI_LOG;
+  process.env.OPENAI_API_KEY = "test-key";
+  process.env.OPENAI_LOG = "debug";
+
+  try {
+    const client = (
+      new VeyraAiService() as unknown as { getClient(): OpenAI }
+    ).getClient();
+
+    assert.equal(client.logLevel, "off");
+  } finally {
+    if (previousApiKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previousApiKey;
+    if (previousLogLevel === undefined) delete process.env.OPENAI_LOG;
+    else process.env.OPENAI_LOG = previousLogLevel;
+  }
+});
+
+test("uses OPENAI_TIMEOUT_MS as the overall request deadline", async () => {
+  const previousTimeout = process.env.OPENAI_TIMEOUT_MS;
+  const signals: Array<AbortSignal | null | undefined> = [];
+  process.env.OPENAI_TIMEOUT_MS = "5";
+
+  const client = {
+    responses: {
+      create: async (
+        _request: unknown,
+        options?: { signal?: AbortSignal | null },
+      ) => {
+        signals.push(options?.signal);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return {
+          status: "completed",
+          output_text: JSON.stringify(validResult),
+        };
+      },
+    },
+  } as unknown as OpenAI;
+
+  try {
+    await assert.rejects(
+      new VeyraAiService(client).extractTransaction({
+        text: "private Telegram message",
+        allowedCategories: [],
+      }),
+      ServiceUnavailableException,
+    );
+    const [signal] = signals;
+    assert.ok(signal);
+    assert.equal(signal.aborted, true);
+  } finally {
+    if (previousTimeout === undefined) delete process.env.OPENAI_TIMEOUT_MS;
+    else process.env.OPENAI_TIMEOUT_MS = previousTimeout;
+  }
+});
+
 test("extracts a valid manual transaction with a stateless strict-schema request", async () => {
   const requests: unknown[] = [];
   const client = {
@@ -116,6 +174,22 @@ test("rejects malformed structured output without exposing input data", async ()
       },
     );
   }
+});
+
+test("maps syntactically invalid JSON output to 503", async () => {
+  await assert.rejects(
+    new VeyraAiService(
+      clientFor({ status: "completed", output_text: "{" }),
+    ).extractTransaction({
+      text: "private Telegram message",
+      allowedCategories: [],
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof ServiceUnavailableException);
+      assert.equal(error.getStatus(), 503);
+      return true;
+    },
+  );
 });
 
 test("maps refusal and non-completed responses to 503", async () => {

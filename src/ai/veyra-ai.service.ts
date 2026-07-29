@@ -51,28 +51,39 @@ export class VeyraAiService {
     let outputTokens: number | undefined;
 
     try {
-      const response = await this.getClient().responses.create({
-        model: MANUAL_TRANSACTION_MODEL,
-        store: false,
-        input: [
-          { role: "developer", content: MANUAL_TRANSACTION_INSTRUCTIONS },
+      const signal = AbortSignal.timeout(readEnv().openAiTimeoutMs);
+      const response = await Promise.race([
+        this.getClient().responses.create(
           {
-            role: "user",
-            content: JSON.stringify({
-              message: input.text,
-              allowed_categories: input.allowedCategories,
-            }),
+            model: MANUAL_TRANSACTION_MODEL,
+            store: false,
+            input: [
+              { role: "developer", content: MANUAL_TRANSACTION_INSTRUCTIONS },
+              {
+                role: "user",
+                content: JSON.stringify({
+                  message: input.text,
+                  allowed_categories: input.allowedCategories,
+                }),
+              },
+            ],
+            text: {
+              format: {
+                type: "json_schema",
+                name: "manual_transaction",
+                strict: true,
+                schema: MANUAL_TRANSACTION_SCHEMA,
+              },
+            },
           },
-        ],
-        text: {
-          format: {
-            type: "json_schema",
-            name: "manual_transaction",
-            strict: true,
-            schema: MANUAL_TRANSACTION_SCHEMA,
-          },
-        },
-      });
+          { signal },
+        ),
+        new Promise<never>((_, reject) =>
+          signal.addEventListener("abort", () => reject(signal.reason), {
+            once: true,
+          }),
+        ),
+      ]);
 
       responseId = response.id;
       inputTokens = response.usage?.input_tokens;
@@ -120,6 +131,7 @@ export class VeyraAiService {
 
     this.client = new OpenAI({
       apiKey: env.openAiApiKey,
+      logLevel: "off",
       timeout: env.openAiTimeoutMs,
       maxRetries: 2,
     });

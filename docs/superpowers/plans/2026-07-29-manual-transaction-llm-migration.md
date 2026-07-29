@@ -23,7 +23,7 @@
 The handoff is sufficient to plan the code but omits two production values. Resolve both before cutover, without changing the implementation boundary:
 
 1. Capture the exact sanitized category list rendered today as `allowedCategoryPrompt`. The Core replacement will source the same active categories through `BudgetService.getBudgetCategories({ userId })`.
-2. Confirm the n8n HTTP Request timeout. Set `OPENAI_TIMEOUT_MS` lower than that value; use `20000` only when the n8n timeout is greater than 20 seconds.
+2. Confirm the n8n HTTP Request timeout. `OPENAI_TIMEOUT_MS` is Core's overall inference deadline, including SDK retries and backoff; set it lower than the n8n timeout, and use `20000` only when that timeout is greater than 20 seconds.
 
 These gates do not require n8n workflow mutation. If read-only n8n inspection is needed, obtain explicit approval before using n8n MCP.
 

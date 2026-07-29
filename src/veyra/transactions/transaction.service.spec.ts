@@ -1065,6 +1065,43 @@ test("rejects an unknown AI intent without writing or mutating state", async () 
   assert.deepEqual(state.calls, []);
 });
 
+test("cancels and resets state for a model-produced reset intent without writing", async () => {
+  const veyraAiService = {
+    extractTransaction: async () => ({
+      intent: "reset",
+      transaction_type: null,
+      amount: null,
+      merchant: null,
+      category: null,
+      wallet: null,
+      notes: null,
+      missing_fields: [],
+      confidence: 1,
+    }),
+  } as unknown as VeyraAiService;
+  const { calls, service } = createService(
+    [],
+    undefined,
+    undefined,
+    undefined,
+    "1",
+    veyraAiService,
+  );
+  const state = createStateStore();
+
+  const result = await service.handleManualTransaction(
+    { userId: 1, source: "manual", text: "never mind" },
+    state.store,
+  );
+
+  assert.equal(result.status, "cancelled");
+  assert.equal(result.transactionId, null);
+  assert.equal(calls.length, 0);
+  assert.deepEqual(state.calls, [
+    { method: "resetState", request: { userId: 1 } },
+  ]);
+});
+
 test("deterministic reset and unsupported source never call OpenAI", async () => {
   let extractionCalls = 0;
   const veyraAiService = {
