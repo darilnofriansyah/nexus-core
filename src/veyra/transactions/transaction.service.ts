@@ -4,10 +4,12 @@ import {
   Logger,
   NotFoundException,
   Optional,
+  ServiceUnavailableException,
 } from "@nestjs/common";
 import { createHash } from "node:crypto";
 import { convert } from "html-to-text";
 import { QueryResultRow } from "pg";
+import { VeyraAiService } from "../../ai/veyra-ai.service";
 import { DatabaseService } from "../../database/database.service";
 import { BudgetService } from "../budgets/budget.service";
 import { BudgetWatchdogResponseDto } from "../budgets/dto/overspending-check.dto";
@@ -466,6 +468,7 @@ export class TransactionService {
     private readonly riskReviewRepository?: TransactionRiskReviewRepository,
     @Optional()
     private readonly emailParserTemplateRepository?: EmailParserTemplateRepository,
+    @Optional() private readonly veyraAiService?: VeyraAiService,
   ) {}
 
   placeholderStatus() {
@@ -567,7 +570,18 @@ export class TransactionService {
       };
     }
 
-    const llmResult = this.requireLlmResult(request.llmResult);
+    const llmResult =
+      request.llmResult ?? (await this.extractManualTransaction(request));
+
+    if (llmResult.intent === "reset") {
+      await this.resetConversationState(request.userId, stateStore);
+      return {
+        status: "cancelled",
+        transactionId: null,
+        message: "Transaction recording cancelled.",
+      };
+    }
+
     const missingField = this.firstMissingLlmField(llmResult);
 
     if (missingField) {
@@ -4792,14 +4806,31 @@ export class TransactionService {
     return normalized;
   }
 
-  private requireLlmResult(
-    llmResult: TransactionHandleRequestDto["llmResult"],
-  ): NonNullable<TransactionHandleRequestDto["llmResult"]> {
-    if (!llmResult) {
-      throw new BadRequestException("llmResult is required");
+  private async extractManualTransaction(
+    request: TransactionHandleRequestDto,
+  ): Promise<NonNullable<TransactionHandleRequestDto["llmResult"]>> {
+    const text = this.cleanString(request.text);
+
+    if (!text) {
+      throw new BadRequestException(
+        "text is required when llmResult is absent",
+      );
     }
 
-    return llmResult;
+    if (!this.veyraAiService) {
+      throw new ServiceUnavailableException(
+        "AI transaction extraction is unavailable",
+      );
+    }
+
+    const allowedCategories =
+      (
+        await this.budgetService?.getBudgetCategories({
+          userId: request.userId,
+        })
+      )?.categories.map(({ category }) => category) ?? [];
+
+    return this.veyraAiService.extractTransaction({ text, allowedCategories });
   }
 
   private firstMissingLlmField(

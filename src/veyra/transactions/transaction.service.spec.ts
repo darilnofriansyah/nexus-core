@@ -4,7 +4,9 @@ import { test } from "node:test";
 import {
   BadRequestException,
   NotFoundException,
+  ServiceUnavailableException,
 } from "@nestjs/common";
+import { VeyraAiService } from "../../ai/veyra-ai.service";
 import { DatabaseService } from "../../database/database.service";
 import { BudgetService } from "../budgets/budget.service";
 import {
@@ -32,6 +34,7 @@ function createService(
   riskReviewRepository?: TransactionRiskReviewRepository,
   emailParserTemplateRepository?: EmailParserTemplateRepository,
   resolvedEmailUserId: string | null = "1",
+  veyraAiService?: VeyraAiService,
 ) {
   const calls: Array<{ text: string; values: unknown[] }> = [];
   const transactionCalls: Array<{ text: string; values: unknown[] }> = [];
@@ -81,6 +84,7 @@ function createService(
       budgetService,
       riskReviewRepository,
       emailParserTemplateRepository,
+      veyraAiService,
     ),
   };
 }
@@ -875,6 +879,190 @@ test("handles manual transaction with decimal confidence as confirmed", async ()
         missing_fields: [],
       },
     },
+  ]);
+});
+
+test("extracts from text when llmResult is absent and reuses the existing save path", async () => {
+  const extractionCalls: unknown[] = [];
+  const categoryCalls: unknown[] = [];
+  const budgetService = {
+    getBudgetCategories: async (request: unknown) => {
+      categoryCalls.push(request);
+      return {
+        status: "ok",
+        categories: [{ id: "1", category: "Coffee", parent_category: "Food" }],
+      };
+    },
+  } as unknown as BudgetService;
+  const veyraAiService = {
+    extractTransaction: async (request: unknown) => {
+      extractionCalls.push(request);
+      return {
+        intent: "record_transaction" as const,
+        transaction_type: "expense",
+        amount: 25000,
+        merchant: "kopi tuku",
+        category: "Coffee",
+        wallet: null,
+        notes: null,
+        missing_fields: [],
+        confidence: 0.94,
+      };
+    },
+  } as unknown as VeyraAiService;
+  const { calls, service } = createService(
+    [[], [{ id: "10123" }]],
+    budgetService,
+    undefined,
+    undefined,
+    "1",
+    veyraAiService,
+  );
+
+  const result = await service.handleManualTransaction({
+    telegramUserId: "976684739",
+    userId: 1,
+    source: "manual",
+    text: " Spend 25k at Tuku ",
+  });
+
+  assert.deepEqual(categoryCalls, [{ userId: 1 }]);
+  assert.deepEqual(extractionCalls, [
+    { text: "Spend 25k at Tuku", allowedCategories: ["Coffee"] },
+  ]);
+  assert.equal(result.status, "confirmed");
+  assert.equal(result.transactionId, "10123");
+  assert.equal(
+    result.message,
+    "✅ Recorded: Rp25.000 at Kopi Tuku under Coffee.",
+  );
+  assert.deepEqual(result.notifications, []);
+  assert.match(calls[1].text, /INSERT INTO transactions/);
+  assert.equal(calls[1].values[8], "confirmed");
+  assert.equal(calls[1].values[9], 94);
+});
+
+test("uses caller llmResult without calling OpenAI", async () => {
+  let extractionCalls = 0;
+  const veyraAiService = {
+    extractTransaction: async () => {
+      extractionCalls += 1;
+      throw new Error("OpenAI must not be called");
+    },
+  } as unknown as VeyraAiService;
+  const { service } = createService(
+    [[], [{ id: "caller-result" }]],
+    undefined,
+    undefined,
+    undefined,
+    "1",
+    veyraAiService,
+  );
+
+  const result = await service.handleManualTransaction({
+    userId: 1,
+    source: "manual",
+    text: "Spend 25k at Tuku",
+    llmResult: {
+      transaction_type: "expense",
+      amount: 25000,
+      merchant: "kopi tuku",
+      category: "Coffee",
+      confidence: 95,
+    },
+  });
+
+  assert.equal(result.status, "confirmed");
+  assert.equal(extractionCalls, 0);
+});
+
+test("rejects missing text without calling OpenAI or writing", async () => {
+  let extractionCalls = 0;
+  const veyraAiService = {
+    extractTransaction: async () => {
+      extractionCalls += 1;
+      throw new Error("OpenAI must not be called");
+    },
+  } as unknown as VeyraAiService;
+  const { calls, service } = createService(
+    [],
+    undefined,
+    undefined,
+    undefined,
+    "1",
+    veyraAiService,
+  );
+
+  await assert.rejects(
+    () => service.handleManualTransaction({ userId: 1, source: "manual" }),
+    /text is required when llmResult is absent/,
+  );
+  assert.equal(extractionCalls, 0);
+  assert.equal(calls.length, 0);
+});
+
+test("AI extraction failure writes no transaction and preserves conversation state", async () => {
+  const veyraAiService = {
+    extractTransaction: async () => {
+      throw new ServiceUnavailableException("AI transaction extraction failed");
+    },
+  } as unknown as VeyraAiService;
+  const { calls, service } = createService(
+    [],
+    undefined,
+    undefined,
+    undefined,
+    "1",
+    veyraAiService,
+  );
+  const state = createStateStore();
+
+  await assert.rejects(
+    () =>
+      service.handleManualTransaction(
+        { userId: 1, source: "manual", text: "Spend 25k at Tuku" },
+        state.store,
+      ),
+    /AI transaction extraction failed/,
+  );
+  assert.equal(calls.length, 0);
+  assert.deepEqual(state.calls, []);
+});
+
+test("deterministic reset and unsupported source never call OpenAI", async () => {
+  let extractionCalls = 0;
+  const veyraAiService = {
+    extractTransaction: async () => {
+      extractionCalls += 1;
+      throw new Error("OpenAI must not be called");
+    },
+  } as unknown as VeyraAiService;
+  const { calls, service } = createService(
+    [],
+    undefined,
+    undefined,
+    undefined,
+    "1",
+    veyraAiService,
+  );
+  const state = createStateStore();
+
+  const reset = await service.handleManualTransaction(
+    { userId: 1, source: "manual", text: "batal" },
+    state.store,
+  );
+  const unsupported = await service.handleManualTransaction({
+    userId: 1,
+    source: "email",
+    text: "Spend 25k at Tuku",
+  });
+
+  assert.equal(reset.status, "cancelled");
+  assert.equal(unsupported.status, "unsupported_source");
+  assert.equal(extractionCalls, 0);
+  assert.equal(calls.length, 0);
+  assert.deepEqual(state.calls, [
+    { method: "resetState", request: { userId: 1 } },
   ]);
 });
 
