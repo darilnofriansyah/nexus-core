@@ -34,7 +34,7 @@
 - Produces: `emailTransactionConfirmationError(...)`, returning the existing error message or `null`
 - Produces: `buildEmailReviewReplyMarkup(transaction)`, returning the existing keyboard without Save when the helper returns an error
 
-- [ ] **Step 1: Add failing keyboard assertions**
+- [x] **Step 1: Add failing keyboard assertions**
 
 Extend the existing category-unresolved and merchant-alias-unresolved tests:
 
@@ -69,7 +69,7 @@ assert.ok(
 );
 ```
 
-- [ ] **Step 2: Run the focused tests and verify failure**
+- [x] **Step 2: Run the focused tests and verify failure**
 
 Run:
 
@@ -80,7 +80,7 @@ node --test --test-name-pattern="merchant alias is missing|known template withou
 
 Expected: unresolved-review assertions fail because their keyboards still contain `save_transaction:*`; valid expense and income assertions pass.
 
-- [ ] **Step 3: Share the confirmability decision**
+- [x] **Step 3: Share the confirmability decision**
 
 Add a helper beside the existing guard:
 
@@ -133,7 +133,7 @@ private assertConfirmableEmailTransaction(transaction: TransactionRow): void {
 }
 ```
 
-- [ ] **Step 4: Hide Save in both email review response paths**
+- [x] **Step 4: Hide Save in both email review response paths**
 
 Change the keyboard builder to accept the pending transaction and conditionally
 include Save:
@@ -212,7 +212,7 @@ Then build actions and markup with:
   : {}),
 ```
 
-- [ ] **Step 5: Run focused and full verification**
+- [x] **Step 5: Run focused and full verification**
 
 Run:
 
@@ -226,7 +226,7 @@ git diff --check
 Expected: transaction service tests pass, lint passes, and `git diff --check`
 reports no errors.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/veyra/transactions/transaction.service.ts src/veyra/transactions/transaction.service.spec.ts docs/superpowers/plans/2026-07-29-email-review-save-button.md
