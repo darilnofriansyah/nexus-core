@@ -14,10 +14,12 @@ export type TransactionHandleStateName =
   | "veyra_regret_note";
 
 export interface ManualTransactionLlmResultDto {
+  intent?: "record_transaction" | "reset" | "unknown";
   transaction_type?: string;
   amount?: number | string;
   merchant?: string;
   category?: string | null;
+  wallet?: string | null;
   confidence?: number;
   transaction_date?: string | null;
   notes?: string | null;

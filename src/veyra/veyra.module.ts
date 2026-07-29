@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { VeyraAiService } from '../ai/veyra-ai.service';
 import { ConversationStatesModule } from './conversation-states/conversation-states.module';
 import { ConversationalModule } from './conversational/conversational.module';
 import { BudgetsModule } from './budgets/budgets.module';
@@ -27,6 +28,7 @@ import { VeyraController } from './veyra.controller';
     TelegramResponseFormatterService,
     EmailParserTemplateRepository,
     TransactionRiskReviewRepository,
+    VeyraAiService,
     TransactionService,
   ],
 })
