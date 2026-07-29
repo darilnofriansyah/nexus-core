@@ -2993,6 +2993,11 @@ test("keeps every AI result pending and stores only a validated proposal", async
   );
   assert.match(calls[4].text, /UPDATE transaction_imports/);
   assert.deepEqual(calls[4].values, ["123", rawPayload, "import-1"]);
+  assert.ok(
+    result.replyMarkup?.inline_keyboard
+      .flat()
+      .some((button) => button.callback_data.startsWith("save_transaction:")),
+  );
 });
 
 test("does not persist or return adaptive AI descriptions", async () => {
@@ -3277,6 +3282,11 @@ test("preserves missing merchant behavior for a non-expense AI candidate", async
 
   assert.equal(result.status, "pending");
   assert.equal(result.transaction?.merchant, "Unknown");
+  assert.ok(
+    result.replyMarkup?.inline_keyboard
+      .flat()
+      .some((button) => button.callback_data.startsWith("save_transaction:")),
+  );
 });
 
 test("reuses the import-linked pending transaction on an initial AI retry", async () => {
@@ -4179,6 +4189,23 @@ test("returns needs_review for BCA known template without category", async () =>
   assert.equal(result.reason, "category could not be resolved");
   assert.equal(result.transaction?.status, "pending");
   assert.ok((result as typeof result & { actions?: unknown }).actions);
+  const callbacks =
+    result.replyMarkup?.inline_keyboard
+      .flat()
+      .map((button) => button.callback_data) ?? [];
+  assert.equal(
+    callbacks.some((callback) => callback.startsWith("save_transaction:")),
+    false,
+  );
+  assert.ok(
+    callbacks.some((callback) => callback.startsWith("change_categories:")),
+  );
+  assert.ok(
+    callbacks.some((callback) => callback.startsWith("edit_email_details:")),
+  );
+  assert.ok(
+    callbacks.some((callback) => callback.startsWith("cancel_transaction:")),
+  );
   assert.match(calls[3].text, /INSERT INTO transaction_imports/);
   assert.match(calls[4].text, /INSERT INTO transactions/);
   assert.match(calls[6].text, /INSERT INTO email_parse_attempts/);
@@ -4213,6 +4240,23 @@ test("returns needs_review for known email when merchant alias is missing", asyn
   assert.equal(result.reason, "merchant alias could not be resolved");
   assert.equal(result.transaction?.status, "pending");
   assert.ok((result as typeof result & { actions?: unknown }).actions);
+  const callbacks =
+    result.replyMarkup?.inline_keyboard
+      .flat()
+      .map((button) => button.callback_data) ?? [];
+  assert.equal(
+    callbacks.some((callback) => callback.startsWith("save_transaction:")),
+    false,
+  );
+  assert.ok(
+    callbacks.some((callback) => callback.startsWith("change_categories:")),
+  );
+  assert.ok(
+    callbacks.some((callback) => callback.startsWith("edit_email_details:")),
+  );
+  assert.ok(
+    callbacks.some((callback) => callback.startsWith("cancel_transaction:")),
+  );
   assert.equal(result.parsed?.merchant, "SHOPEE.CO.ID");
   assert.match(result.telegram.text, /Merchant: SHOPEE\.CO\.ID/);
   assert.equal(calls.length, 6);
