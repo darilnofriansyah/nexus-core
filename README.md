@@ -894,7 +894,7 @@ Example response:
 
 ### `POST /api/veyra/transactions/handle`
 
-Handles one structured manual transaction result from the existing LLM parser. This endpoint does not parse raw free text itself: n8n or the client should send the user text to the LLM first, then pass the structured `llmResult` here.
+Handles one manual transaction. When `llmResult` is absent, Core extracts the transaction from `text`; this requires `OPENAI_API_KEY` in the Core API environment. `llmResult` remains accepted temporarily as the rollback path, so callers can keep using the existing n8n parser while the cutover is validated. OpenAI extraction failures return HTTP `503` and do not write a transaction or conversation state.
 
 The MVP supports `source: "manual"` only. `source: "email"` and other sources intentionally return `status: "unsupported_source"` for now; email transaction handling will be implemented later.
 
@@ -908,7 +908,18 @@ Confirmed transaction saves run `TransactionService.evaluateTransactionWatchdog(
 
 If the LLM returns `missing_fields`, Core API stores the partial payload in `conversation_states` as `record_transaction_state` and returns a follow-up question instead of a validation error. After a successful manual insert, Core API resets the user's conversation state to `idle`. If the insert fails, the state is preserved so the user can retry. Cancel text (`cancel`, `reset`, `stop`, `exit`, `batal`, or `keluar`) resets the state to `idle` and returns `status: "cancelled"` without inserting a transaction.
 
-Example request body:
+Core extraction request body:
+
+```json
+{
+  "telegramUserId": "976684739",
+  "userId": 1,
+  "source": "manual",
+  "text": "Spend 25k at Tuku"
+}
+```
+
+Rollback request body with caller-provided `llmResult`:
 
 ```json
 {
@@ -1051,7 +1062,15 @@ Missing-field follow-up response:
 }
 ```
 
-Validation errors include missing `llmResult`, missing required transaction fields not reported through `llmResult.missing_fields`, invalid amount, missing expense merchant, missing or unresolved expense category, unsupported transaction type, and confidence outside `0` to `100` after normalization.
+Validation errors include missing `text` when `llmResult` is absent, missing required transaction fields not reported through `llmResult.missing_fields`, invalid amount, missing expense merchant, missing or unresolved expense category, unsupported transaction type, and confidence outside `0` to `100` after normalization.
+
+#### n8n cutover and rollback
+
+Replace `Basic LLM Chain` and its attached `OpenAI Chat Model` in workflow `rbKbj56pSbMU5vTp`; send the Telegram text directly to this endpoint without `llmResult`. Keep the Telegram trigger/intake, HTTP Request to Core, response switch, Telegram sender/editor, retries, Aegis error handling, and transaction callback routing in n8n.
+
+Do not activate, deactivate, delete, or deploy a workflow as part of this change. Cut over only after a sanitized old-n8n-versus-Core parity check accepts `Spend 25k at Tuku`, `I got salary 19.828jt`, `Transfer 100k to Budi`, `Spent at Tuku`, `batal`, and `hello` as equivalent in intent, transaction type, amount, missing fields, confidence band, endpoint status, and Telegram response shape. Category and merchant wording may differ only when the existing Core normalizer persists the same values.
+
+Keep the prior active n8n version and caller-provided `llmResult` support for rollback. Rollback restores that n8n version only; no Core or database rollback is required.
 
 ### `POST /api/veyra/transactions/manage/handle`
 
