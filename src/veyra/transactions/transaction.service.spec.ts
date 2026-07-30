@@ -1890,6 +1890,147 @@ test("confirms a pending transaction row", async () => {
   assert.deepEqual(calls[1].values, ["confirmed", "101", "1"]);
 });
 
+const pendingCreditCardExpense = {
+  id: "101",
+  user_id: "1",
+  transaction_type: "expense",
+  amount: "50000",
+  merchant: "Toko Buku",
+  merchant_normalized: "Toko Buku",
+  category: "Shopping",
+  transaction_date: "2026-07-02T03:00:00.000Z",
+  source: "email",
+  status: "pending",
+  raw_payload: { parsed: { paymentType: "Credit Card" } },
+};
+
+test("confirmed email credit-card expense adds cycle usage", async () => {
+  const { service, transactionCalls } = createService([
+    [pendingCreditCardExpense],
+    [{ ...pendingCreditCardExpense, status: "confirmed" }],
+    [{ id: "import-1" }],
+    [],
+  ]);
+
+  const result = await service.confirmTransaction({
+    transactionId: "101",
+    userId: "1",
+  });
+
+  assert.equal(result.status, "confirmed");
+  const summaryCall = transactionCalls.find(({ text }) =>
+    /INSERT INTO credit_card_cycle_summaries/.test(text),
+  );
+  assert.ok(summaryCall);
+  assert.deepEqual(summaryCall.values, [
+    "1",
+    "2026-07-02T03:00:00.000Z",
+    50000,
+    50000,
+  ]);
+  assert.match(summaryCall.text, /ON CONFLICT \(user_id, cycle_start\)/);
+});
+
+test("confirmed email credit-card reversal subtracts cycle usage", async () => {
+  const pendingReversal = {
+    ...pendingCreditCardExpense,
+    id: "102",
+    transaction_type: "reversal",
+    transaction_date: "2026-07-12T03:00:00.000Z",
+  };
+  const { service, transactionCalls } = createService([
+    [pendingReversal],
+    [{ ...pendingReversal, status: "confirmed" }],
+    [{ id: "import-1" }],
+    [],
+  ]);
+
+  const result = await service.confirmTransaction({
+    transactionId: "102",
+    userId: "1",
+  });
+
+  assert.equal(result.status, "confirmed");
+  const summaryCall = transactionCalls.find(({ text }) =>
+    /INSERT INTO credit_card_cycle_summaries/.test(text),
+  );
+  assert.ok(summaryCall);
+  assert.deepEqual(summaryCall.values, [
+    "1",
+    "2026-07-12T03:00:00.000Z",
+    0,
+    -50000,
+  ]);
+  assert.match(summaryCall.text, /GREATEST\(\s*0,/);
+});
+
+test("confirmed non-card email expense does not change card usage", async () => {
+  const pendingExpense = {
+    ...pendingCreditCardExpense,
+    id: "103",
+    merchant: "Kopi Tuku",
+    merchant_normalized: "Kopi Tuku",
+    category: "Food",
+    transaction_date: "2026-07-13T03:00:00.000Z",
+    raw_payload: { parsed: { paymentType: "QRIS" } },
+  };
+  const { service, transactionCalls } = createService([
+    [pendingExpense],
+    [{ ...pendingExpense, status: "confirmed" }],
+    [{ id: "import-1" }],
+    [],
+  ]);
+
+  const result = await service.confirmTransaction({
+    transactionId: "103",
+    userId: "1",
+  });
+
+  assert.equal(result.status, "confirmed");
+  assert.equal(
+    transactionCalls.some(({ text }) =>
+      /INSERT INTO credit_card_cycle_summaries/.test(text),
+    ),
+    false,
+  );
+});
+
+test("category confirmation adds email credit-card expense cycle usage", async () => {
+  const pendingExpense = {
+    ...pendingCreditCardExpense,
+    id: "123",
+    amount: "75000",
+    category: "Other",
+    transaction_date: "2026-07-03T03:00:00.000Z",
+    raw_payload: { parsed: { paymentType: " credit card " } },
+  };
+  const { service, transactionCalls } = createService([
+    [pendingExpense],
+    [{ id: "10", category: "Shopping", parent_category: null }],
+    [{ ...pendingExpense, category: "Shopping", status: "confirmed" }],
+    [{ id: "import-1" }],
+    [],
+  ]);
+
+  const result = await service.handleTransactionCallback({
+    telegramUserId: "976684739",
+    userId: 1,
+    callbackData: "catid:10:123",
+  });
+
+  assert.equal(result.status, "ok");
+  const summaryCall = transactionCalls.find(({ text }) =>
+    /INSERT INTO credit_card_cycle_summaries/.test(text),
+  );
+  assert.ok(summaryCall);
+  assert.deepEqual(summaryCall.values, [
+    "1",
+    "2026-07-03T03:00:00.000Z",
+    75000,
+    75000,
+  ]);
+});
+
 test("rejects unresolved deterministic email confirmation", async () => {
   for (const transaction of [
     {
@@ -4418,6 +4559,44 @@ test("falls back to emailHtml when emailText is not parseable", async () => {
   assert.equal(result.transaction?.id, "tx-email-html");
   assert.equal(result.parsed?.merchant, "Kopi Tuku");
   assert.deepEqual(calls[2].values, ["1", "Kopi Tuku Canonical", "Kopi Tuku"]);
+});
+
+test("directly confirmed email credit-card expense adds cycle usage", async () => {
+  const { service, transactionCalls } = createService([
+    [],
+    [{ canonical_name: "Toko Buku" }],
+    [{ category: "Shopping" }],
+    [{ id: "import-credit-card" }],
+    [{ id: "tx-credit-card" }],
+    [],
+    [],
+  ]);
+
+  const result = await service.handleEmailTransaction({
+    telegramUserId: "976684739",
+    userId: 1,
+    source: "email",
+    email: {
+      messageId: "gmail-credit-card",
+      from: "card@bca.co.id",
+      subject: "Notifikasi Transaksi",
+      date: "2026-06-22T10:00:00+07:00",
+      emailText:
+        "Notifikasi Transaksi Merchant/ATM TOKO BUKU Jenis Transaksi Pembelian Sejumlah Rp123.456",
+    },
+  });
+
+  assert.equal(result.status, "confirmed");
+  const summaryCall = transactionCalls.find(({ text }) =>
+    /INSERT INTO credit_card_cycle_summaries/.test(text),
+  );
+  assert.ok(summaryCall);
+  assert.deepEqual(summaryCall.values, [
+    "1",
+    "2026-06-22T03:00:00.000Z",
+    123456,
+    123456,
+  ]);
 });
 
 test("returns needs_review for BCA known template without category", async () => {

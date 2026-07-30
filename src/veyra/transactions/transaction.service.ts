@@ -152,6 +152,63 @@ const RISK_LEVEL_BOUNDS = {
   high: 50,
   critical: 70,
 } as const;
+const CREDIT_CARD_CYCLE_USAGE_UPSERT = `
+  WITH user_cycle AS (
+    SELECT
+      COALESCE(NULLIF(timezone, ''), 'Asia/Jakarta') AS timezone,
+      GREATEST(1, LEAST(COALESCE(cycle_start_day, 1), 31)) AS cycle_day
+    FROM telegram_users
+    WHERE id = $1
+  ),
+  local_transaction AS (
+    SELECT
+      ($2::timestamptz AT TIME ZONE timezone)::date AS transaction_day,
+      cycle_day
+    FROM user_cycle
+  ),
+  cycle_month AS (
+    SELECT
+      cycle_day,
+      CASE
+        WHEN EXTRACT(DAY FROM transaction_day)::int >= LEAST(
+          cycle_day,
+          EXTRACT(DAY FROM (
+            date_trunc('month', transaction_day) + interval '1 month - 1 day'
+          ))::int
+        )
+        THEN date_trunc('month', transaction_day)::date
+        ELSE (date_trunc('month', transaction_day) - interval '1 month')::date
+      END AS month_start
+    FROM local_transaction
+  ),
+  cycle AS (
+    SELECT (
+      month_start + (
+        LEAST(
+          cycle_day,
+          EXTRACT(DAY FROM (
+            month_start + interval '1 month - 1 day'
+          ))::int
+        ) - 1
+      )
+    )::date AS cycle_start
+    FROM cycle_month
+  )
+  INSERT INTO credit_card_cycle_summaries (
+    user_id,
+    cycle_start,
+    credit_limit,
+    credit_used,
+    statement_balance
+  )
+  SELECT $1, cycle_start, 0, $3, 0
+  FROM cycle
+  ON CONFLICT (user_id, cycle_start) DO UPDATE
+  SET credit_used = GREATEST(
+    0,
+    credit_card_cycle_summaries.credit_used + $4
+  )
+`;
 
 interface MerchantAliasRow extends QueryResultRow {
   id?: string | number;
@@ -3978,6 +4035,23 @@ export class TransactionService {
         throw new BadRequestException("transaction insert failed");
       }
 
+      await this.updateCreditCardCycleUsage(
+        {
+          id: transactionId,
+          user_id: input.request.userId,
+          transaction_type: input.parsed.type,
+          amount: input.parsed.amount ?? 0,
+          merchant: input.merchant,
+          merchant_normalized: input.merchantNormalized,
+          category: input.category,
+          transaction_date: input.transactionDate,
+          source: "email",
+          status: "confirmed",
+          raw_payload: input.rawPayload,
+        },
+        (text, values) => client.query(text, values),
+      );
+
       await client.query(
         `
           UPDATE transaction_imports
@@ -6340,6 +6414,9 @@ export class TransactionService {
 
       if (input.status === "confirmed") {
         this.assertConfirmableEmailTransaction(transitioned);
+        await this.updateCreditCardCycleUsage(transitioned, (text, values) =>
+          client.query(text, values),
+        );
       }
 
       const emailImport = await client.query<InsertedImportRow>(
@@ -6408,6 +6485,42 @@ export class TransactionService {
 
       return transitioned;
     });
+  }
+
+  private async updateCreditCardCycleUsage(
+    transaction: TransactionRow,
+    query: EmailTemplateQuery,
+  ): Promise<void> {
+    const transactionType = this.cleanString(
+      transaction.transaction_type,
+    )?.toLowerCase();
+    const rawPayload = this.readRecord(transaction.raw_payload);
+    const parsed = this.readRecord(rawPayload.parsed);
+    const paymentType = this.cleanString(parsed.paymentType)?.toLowerCase();
+
+    if (
+      paymentType !== "credit card" ||
+      (transactionType !== "expense" && transactionType !== "reversal")
+    ) {
+      return;
+    }
+
+    const amount = this.normalizeAmount(transaction.amount);
+
+    if (!Number.isSafeInteger(amount) || amount <= 0) {
+      throw new BadRequestException(
+        "credit-card amount must be a positive safe integer",
+      );
+    }
+
+    const delta = transactionType === "expense" ? amount : -amount;
+
+    await query(CREDIT_CARD_CYCLE_USAGE_UPSERT, [
+      String(transaction.user_id),
+      transaction.transaction_date,
+      Math.max(delta, 0),
+      delta,
+    ]);
   }
 
   private terminalTransactionResponse(

@@ -1637,6 +1637,12 @@ If `transactionId` is missing in production mode, the response still includes re
 
 Approves one production pending transaction. Core API finds the matching `transactions` row by `transactionId` and `userId`, then updates `status` from `pending` to `confirmed` and refreshes `updated_at`.
 
+Confirming an email expense with
+`raw_payload.parsed.paymentType = "Credit Card"` atomically adds its amount to
+the user's transaction-date financial cycle. A confirmed credit-card reversal
+subtracts from its reversal-date cycle without reducing usage below zero.
+Existing n8n request payloads do not change.
+
 This endpoint does not edit or delete transactions, does not handle Telegram callbacks directly, and does not send Telegram messages.
 
 Confirmed updates run the transaction watchdog after the status update succeeds. `notifications` is ordered with `risk_review` before `budget_alert`; it is an empty array when no alert/review is created or watchdog evaluation fails. Cancel/reject flows skip the watchdog.
