@@ -2,23 +2,26 @@
 
 ## Scope
 
-Update `credit_card_cycle_summaries.credit_used` when an email expense whose
-parsed `paymentType` is `Credit Card` becomes confirmed.
+Update `credit_card_cycle_summaries.credit_used` when an email expense or
+reversal whose parsed `paymentType` is `Credit Card` becomes confirmed.
 
 This first slice excludes manual, Telegram, and imported transactions.
 
 ## Behavior
 
 - Match `raw_payload.parsed.paymentType` case-insensitively after trimming.
-- Require `transaction_type = 'expense'`.
+- Add the amount for `transaction_type = 'expense'`.
+- Subtract the amount for `transaction_type = 'reversal'`, using the cycle
+  containing the reversal date and never reducing `credit_used` below zero.
 - Cover both email confirmation paths:
   - deterministic email transactions inserted directly as confirmed;
   - pending email transactions confirmed by Save or category selection.
 - Derive `cycle_start` from `transaction_date` using the user's `timezone` and
   `cycle_start_day`.
 - Insert a missing summary with `credit_limit = 0`,
-  `statement_balance = 0`, and `credit_used = transaction amount`.
-- On conflict for `(user_id, cycle_start)`, increment only `credit_used`.
+  `statement_balance = 0`, and `credit_used = transaction amount` for an
+  expense or zero for a reversal.
+- On conflict for `(user_id, cycle_start)`, adjust only `credit_used`.
 - Run the summary write in the same database transaction as the transaction
   confirmation. Any summary-write failure rolls back confirmation.
 - Repeated or concurrent confirmation must not increment twice.
@@ -27,7 +30,8 @@ This first slice excludes manual, Telegram, and imported transactions.
 
 Add one private `TransactionService` helper that accepts the active database
 query function and confirmed transaction fields. It returns immediately for
-non-expenses or non-credit-card payloads, then performs one PostgreSQL upsert.
+unsupported transaction types or non-credit-card payloads, then performs one
+PostgreSQL upsert.
 
 Call it from:
 
@@ -50,7 +54,10 @@ Focused transaction-service tests must prove:
 - direct confirmed credit-card email inserts/upserts the matching cycle;
 - pending credit-card email confirmation upserts once inside its transaction;
 - category confirmation uses the same path;
-- non-credit-card and non-expense email transactions do not write summaries;
+- confirmed credit-card reversals reduce the reversal-date cycle without
+  producing negative usage;
+- non-credit-card and unsupported email transaction types do not write
+  summaries;
 - existing confirmation behavior remains unchanged.
 
 README documentation will state the internal credit-card summary side effect
