@@ -131,3 +131,48 @@ test('findActiveBudgets returns active top-level budgets and active children', a
     { id: '11', parentId: '10', category: 'Food', amount: 1500000 },
   ]);
 });
+
+test('findCreditCardSummaries maps only requested cycles to safe IDR integers', async () => {
+  const { calls, repository } = createRepository([
+    [
+      {
+        cycle_start: '2026-07-15',
+        credit_limit: '10000000',
+        credit_used: '2500000',
+        statement_balance: '0',
+      },
+      {
+        cycle_start: '2026-06-15',
+        credit_limit: '-1',
+        credit_used: '1.5',
+        statement_balance: '9007199254740992',
+      },
+    ],
+  ]);
+
+  const summaries = await repository.findCreditCardSummaries('1', [
+    '2026-07-15',
+    '2026-06-15',
+  ]);
+
+  assert.match(calls[0].text, /FROM credit_card_cycle_summaries/);
+  assert.match(calls[0].text, /cycle_start = ANY\(\$2::date\[\]\)/);
+  assert.deepEqual(calls[0].values, [
+    '1',
+    ['2026-07-15', '2026-06-15'],
+  ]);
+  assert.deepEqual(summaries, [
+    {
+      cycleStart: '2026-07-15',
+      limit: 10000000,
+      used: 2500000,
+      statementBalance: 0,
+    },
+    {
+      cycleStart: '2026-06-15',
+      limit: 0,
+      used: 0,
+      statementBalance: 0,
+    },
+  ]);
+});

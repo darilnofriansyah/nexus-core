@@ -7,6 +7,7 @@ import {
   DashboardBudgetDto,
   DashboardBudgetStatus,
   DashboardCategoryDto,
+  DashboardCreditCardDto,
   DashboardOverviewRequestDto,
   DashboardOverviewResponseDto,
   DashboardPeriodDto,
@@ -15,6 +16,7 @@ import {
 } from './dto/dashboard-overview.dto';
 import {
   DashboardBudget,
+  DashboardCreditCardSummary,
   DashboardOverviewRepository,
   DashboardTransaction,
 } from './dashboard-overview.repository';
@@ -57,7 +59,7 @@ export class DashboardOverviewService {
 
     const cycles = this.cycles(asOfDate, user.cycleStartDay);
     const currentEnd = this.addDays(asOfDate, 1);
-    const [transactions, budgets] = await Promise.all([
+    const [transactions, budgets, creditCardSummaries] = await Promise.all([
       this.repository.findTransactions(
         user.id,
         cycles.beforePrevious.start,
@@ -65,12 +67,27 @@ export class DashboardOverviewService {
         timezone,
       ),
       this.repository.findActiveBudgets(user.id),
+      this.repository.findCreditCardSummaries(user.id, [
+        cycles.current.start,
+        cycles.previous.start,
+      ]),
     ]);
 
     return {
       user: { id: user.id, telegramUserId: user.telegramUserId },
-      current: this.currentOverview(cycles, currentEnd, transactions, budgets),
-      previous: this.previousOverview(cycles, transactions, budgets),
+      current: this.currentOverview(
+        cycles,
+        currentEnd,
+        transactions,
+        budgets,
+        creditCardSummaries,
+      ),
+      previous: this.previousOverview(
+        cycles,
+        transactions,
+        budgets,
+        creditCardSummaries,
+      ),
     };
   }
 
@@ -79,6 +96,7 @@ export class DashboardOverviewService {
     currentEnd: string,
     transactions: DashboardTransaction[],
     budgets: DashboardBudget[],
+    creditCardSummaries: DashboardCreditCardSummary[],
   ): DashboardPeriodOverviewDto {
     const elapsedDays = this.daysBetween(cycles.current.start, currentEnd);
     const comparisonEnd = this.earlier(
@@ -93,6 +111,7 @@ export class DashboardOverviewService {
       elapsedDays,
       this.daysBetween(cycles.previous.start, comparisonEnd),
       budgets,
+      this.creditCard(creditCardSummaries, cycles.current.start),
     );
   }
 
@@ -100,6 +119,7 @@ export class DashboardOverviewService {
     cycles: CycleSet,
     transactions: DashboardTransaction[],
     budgets: DashboardBudget[],
+    creditCardSummaries: DashboardCreditCardSummary[],
   ): DashboardPeriodOverviewDto {
     return this.overview(
       cycles.previous,
@@ -112,6 +132,7 @@ export class DashboardOverviewService {
       this.daysBetween(cycles.previous.start, cycles.previous.end),
       this.daysBetween(cycles.beforePrevious.start, cycles.beforePrevious.end),
       budgets,
+      this.creditCard(creditCardSummaries, cycles.previous.start),
     );
   }
 
@@ -122,6 +143,7 @@ export class DashboardOverviewService {
     days: number,
     comparisonDays: number,
     budgets: DashboardBudget[],
+    creditCard: DashboardCreditCardDto,
   ): DashboardPeriodOverviewDto {
     return {
       period,
@@ -139,6 +161,7 @@ export class DashboardOverviewService {
         amount: transaction.amount,
         type: transaction.type,
       })),
+      creditCard,
     };
   }
 
@@ -154,6 +177,28 @@ export class DashboardOverviewService {
       spent,
       netCashflow: income - spent,
       dailyAverage: spent === 0 ? 0 : Math.round(spent / Math.max(days, 1)),
+    };
+  }
+
+  private creditCard(
+    summaries: DashboardCreditCardSummary[],
+    cycleStart: string,
+  ): DashboardCreditCardDto {
+    const summary = summaries.find((item) => item.cycleStart === cycleStart);
+
+    if (
+      !summary ||
+      ![summary.limit, summary.used, summary.statementBalance].every(
+        (amount) => Number.isSafeInteger(amount) && amount >= 0,
+      )
+    ) {
+      return { limit: 0, used: 0, statementBalance: 0 };
+    }
+
+    return {
+      limit: summary.limit,
+      used: summary.used,
+      statementBalance: summary.statementBalance,
     };
   }
 

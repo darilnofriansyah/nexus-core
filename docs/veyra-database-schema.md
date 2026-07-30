@@ -129,6 +129,33 @@ Important:
 
 ---
 
+## public.credit_card_cycle_summaries
+
+```sql
+CREATE TABLE public.credit_card_cycle_summaries (
+  id bigserial NOT NULL,
+  user_id bigint NOT NULL,
+  cycle_start date NOT NULL,
+  credit_limit bigint NOT NULL,
+  credit_used bigint NOT NULL,
+  statement_balance bigint NOT NULL,
+  CONSTRAINT credit_card_cycle_summaries_pkey PRIMARY KEY (id),
+  CONSTRAINT credit_card_cycle_summaries_user_id_cycle_start_key UNIQUE (user_id, cycle_start),
+  CONSTRAINT credit_card_cycle_summaries_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.telegram_users(id) ON DELETE CASCADE,
+  CONSTRAINT credit_card_cycle_summaries_credit_limit_check CHECK ((credit_limit >= 0) AND (credit_limit <= 9007199254740991)),
+  CONSTRAINT credit_card_cycle_summaries_credit_used_check CHECK ((credit_used >= 0) AND (credit_used <= 9007199254740991)),
+  CONSTRAINT credit_card_cycle_summaries_statement_balance_check CHECK ((statement_balance >= 0) AND (statement_balance <= 9007199254740991))
+);
+```
+
+Important:
+
+* One combined summary exists per `(user_id, cycle_start)`; do not model individual cards.
+* `cycle_start` uses dashboard financial-cycle boundaries, not calendar months.
+* Amounts are non-negative safe IDR integers. `statement_balance` is closed-cycle bill.
+
+---
+
 ## public.budgets
 
 ```sql

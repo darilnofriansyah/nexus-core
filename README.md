@@ -304,6 +304,11 @@ Example response:
         "status": "on-track"
       }
     ],
+    "creditCard": {
+      "limit": 10000000,
+      "used": 2500000,
+      "statementBalance": 0
+    },
     "recentTransactions": [
       {
         "id": "123",
@@ -337,6 +342,11 @@ Example response:
     "dailySpend": [],
     "categories": [],
     "budgets": [],
+    "creditCard": {
+      "limit": 10000000,
+      "used": 7500000,
+      "statementBalance": 7500000
+    },
     "recentTransactions": []
   }
 }
@@ -346,7 +356,10 @@ Example response:
 `current.comparison` uses the same elapsed-day count from the previous cycle.
 `previous` is the complete previous cycle, and `previous.comparison` is the
 complete cycle before that. Only confirmed income and expense transactions are
-included. A valid user without activity receives zero totals and empty arrays.
+included. `current.creditCard` and `previous.creditCard` each contain one
+combined summary for their cycle. When no summary exists, they return
+`{ "limit": 0, "used": 0, "statementBalance": 0 }`. A valid user without
+activity receives zero totals and empty arrays.
 
 Curl:
 

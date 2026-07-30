@@ -54,6 +54,12 @@ export interface DashboardRecentTransactionDto {
   type: 'income' | 'expense';
 }
 
+export interface DashboardCreditCardDto {
+  limit: number;
+  used: number;
+  statementBalance: number;
+}
+
 export interface DashboardPeriodOverviewDto {
   period: DashboardPeriodDto;
   hasTransactions: boolean;
@@ -63,6 +69,7 @@ export interface DashboardPeriodOverviewDto {
   categories: DashboardCategoryDto[];
   budgets: DashboardBudgetDto[];
   recentTransactions: DashboardRecentTransactionDto[];
+  creditCard: DashboardCreditCardDto;
 }
 
 export interface DashboardOverviewResponseDto {

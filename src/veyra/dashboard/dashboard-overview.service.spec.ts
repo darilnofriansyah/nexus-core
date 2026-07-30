@@ -3,6 +3,7 @@ import { mock, test } from 'node:test';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import {
   DashboardBudget,
+  DashboardCreditCardSummary,
   DashboardOverviewRepository,
   DashboardTransaction,
   DashboardUser,
@@ -17,6 +18,7 @@ class FakeDashboardRepository {
   };
   transactions: DashboardTransaction[] = [];
   budgets: DashboardBudget[] = [];
+  creditCardSummaries: DashboardCreditCardSummary[] = [];
   findUserCalls: Array<{
     userId: string | null;
     telegramUserId: string | null;
@@ -27,6 +29,7 @@ class FakeDashboardRepository {
     end: string;
     timezone: string;
   }> = [];
+  creditCardCalls: Array<{ userId: string; cycleStarts: string[] }> = [];
 
   async findUser(userId: string | null, telegramUserId: string | null) {
     this.findUserCalls.push({ userId, telegramUserId });
@@ -45,6 +48,11 @@ class FakeDashboardRepository {
 
   async findActiveBudgets() {
     return this.budgets;
+  }
+
+  async findCreditCardSummaries(userId: string, cycleStarts: string[]) {
+    this.creditCardCalls.push({ userId, cycleStarts });
+    return this.creditCardSummaries;
   }
 }
 
@@ -236,6 +244,76 @@ test('current comparison uses the same elapsed days from the previous cycle', as
   assert.equal(result.previous.comparison.spent, 400);
 });
 
+test('maps combined credit-card summaries for current and previous cycles', async () => {
+  const { repository, service } = createService();
+  repository.user = {
+    id: '1',
+    telegramUserId: '976684739',
+    cycleStartDay: 15,
+  };
+  repository.creditCardSummaries = [
+    {
+      cycleStart: '2026-07-15',
+      limit: 10000000,
+      used: 2500000,
+      statementBalance: 0,
+    },
+    {
+      cycleStart: '2026-06-15',
+      limit: 10000000,
+      used: 7500000,
+      statementBalance: 7500000,
+    },
+  ];
+
+  const result = await service.getOverview({
+    userId: 1,
+    asOfDate: '2026-07-25',
+  });
+
+  assert.deepEqual(repository.creditCardCalls, [
+    { userId: '1', cycleStarts: ['2026-07-15', '2026-06-15'] },
+  ]);
+  assert.deepEqual(result.current.creditCard, {
+    limit: 10000000,
+    used: 2500000,
+    statementBalance: 0,
+  });
+  assert.deepEqual(result.previous.creditCard, {
+    limit: 10000000,
+    used: 7500000,
+    statementBalance: 7500000,
+  });
+});
+
+test('uses zero credit-card summary when cycle has no valid summary', async () => {
+  const { repository, service } = createService();
+  repository.creditCardSummaries = [
+    {
+      cycleStart: '2026-07-01',
+      limit: -1,
+      used: Number.NaN,
+      statementBalance: Number.MAX_SAFE_INTEGER + 1,
+    } as DashboardCreditCardSummary,
+  ];
+
+  const result = await service.getOverview({
+    userId: 1,
+    asOfDate: '2026-07-25',
+  });
+
+  assert.deepEqual(result.current.creditCard, {
+    limit: 0,
+    used: 0,
+    statementBalance: 0,
+  });
+  assert.deepEqual(result.previous.creditCard, {
+    limit: 0,
+    used: 0,
+    statementBalance: 0,
+  });
+});
+
 test('maps cashflow, daily spending, categories, recent transactions, and parent budgets', async () => {
   const { repository, service } = createService();
   repository.transactions = [
@@ -260,6 +338,17 @@ test('maps cashflow, daily spending, categories, recent transactions, and parent
     id: '1',
     telegramUserId: '976684739',
   });
+  assert.deepEqual(Object.keys(result.current), [
+    'period',
+    'hasTransactions',
+    'totals',
+    'comparison',
+    'dailySpend',
+    'categories',
+    'budgets',
+    'recentTransactions',
+    'creditCard',
+  ]);
   assert.equal(result.current.hasTransactions, true);
   assert.deepEqual(result.current.totals, {
     income: 10000000,
@@ -424,5 +513,11 @@ test('returns complete zero and empty sections for a valid inactive user', async
   assert.deepEqual(result.current.categories, []);
   assert.deepEqual(result.current.budgets, []);
   assert.deepEqual(result.current.recentTransactions, []);
+  assert.deepEqual(result.current.creditCard, {
+    limit: 0,
+    used: 0,
+    statementBalance: 0,
+  });
   assert.equal(result.previous.hasTransactions, false);
+  assert.deepEqual(result.previous.creditCard, result.current.creditCard);
 });

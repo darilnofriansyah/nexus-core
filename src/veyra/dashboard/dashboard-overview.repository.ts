@@ -27,6 +27,13 @@ export interface DashboardBudget {
   amount: number;
 }
 
+export interface DashboardCreditCardSummary {
+  cycleStart: string;
+  limit: number;
+  used: number;
+  statementBalance: number;
+}
+
 interface UserRow extends QueryResultRow {
   id: string | number;
   telegram_id: string | number;
@@ -48,6 +55,13 @@ interface BudgetRow extends QueryResultRow {
   parent_budget_id: string | number | null;
   category: string;
   amount: string | number | null;
+}
+
+interface CreditCardSummaryRow extends QueryResultRow {
+  cycle_start: string | Date;
+  credit_limit: string | number;
+  credit_used: string | number;
+  statement_balance: string | number;
 }
 
 @Injectable()
@@ -144,10 +158,40 @@ export class DashboardOverviewRepository {
     }));
   }
 
+  async findCreditCardSummaries(
+    userId: string,
+    cycleStarts: string[],
+  ): Promise<DashboardCreditCardSummary[]> {
+    const result = await this.database.query<CreditCardSummaryRow>(
+      `
+        SELECT cycle_start, credit_limit, credit_used, statement_balance
+        FROM credit_card_cycle_summaries
+        WHERE user_id::text = $1
+          AND cycle_start = ANY($2::date[])
+      `,
+      [userId, cycleStarts],
+    );
+
+    return result.rows.map((row) => ({
+      cycleStart:
+        row.cycle_start instanceof Date
+          ? row.cycle_start.toISOString().slice(0, 10)
+          : row.cycle_start,
+      limit: this.safeIdr(row.credit_limit),
+      used: this.safeIdr(row.credit_used),
+      statementBalance: this.safeIdr(row.statement_balance),
+    }));
+  }
+
   private cycleStartDay(value: string | number | null): number {
     const day = Number(value ?? 1);
     return Number.isFinite(day)
       ? Math.min(Math.max(Math.trunc(day), 1), 31)
       : 1;
+  }
+
+  private safeIdr(value: string | number): number {
+    const amount = Number(value);
+    return Number.isSafeInteger(amount) && amount >= 0 ? amount : 0;
   }
 }

@@ -28,6 +28,7 @@ test('overview delegates the request and returns the service response', async ()
       dailySpend: [],
       categories: [],
       budgets: [],
+      creditCard: { limit: 0, used: 0, statementBalance: 0 },
       recentTransactions: [],
     },
     previous: {
@@ -42,6 +43,7 @@ test('overview delegates the request and returns the service response', async ()
       dailySpend: [],
       categories: [],
       budgets: [],
+      creditCard: { limit: 0, used: 0, statementBalance: 0 },
       recentTransactions: [],
     },
   } satisfies DashboardOverviewResponseDto;
