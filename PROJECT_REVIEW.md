@@ -6,7 +6,7 @@
 - Branch: `main`
 - Commit: `03941a4` (`feat(transactions): track credit-card usage`)
 - Working tree: pre-existing staged additions to `docs/migration/2026-07-30-credit-card-cycle-summary-access.sql` and modifications to `src/veyra/dashboard/dashboard-credit-card-summary.migration.spec.ts`
-- Tests run: none during this review
+- Checks run: `npm test` passed 3/3; `npm run build` passed
 
 ## Completed Work
 
@@ -24,7 +24,7 @@
 ## Needed Improvements
 
 - Make the actionable parity checklist the authoritative backlog; historical unchecked implementation plans are too noisy to represent current status reliably.
-- Run focused migration tests, then `npm test` and `npm run build`, after the current staged changes; this review did not execute them.
+- Run focused migration tests after the current staged changes; full `npm test` and `npm run build` passed during this review.
 - Record rollout owner, applied environment, and rollback evidence beside every production SQL activation.
 
 ## Summary
