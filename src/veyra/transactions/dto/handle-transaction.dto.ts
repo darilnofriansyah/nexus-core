@@ -48,6 +48,7 @@ export interface TransactionHandleResponseDto {
     | "unsupported_source";
   transactionId: string | null;
   message: string;
+  baseMessage?: string;
   confirmationPayload?: TransactionHandleConfirmationPayloadDto;
   notifications?: TransactionWatchdogNotificationDto[];
   watchdog?: BudgetWatchdogResponseDto;

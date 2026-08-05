@@ -4145,12 +4145,14 @@ export class TransactionService {
       input.status === "needs_review" && input.transaction?.status === "pending"
         ? input.transaction
         : null;
+    const baseMessage = this.buildEmailTelegramText(input);
 
     return {
       status: input.status,
       provider: input.provider,
       templateKey: input.templateKey,
       reason: input.reason,
+      baseMessage,
       transaction: input.transaction,
       parsed: input.parsed,
       ...(input.aiRequest ? { aiRequest: input.aiRequest } : {}),
@@ -4161,10 +4163,7 @@ export class TransactionService {
           }
         : {}),
       telegram: {
-        text: this.appendWatchdogMessage(
-          this.buildEmailTelegramText(input),
-          input.watchdog,
-        ),
+        text: this.appendWatchdogMessage(baseMessage, input.watchdog),
         parseMode: "HTML",
       },
       notifications: input.watchdog?.notifications ?? [],
@@ -5094,6 +5093,7 @@ export class TransactionService {
       return {
         status: transaction.status,
         transactionId: transaction.id,
+        baseMessage: message,
         message: this.appendWatchdogMessage(message, watchdog),
         notifications: watchdog?.notifications ?? [],
         ...(watchdog?.watchdog ? { watchdog: watchdog.watchdog } : {}),

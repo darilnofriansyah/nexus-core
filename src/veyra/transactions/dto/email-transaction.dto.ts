@@ -152,6 +152,7 @@ export interface EmailTransactionHandleResponseDto {
   provider: string | null;
   templateKey: string | null;
   reason: string | null;
+  baseMessage?: string;
   transaction?: EmailTransactionResponseTransactionDto;
   parsed?: ParsedEmailTransactionDto;
   aiRequest?: EmailAiHandoffDto;
