@@ -1645,7 +1645,7 @@ Existing n8n request payloads do not change.
 
 This endpoint does not edit or delete transactions, does not handle Telegram callbacks directly, and does not send Telegram messages.
 
-Confirmed updates run the transaction watchdog after the status update succeeds. `notifications` is ordered with `risk_review` before `budget_alert`; it is an empty array when no alert/review is created or watchdog evaluation fails. Cancel/reject flows skip the watchdog.
+Confirmed updates run the transaction watchdog after the status update succeeds. `notifications` is ordered as `risk_review`, `budget_alert`, then `burn_rate` when present; it is an empty array when no alert/review is created or watchdog evaluation fails. Cancel/reject flows skip the watchdog.
 
 Example request body:
 
@@ -1859,6 +1859,17 @@ Persistence uses `transaction_risk_reviews` with `risk_type = "large_transaction
 
 Watchdog aggregation returns one response. If budget alert, burn-rate warning, and large-transaction risk all trigger, the transaction response appends the Telegram-safe sections into one message and exposes ordered `notifications` (`risk_review`, `budget_alert`, `burn_rate`).
 
+For duplicate-free n8n delivery, use the unaggregated `baseMessage` first and
+then send each `notifications` item in the returned order. The manual
+`POST /api/veyra/transactions/handle` response exposes these as
+`data.baseMessage` and `data.notifications`; the email
+`POST /api/veyra/transactions/email/handle` response exposes top-level
+`baseMessage` and `notifications`. Map `notification.message` directly as HTML
+text and pass `notification.reply_markup` through unchanged when present. Do
+not sort notifications or recover the base message by parsing the legacy
+aggregated `message` or `telegram.text` fields; those fields remain for
+rollback compatibility.
+
 Example pending high-risk review:
 
 ```json
@@ -1902,12 +1913,17 @@ Risk callback response:
   "transactionId": 123,
   "telegram": {
     "method": "editMessageText",
-    "text": "Recorded as a regretted purchase.",
+    "text": "What note should I add?",
     "parse_mode": "HTML",
     "reply_markup": null
   }
 }
 ```
+
+The `regret` callback enters `veyra_regret_note` state and leaves the review
+pending. Route the user's next Telegram text through the existing `record`
+message path; Core API adds that note to the transaction and then resolves the
+review as `regret`.
 
 This replaces only deterministic large-transaction risk evaluation, review storage, and callback resolution. Keep Telegram triggers, callback answering, Telegram sending/editing, credentials, retries, and workflow orchestration in n8n.
 

@@ -4359,7 +4359,7 @@ export class TransactionService {
 
   async handleTransactionCallback(
     request: TransactionCallbackHandleRequestDto,
-    _stateStore?: TransactionHandleStateStore,
+    stateStore?: TransactionHandleStateStore,
   ): Promise<TransactionCallbackHandleResponseDto> {
     const telegramUserId = this.cleanString(request.telegramUserId);
     const parsed = this.parseTransactionCallbackData(request.callbackData);
@@ -4413,6 +4413,7 @@ export class TransactionService {
         reviewId: parsed.reviewId,
         userId,
         action: parsed.riskAction,
+        stateStore,
       });
     }
 
@@ -5177,6 +5178,18 @@ export class TransactionService {
       return null;
     }
 
+    if (
+      state.expiresAt &&
+      new Date(state.expiresAt).getTime() <= Date.now()
+    ) {
+      await this.resetConversationState(request.userId, stateStore);
+      return {
+        status: "cancelled",
+        transactionId: null,
+        message: "Regret review expired.",
+      };
+    }
+
     const stateData = this.readRecord(state.stateData);
     const reviewId = this.cleanString(stateData.review_id);
     const note = this.cleanString(request.text);
@@ -5192,7 +5205,7 @@ export class TransactionService {
 
     const review = await this.getReviewById(reviewId, request.userId);
 
-    if (!review) {
+    if (!review || review.status !== "pending") {
       await this.resetConversationState(request.userId, stateStore);
       return {
         status: "cancelled",
@@ -6977,6 +6990,7 @@ export class TransactionService {
     reviewId: number;
     userId: number;
     action: NonNullable<ParsedTransactionCallback["riskAction"]>;
+    stateStore?: TransactionHandleStateStore;
   }): Promise<TransactionCallbackHandleResponseDto> {
     const review = await this.getReviewById(input.reviewId, input.userId);
 
@@ -6992,6 +7006,35 @@ export class TransactionService {
       return this.transactionCallbackOk({
         action: "veyra_risk",
         text: "This transaction review was already answered.",
+        request: input.request,
+        transactionId: Number(review.transactionId),
+        replyMarkup: null,
+      });
+    }
+
+    if (input.action === "regret") {
+      if (!input.stateStore?.upsertState) {
+        return this.transactionCallbackError({
+          action: "veyra_risk",
+          text: "Unable to collect a regret note right now.",
+          request: input.request,
+          transactionId: Number(review.transactionId),
+        });
+      }
+
+      await input.stateStore.upsertState({
+        userId: input.userId,
+        stateName: "veyra_regret_note",
+        stateData: {
+          review_id: String(review.id),
+          transaction_id: String(review.transactionId),
+        },
+        expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+      });
+
+      return this.transactionCallbackOk({
+        action: "veyra_risk",
+        text: "What note should I add?",
         request: input.request,
         transactionId: Number(review.transactionId),
         replyMarkup: null,

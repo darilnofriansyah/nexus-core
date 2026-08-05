@@ -1,6 +1,8 @@
 import * as assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { join } from "node:path";
 import {
   BadRequestException,
   NotFoundException,
@@ -27,6 +29,45 @@ import {
 import { validateEmailTemplateProposal } from "./learned-email-parser";
 import { TransactionRiskReviewRepository } from "./transaction-risk-review.repository";
 import { TransactionService } from "./transaction.service";
+
+const watchdogN8nFixture = JSON.parse(
+  readFileSync(
+    join(
+      process.cwd(),
+      "src/veyra/transactions/test/fixtures/watchdog/n8n-mapping.json",
+    ),
+    "utf8",
+  ),
+) as {
+  notifications: {
+    orderedTypes: string[];
+    priorities: number[];
+    messages: string[];
+    riskCallbackData: string[];
+    riskReplyMarkup: {
+      inline_keyboard: Array<
+        Array<{ text: string; callback_data: string }>
+      >;
+    };
+  };
+  callbackContext: {
+    telegramUserId: string;
+    userId: number;
+    chatId: string;
+    messageId: number;
+  };
+  expectedTelegram: {
+    method: "editMessageText";
+    parse_mode: "HTML";
+    reply_markup: null;
+  };
+  callbacks: Array<{
+    action: "planned" | "necessary" | "regret" | "ignore";
+    callbackData: string;
+    expectedText: string;
+    resolvesImmediately: boolean;
+  }>;
+};
 
 function createService(
   rowsByCall: Array<unknown[] | Error> = [],
@@ -2663,46 +2704,132 @@ test("creates large transaction review with Telegram-safe keyboard", async () =>
   });
 });
 
-test("handles risk planned callback by resolving review", async () => {
+test("handles immediate risk callbacks from the n8n fixture", async () => {
+  const riskReviews = createRiskReviewRepository();
+  const { service } = createService([], undefined, riskReviews.repository);
+  const fixtures = watchdogN8nFixture.callbacks.filter(
+    ({ resolvesImmediately }) => resolvesImmediately,
+  );
+
+  for (const fixture of fixtures) {
+    const result = await service.handleTransactionCallback({
+      ...watchdogN8nFixture.callbackContext,
+      callbackData: fixture.callbackData,
+    });
+
+    assert.equal(result.status, "ok");
+    assert.equal(result.action, "veyra_risk");
+    assert.equal(result.transactionId, 123);
+    assert.equal(result.telegram.text, fixture.expectedText);
+    assert.equal(
+      result.telegram.method,
+      watchdogN8nFixture.expectedTelegram.method,
+    );
+    assert.equal(
+      result.telegram.chat_id,
+      watchdogN8nFixture.callbackContext.chatId,
+    );
+    assert.equal(
+      result.telegram.message_id,
+      watchdogN8nFixture.callbackContext.messageId,
+    );
+    assert.equal(
+      result.telegram.parse_mode,
+      watchdogN8nFixture.expectedTelegram.parse_mode,
+    );
+    assert.equal(
+      result.telegram.reply_markup,
+      watchdogN8nFixture.expectedTelegram.reply_markup,
+    );
+  }
+
+  assert.deepEqual(
+    riskReviews.calls.filter((call) => call.method === "resolve"),
+    fixtures.map(({ action }) => ({
+      method: "resolve",
+      args: [7, 1, action, "resolved", undefined],
+    })),
+  );
+});
+
+test("regret callback starts note collection without resolving review", async () => {
+  const riskReviews = createRiskReviewRepository();
+  const state = createManageStateStore();
+  const { service } = createService([], undefined, riskReviews.repository);
+  const fixture = watchdogN8nFixture.callbacks.find(
+    ({ resolvesImmediately }) => !resolvesImmediately,
+  )!;
+
+  assert.equal(fixture.action, "regret");
+  assert.equal(fixture.resolvesImmediately, false);
+
+  const startedAt = Date.now();
+  const result = await service.handleTransactionCallback(
+    {
+      ...watchdogN8nFixture.callbackContext,
+      callbackData: fixture.callbackData,
+    },
+    state.store,
+  );
+
+  assert.equal(result.status, "ok");
+  assert.equal(result.action, "veyra_risk");
+  assert.equal(result.transactionId, 123);
+  assert.equal(result.telegram.text, fixture.expectedText);
+  assert.equal(
+    result.telegram.method,
+    watchdogN8nFixture.expectedTelegram.method,
+  );
+  assert.equal(
+    result.telegram.chat_id,
+    watchdogN8nFixture.callbackContext.chatId,
+  );
+  assert.equal(
+    result.telegram.message_id,
+    watchdogN8nFixture.callbackContext.messageId,
+  );
+  assert.equal(
+    result.telegram.parse_mode,
+    watchdogN8nFixture.expectedTelegram.parse_mode,
+  );
+  assert.equal(
+    result.telegram.reply_markup,
+    watchdogN8nFixture.expectedTelegram.reply_markup,
+  );
+  assert.equal(state.state.stateName, "veyra_regret_note");
+  assert.deepEqual(state.state.stateData, {
+    review_id: "7",
+    transaction_id: "123",
+  });
+  assert.ok(state.state.expiresAt);
+  assert.ok(
+    new Date(state.state.expiresAt).getTime() >= startedAt + 15 * 60 * 1000,
+  );
+  assert.ok(
+    new Date(state.state.expiresAt).getTime() <= Date.now() + 15 * 60 * 1000,
+  );
+  assert.equal(
+    riskReviews.calls.some((call) => call.method === "resolve"),
+    false,
+  );
+});
+
+test("regret callback fails safely when note state is unavailable", async () => {
   const riskReviews = createRiskReviewRepository();
   const { service } = createService([], undefined, riskReviews.repository);
 
   const result = await service.handleTransactionCallback({
     telegramUserId: "976684739",
     userId: 1,
-    callbackData: "veyra_risk:7:planned",
+    callbackData: "veyra_risk:7:regret",
   });
 
-  assert.equal(result.status, "ok");
-  assert.equal(result.action, "veyra_risk");
-  assert.equal(result.transactionId, 123);
-  assert.equal(result.telegram.text, "Noted. This purchase was planned.");
-  assert.deepEqual(riskReviews.calls[1], {
-    method: "resolve",
-    args: [7, 1, "planned", "resolved", undefined],
-  });
-});
-
-test("handles risk necessary, regret, and ignore callbacks", async () => {
-  const riskReviews = createRiskReviewRepository();
-  const { service } = createService([], undefined, riskReviews.repository);
-  const cases = [
-    ["necessary", "Noted. This purchase was necessary."],
-    ["regret", "Recorded as a regretted purchase."],
-    ["ignore", "Ignored."],
-  ] as const;
-
-  for (const [response, text] of cases) {
-    const result = await service.handleTransactionCallback({
-      telegramUserId: "976684739",
-      userId: 1,
-      callbackData: `veyra_risk:7:${response}`,
-    });
-
-    assert.equal(result.status, "ok");
-    assert.equal(result.action, "veyra_risk");
-    assert.equal(result.telegram.text, text);
-  }
+  assert.equal(result.status, "error");
+  assert.equal(result.telegram.text, "Unable to collect a regret note right now.");
+  assert.equal(
+    riskReviews.calls.some((call) => call.method === "resolve"),
+    false,
+  );
 });
 
 test("duplicate risk callback is safe and does not overwrite response", async () => {
@@ -2768,6 +2895,62 @@ test("regret note state updates transaction note and resolves review", async () 
     method: "resetState",
     request: { userId: 1 },
   });
+});
+
+test("expired regret note state does not update transaction", async () => {
+  const riskReviews = createRiskReviewRepository();
+  const state = createManageStateStore({
+    stateName: "veyra_regret_note",
+    stateData: { review_id: "7", transaction_id: "123" },
+    expiresAt: "2000-01-01T00:00:00.000Z",
+  });
+  const { calls, service } = createService(
+    [],
+    undefined,
+    riskReviews.repository,
+  );
+
+  const result = await service.handleManualTransaction(
+    { userId: 1, source: "manual", text: "Late note" },
+    state.store,
+  );
+
+  assert.equal(result.status, "cancelled");
+  assert.equal(result.message, "Regret review expired.");
+  assert.equal(calls.length, 0);
+  assert.equal(riskReviews.calls.length, 0);
+  assert.equal(state.state.stateName, "idle");
+});
+
+test("resolved regret review state does not update transaction", async () => {
+  const riskReviews = createRiskReviewRepository({
+    ...riskReview,
+    status: "resolved" as const,
+    userResponse: "planned",
+  });
+  const state = createManageStateStore({
+    stateName: "veyra_regret_note",
+    stateData: { review_id: "7", transaction_id: "123" },
+    expiresAt: "2099-01-01T00:00:00.000Z",
+  });
+  const { calls, service } = createService(
+    [],
+    undefined,
+    riskReviews.repository,
+  );
+
+  const result = await service.handleManualTransaction(
+    { userId: 1, source: "manual", text: "Late note" },
+    state.store,
+  );
+
+  assert.equal(result.status, "cancelled");
+  assert.equal(result.message, "Regret review expired.");
+  assert.equal(calls.length, 0);
+  assert.deepEqual(riskReviews.calls, [
+    { method: "findById", args: ["7", 1] },
+  ]);
+  assert.equal(state.state.stateName, "idle");
 });
 
 test("returns safe error payload for invalid transaction callback data", async () => {
@@ -4872,9 +5055,18 @@ function spyOnWatchdog(
   return calls;
 }
 
-test("manual transaction save triggers watchdog", async () => {
+test("manual confirmed save exposes watchdog-free base message", async () => {
   const { service } = createService([[], [{ id: "103" }]]);
-  const watchdogCalls = spyOnWatchdog(service);
+  const watchdogCalls = spyOnWatchdog(service, {
+    notifications: [
+      {
+        type: "risk_review",
+        priority: 1,
+        severity: "warning",
+        message: "<b>Watchdog review</b>\nWas this planned?",
+      },
+    ],
+  });
 
   const result = await service.handleManualTransaction({
     userId: 1,
@@ -4890,9 +5082,14 @@ test("manual transaction save triggers watchdog", async () => {
 
   assert.equal(result.status, "confirmed");
   assert.deepEqual(watchdogCalls, ["103"]);
+  assert.equal(
+    result.baseMessage,
+    "✅ Recorded: Rp25.000 at Kopi Tuku under Coffee.",
+  );
+  assert.match(result.message, /Watchdog review/);
 });
 
-test("email confirmed save triggers watchdog", async () => {
+test("email confirmed save exposes watchdog-free base message", async () => {
   const { service } = createService([
     [],
     [{ canonical_name: "Kopi Tuku Canonical" }],
@@ -4902,7 +5099,16 @@ test("email confirmed save triggers watchdog", async () => {
     [],
     [],
   ]);
-  const watchdogCalls = spyOnWatchdog(service);
+  const watchdogCalls = spyOnWatchdog(service, {
+    notifications: [
+      {
+        type: "risk_review",
+        priority: 1,
+        severity: "warning",
+        message: "<b>Watchdog review</b>\nWas this planned?",
+      },
+    ],
+  });
 
   const result = await service.handleEmailTransaction({
     telegramUserId: "976684739",
@@ -4920,6 +5126,11 @@ test("email confirmed save triggers watchdog", async () => {
 
   assert.equal(result.status, "confirmed");
   assert.deepEqual(watchdogCalls, ["tx-email"]);
+  assert.equal(
+    result.baseMessage,
+    "<b>Transaction recorded</b>\n\nAmount: Rp25.000\nMerchant: Kopi Tuku Canonical\nCategory: Food\nSource: Krom",
+  );
+  assert.match(result.telegram.text, /Watchdog review/);
 });
 
 test("email review AI result skips watchdog until confirmed", async () => {
@@ -6874,7 +7085,13 @@ test("category confirmation triggers watchdog", async () => {
   assert.equal(result.editMessage?.parseMode, "HTML");
 });
 
-test("budget alert and risk review can return together", async () => {
+test("watchdog preserves n8n fixture order for all notifications", async (t) => {
+  t.mock.timers.enable({
+    apis: ["Date"],
+    now: new Date("2026-08-04T12:00:00.000Z"),
+  });
+  const today = new Date();
+  const cycleStartDay = today.getUTCDate();
   const budgetService = {
     evaluateTransaction: async () => ({
       checked: true,
@@ -6907,11 +7124,11 @@ test("budget alert and risk review can return together", async () => {
           id: "101",
           user_id: "1",
           transaction_type: "expense",
-          transaction_date: "2026-06-25",
+          transaction_date: today.toISOString(),
           status: "confirmed",
         },
       ],
-      [{ cycle_start_day: 25 }],
+      [{ cycle_start_day: cycleStartDay }],
       [
         {
           category_budget_id: "12",
@@ -6926,7 +7143,7 @@ test("budget alert and risk review can return together", async () => {
           total_spend_before: "0",
         },
       ],
-      [{ cycle_start_day: 25 }],
+      [{ cycle_start_day: cycleStartDay }],
       [
         {
           category_budget_id: "12",
@@ -6951,12 +7168,30 @@ test("budget alert and risk review can return together", async () => {
   const result = await service.evaluateTransactionWatchdog("101");
 
   assert.deepEqual(
-    result.notifications.map((notification) => notification.type),
-    ["risk_review", "budget_alert"],
+    result.notifications.map(({ type }) => type),
+    watchdogN8nFixture.notifications.orderedTypes,
   );
-  assert.equal(result.notifications[0].priority, 1);
+  assert.deepEqual(
+    result.notifications.map(({ priority }) => priority),
+    watchdogN8nFixture.notifications.priorities,
+  );
+  assert.deepEqual(
+    {
+      messages: result.notifications.map(({ message }) => message),
+      riskReplyMarkup: result.notifications[0].reply_markup,
+    },
+    {
+      messages: watchdogN8nFixture.notifications.messages,
+      riskReplyMarkup: watchdogN8nFixture.notifications.riskReplyMarkup,
+    },
+  );
+  assert.deepEqual(
+    result.notifications[0].reply_markup?.inline_keyboard
+      .flat()
+      .map(({ callback_data }) => callback_data),
+    watchdogN8nFixture.notifications.riskCallbackData,
+  );
   assert.equal(result.notifications[0].review_id, 55);
-  assert.equal(result.notifications[1].priority, 2);
 });
 
 test("watchdog failure does not fail transaction save", async () => {

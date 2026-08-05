@@ -1,0 +1,78 @@
+{
+  "evidence": {
+    "inspectedAt": "2026-08-04",
+    "callbackWorkflowId": "oXuLf0DvtlinpcvK",
+    "callbackWorkflowVersionId": "52e35cf5-b3cd-43e2-a332-9a09d52fe272",
+    "manualWorkflowId": "rbKbj56pSbMU5vTp",
+    "manualWorkflowVersionId": "0a3be7fe-09ca-4c34-a362-272c6f856dcb",
+    "emailWorkflowId": "li32iEVL1omy7bJb",
+    "emailWorkflowVersionId": "e1f38c5e-d6d1-4fe1-84fc-c7ec0eb9b446"
+  },
+  "notifications": {
+    "orderedTypes": ["risk_review", "budget_alert", "burn_rate"],
+    "priorities": [1, 2, 3],
+    "messages": [
+      "<b>⚠️ Large transaction detected</b>\n\nRp850.000 at Uniqlo\n• 38% of your monthly budget\n\nWas this purchase planned?",
+      "Shopping budget reached 90%",
+      "Burn-rate projected spend Rp1.550.000 exceeds Rp200.000"
+    ],
+    "riskCallbackData": [
+      "veyra_risk:55:planned",
+      "veyra_risk:55:necessary",
+      "veyra_risk:55:regret",
+      "veyra_risk:55:ignore"
+    ],
+    "riskReplyMarkup": {
+      "inline_keyboard": [
+        [
+          { "text": "Planned", "callback_data": "veyra_risk:55:planned" },
+          {
+            "text": "Necessary",
+            "callback_data": "veyra_risk:55:necessary"
+          }
+        ],
+        [
+          { "text": "Regret it", "callback_data": "veyra_risk:55:regret" },
+          { "text": "Ignore", "callback_data": "veyra_risk:55:ignore" }
+        ]
+      ]
+    }
+  },
+  "callbackContext": {
+    "telegramUserId": "900000001",
+    "userId": 1,
+    "chatId": "-100000001",
+    "messageId": 42
+  },
+  "expectedTelegram": {
+    "method": "editMessageText",
+    "parse_mode": "HTML",
+    "reply_markup": null
+  },
+  "callbacks": [
+    {
+      "action": "planned",
+      "callbackData": "veyra_risk:7:planned",
+      "expectedText": "Noted. This purchase was planned.",
+      "resolvesImmediately": true
+    },
+    {
+      "action": "necessary",
+      "callbackData": "veyra_risk:7:necessary",
+      "expectedText": "Noted. This purchase was necessary.",
+      "resolvesImmediately": true
+    },
+    {
+      "action": "regret",
+      "callbackData": "veyra_risk:7:regret",
+      "expectedText": "What note should I add?",
+      "resolvesImmediately": false
+    },
+    {
+      "action": "ignore",
+      "callbackData": "veyra_risk:7:ignore",
+      "expectedText": "Ignored.",
+      "resolvesImmediately": true
+    }
+  ]
+}
