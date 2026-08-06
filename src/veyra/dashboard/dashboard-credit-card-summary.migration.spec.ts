@@ -40,3 +40,22 @@ test('credit-card cycle summaries persist safe IDR amounts once per user and cyc
     /statement_balance bigint NOT NULL CHECK \(statement_balance >= 0 AND statement_balance <= 9007199254740991\)/,
   );
 });
+
+test('veyra can read credit-card cycle summaries', () => {
+  const migrationName = readdirSync(migrationsDirectory).find((name) =>
+    name.endsWith('-credit-card-cycle-summary-access.sql'),
+  );
+
+  assert.ok(migrationName, 'Veyra access migration is required');
+
+  const migration = readFileSync(
+    join(migrationsDirectory, migrationName),
+    'utf8',
+  );
+
+  assert.match(migration, /GRANT USAGE ON SCHEMA public TO veyra/);
+  assert.match(
+    migration,
+    /GRANT SELECT ON TABLE public\.credit_card_cycle_summaries TO veyra/,
+  );
+});
