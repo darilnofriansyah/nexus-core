@@ -8,6 +8,18 @@ Purpose: transfer this file into the Nexus Core API NestJS project, inspect that
 
 ## Current Nexus Core state
 
+Rollout update on 2026-08-06:
+
+- Initial authenticated email fallback inference is now implemented inside
+  `POST /api/veyra/transactions/email/handle` through the existing
+  `VeyraAiService` and identity-bound review validator.
+- The preserved baseline remains `gpt-4.1-mini`; requests use strict Responses
+  API structured output with `store: false`.
+- Production already contains the reviewed `email_parser_templates` table,
+  constraints, columns, and valid active-sender index; the catalog check found
+  zero template rows, so no DDL was rerun.
+- Core deployment and production n8n cutover were not performed.
+
 Repository review on 2026-07-29 found:
 
 - Zero Veyra LLM calls currently run inside Nexus Core.

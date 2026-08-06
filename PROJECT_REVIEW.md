@@ -4,8 +4,8 @@
 
 - Reviewed: 2026-08-06 Asia/Jakarta
 - Branch: `main`
-- Commit: `32d0d66` (`fix(transactions): complete regret workflow`)
-- Review scope: remaining credit-card access migration, migration test, project documentation, and recursive test-script fix.
+- Commit: `a140f39` (`chore: finish rollout follow-up`)
+- Review scope: production rollout evidence, Watchdog endpoint ownership, failure recovery ownership, and remaining migration work.
 - Checks run: `npm test` passed 20/20 spec files; `npm run build` and `npm run lint` passed.
 
 ## Completed Work
@@ -15,13 +15,14 @@
 - OpenAI SDK-based LLM integration and callback fixes are present in merged history and current source.
 - Veyra transaction Watchdog v1 runs after confirmed transaction creation, confirmation, category confirmation, and managed edits. It combines budget alerts, burn-rate projection, and deterministic large-transaction risk reviews with idempotent persistence and Telegram callback responses.
 - The Watchdog risk-review migration is applied in production. Outbound notification delivery and parent callback routing are rolled out and verified.
+- The Watchdog `regret` callback and follow-up note flow passed live production E2E verification on 2026-08-06.
+- The unused caller-supplied regret-detector endpoint was removed after repository and production n8n inspection found no consumers.
+- Telegram delivery recovery remains in n8n's three-attempt reliable sender. Core evaluation recovery is deferred until an observed failure requires a dedicated idempotent re-evaluation path.
 - README endpoint contracts, schema/migration documentation, the parity checklist, and 20 focused `*.spec.ts` files provide implementation evidence.
 
 ## Remaining Tasks
 
-- Apply the credit-card cycle-summary access grant only after production approval; its migration contract test passes locally.
 - Complete the explicit open production work in `docs/migration/actionable-parity-checklist.md`: email AI orchestration and approved SQL rollout, confirmation cutover verification, cycle-aware intent fixtures/parity, and n8n HTTP/network error branches.
-- Live-retest the Watchdog `regret` follow-up after the `32d0d66` automatic deployment.
 - Keep legacy n8n paths restorable until production fixture coverage confirms each Core API cutover.
 
 ### Transaction Watchdog Actions
@@ -32,9 +33,9 @@
   - [x] Ordered outbound notification delivery is live.
   - [x] The parent Telegram callback router invokes the existing callback workflow.
 - [x] Connect the `regret` callback to bounded `veyra_regret_note` state without resolving the review immediately.
-- [ ] Live-retest the `regret` callback after automatic deployment.
-- [ ] Decide whether the undocumented `POST /transactions/risk-reviews/regret-detector` endpoint is still used; remove it if all evaluations originate from `evaluateTransactionWatchdog()`.
-- [ ] Add failure recovery for Watchdog evaluation; it currently logs errors and returns no notifications, with no retry or persisted failure state.
+- [x] Live-retest the `regret` callback after automatic deployment.
+- [x] Remove the unused `POST /transactions/risk-reviews/regret-detector` endpoint; all configured production n8n paths originate evaluations from `evaluateTransactionWatchdog()`.
+- [x] Keep Telegram delivery retry in n8n and defer Core evaluation recovery until observed failures justify a dedicated idempotent re-evaluation path. Do not retry transaction mutation endpoints.
 - [ ] Decide whether transaction-time evaluation is sufficient or whether n8n needs a scheduled reconciliation sweep for missed or historical confirmed transactions.
 
 ## Needed Improvements
@@ -44,4 +45,4 @@
 
 ## Summary
 
-Core API has broad implemented coverage, focused tests, and completed Watchdog migration, outbound delivery, and callback routing. The regret follow-up fix needs a post-deploy live retest, while the credit-card access SQL still requires production approval before application.
+Core API has broad implemented coverage, focused tests, and completed Watchdog migration, outbound delivery, callback routing, regret follow-up verification, and production credit-card summary read access. Remaining work is the explicit production migration backlog and the decision on scheduled Watchdog reconciliation.

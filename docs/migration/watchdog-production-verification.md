@@ -17,8 +17,8 @@ authoritative production verification record.
 | Callback ownership | `PASS` | The parent only invokes the callback workflow. `oXuLf0DvtlinpcvK` owns one callback answer, one Core callback POST, and one Telegram Reliable Editor call. Retained production executions `3938` and `3939` confirm that chain for an existing transaction callback. |
 | Callback behavior checks | `PASS` | Focused Core tests passed for `planned`, `necessary`, `regret`, `ignore`, duplicate/resolved, invalid data, regret-note routing, note persistence, and final review resolution. |
 | Notification delivery | `PASS` | Core commit `7f18873` deployed successfully. Manual version `9599e670-a3f5-4a54-ac75-17f9ca1077e1` and email version `ad909cad-4ccb-48f3-8219-aa588479455d` are active. Controlled executions `3949` and `3954` each delivered base, `risk_review`, `budget_alert`, and `burn_rate` in order with unchanged risk-review markup. |
-| Live Telegram callback E2E | `FAIL` | On 2026-08-05, `planned`, `necessary`, `ignore`, and a resolved-review stale callback passed. `regret` failed because production resolved the review immediately instead of entering `veyra_regret_note`. Testing stopped before a follow-up note was sent. |
-| Production decision | `BLOCKED ON REGRET FOLLOW-UP` | Ordered outbound delivery and immediate callbacks work, but the deployed Core image does not contain the required two-stage regret callback behavior. Do not claim Watchdog callback completion until a separately authorized deployment and fresh regret-note E2E pass. |
+| Live Telegram callback E2E | `PASS` | On 2026-08-05, `planned`, `necessary`, `ignore`, and a resolved-review stale callback passed. The initial `regret` attempt exposed an older deployed Core image. After the corrected image was deployed, the full regret click and follow-up note flow passed on 2026-08-06. |
+| Production decision | `PASS` | Ordered outbound delivery, all four callbacks, resolved-review safety, regret-note routing, note persistence, delayed review resolution, and final state reset have fresh production evidence. |
 
 The local Core mapping contract is
 `src/veyra/transactions/test/fixtures/watchdog/n8n-mapping.json`. It specifies
@@ -125,10 +125,49 @@ distinct `Watchdog E2E` merchants, and explicit
   n8n routing, callback answering, Core POST ownership, and Telegram editing
   all executed once and succeeded; the defect is the deployed Core behavior.
 
-Not tested because of the stop-on-defect rule: regret follow-up text routing
-through `record`, transaction-note replacement, final review resolution after
-the note, and final conversation-state reset after that note. No workflow,
-schema, application code, or deployment change was made during this E2E run.
+Not tested in the initial run because of the stop-on-defect rule: regret
+follow-up text routing through `record`, transaction-note replacement, final
+review resolution after the note, and final conversation-state reset after
+that note. No workflow, schema, application code, or deployment change was
+made during the initial E2E run.
+
+## Regret deployment retest evidence
+
+The corrected production Core image `sha256:e8e6d3bfe4dd...`, created at
+`2026-08-06T01:49:48.280494705Z`, was inspected before retesting. Its compiled
+handler passes the state store into `handleRiskCallback` and contains the
+two-stage `regret` branch.
+
+- Controlled transaction `379`, review `41`, and Telegram message `1828` used
+  amount `Rp37.000`, category `iCloud`, merchant
+  `Watchdog E2E Regret Retest`, and transaction-note label
+  `WATCHDOG_E2E_REGRET_RETEST_2026-08-06`.
+- Before the click, review `41` was pending with null response, review note,
+  and resolution timestamp; conversation state was `idle`.
+- The regret click traversed parent `3975`, callback `3976`, and editor `3977`,
+  starting at `2026-08-06T02:34:14.246Z`. Each relevant node ran exactly
+  once: one callback answer, one Core callback POST, one editor invocation,
+  and one successful Telegram `HTTP Edit Message`.
+- Core returned `What note should I add?`. Review `41` remained pending with
+  null response, note, and resolution timestamp. The transaction note was
+  unchanged, and conversation state became `veyra_regret_note` with
+  `review_id = 41` and `transaction_id = 379`.
+- The exact follow-up text
+  `WATCHDOG E2E regret follow-up verified 2026-08-06` entered parent execution
+  `3978` at `2026-08-06T02:35:35.601Z`. Core message routing returned
+  `route = record` with the stored regret state and invoked record workflow
+  execution `3979` exactly once.
+- Record execution `3979` called Core once. Core returned
+  `status = regret_note_added`, transaction `379`, `Note added.`, and next
+  state `idle`. Telegram Reliable Sender execution `3980` made one successful
+  first-attempt HTTP send and delivered confirmation message `1830`.
+- Final database evidence: review `41` is resolved with response `regret`; its
+  review note and transaction `379` note both exactly equal the follow-up
+  text; resolution occurred at `2026-08-06T02:35:35.727862Z`; conversation
+  state is `idle` with empty state data.
+- The controlled transaction and review remain in production. No cleanup,
+  workflow update, schema change, application-code edit, or deployment was
+  performed by this retest.
 
 ## Production migration procedure
 

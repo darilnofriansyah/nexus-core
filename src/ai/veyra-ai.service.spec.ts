@@ -3,6 +3,8 @@ import { test } from "node:test";
 import { ServiceUnavailableException } from "@nestjs/common";
 import OpenAI from "openai";
 import {
+  EMAIL_TRANSACTION_INSTRUCTIONS,
+  EMAIL_TRANSACTION_SCHEMA,
   MANUAL_TRANSACTION_INSTRUCTIONS,
   MANUAL_TRANSACTION_SCHEMA,
 } from "./veyra-prompts";
@@ -18,6 +20,26 @@ const validResult = {
   notes: "Spend 25k at Tuku",
   missing_fields: [],
   confidence: 0.94,
+};
+
+const validEmailResult = {
+  isTransaction: true,
+  transactionCandidate: {
+    source: "email",
+    bank: "Krom",
+    transactionType: "expense",
+    amount: 25000,
+    merchant: "Kopi Tuku",
+    merchantNormalized: "Kopi Tuku",
+    transactionDate: "2026-07-27T09:30:00+07:00",
+    rawPayload: {},
+  },
+  resolution: {
+    category: "Food",
+    confidence: 0.98,
+    resolver: "llm",
+  },
+  templateProposal: null,
 };
 
 function clientFor(response: unknown): OpenAI {
@@ -132,6 +154,108 @@ test("extracts a valid manual transaction with a stateless strict-schema request
       },
     },
   ]);
+});
+
+test("reviews an email with the preserved stateless strict-schema contract", async () => {
+  const requests: unknown[] = [];
+  const client = {
+    responses: {
+      create: async (request: unknown) => {
+        requests.push(request);
+        return {
+          id: "resp_email_123",
+          status: "completed",
+          output_text: JSON.stringify(validEmailResult),
+          usage: { input_tokens: 30, output_tokens: 40 },
+        };
+      },
+    },
+  } as unknown as OpenAI;
+  const input = {
+    email: {
+      messageId: "gmail-1",
+      from: "alerts@krom.id",
+      subject: "Pembayaran berhasil",
+      date: "2026-07-27T09:30:00+07:00",
+      emailText: "Pembayaran QR berhasil di Kopi Tuku sebesar Rp25.000",
+      authentication: {
+        dkim: "pass" as const,
+        spf: "pass" as const,
+        dmarc: "pass" as const,
+        domain: "krom.id",
+      },
+    },
+    aiRequest: {
+      reviewToken: "gmail-1",
+      reason: "unsupported_template" as const,
+    },
+  };
+
+  const result = await new VeyraAiService(client).reviewEmailTransaction(input);
+
+  assert.deepEqual(result, validEmailResult);
+  assert.doesNotMatch(
+    JSON.stringify(requests[0]),
+    /"(?:uniqueItems|maxProperties)"/,
+  );
+  assert.deepEqual(requests, [
+    {
+      model: "gpt-4.1-mini",
+      store: false,
+      input: [
+        { role: "developer", content: EMAIL_TRANSACTION_INSTRUCTIONS },
+        { role: "user", content: JSON.stringify(input) },
+      ],
+      text: {
+        format: {
+          type: "json_schema",
+          name: "email_transaction_review",
+          strict: true,
+          schema: EMAIL_TRANSACTION_SCHEMA,
+        },
+      },
+    },
+  ]);
+});
+
+test("rejects malformed email AI output without exposing email content", async () => {
+  const privateEmail = "private card digits 4111111111111111";
+  const malformed = [
+    { ...validEmailResult, extra: true },
+    { ...validEmailResult, transactionCandidate: null },
+    {
+      isTransaction: false,
+      transactionCandidate: validEmailResult.transactionCandidate,
+      resolution: null,
+      templateProposal: null,
+    },
+  ];
+
+  for (const result of malformed) {
+    await assert.rejects(
+      new VeyraAiService(
+        clientFor({ status: "completed", output_text: JSON.stringify(result) }),
+      ).reviewEmailTransaction({
+        email: {
+          messageId: "gmail-private",
+          from: "alerts@krom.id",
+          subject: "Private",
+          emailText: privateEmail,
+        },
+        aiRequest: {
+          reviewToken: "gmail-private",
+          reason: "unsupported_template",
+        },
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof ServiceUnavailableException);
+        assert.equal(error.getStatus(), 503);
+        assert.equal(error.message, "AI email transaction review failed");
+        assert.doesNotMatch(error.message, /4111/);
+        return true;
+      },
+    );
+  }
 });
 
 test("rejects malformed structured output without exposing input data", async () => {

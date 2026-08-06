@@ -74,10 +74,6 @@ import {
   TransactionCallbackHandleResponseDto,
 } from './transactions/dto/transaction-callback-handle.dto';
 import {
-  CreateRegretReviewRequestDto,
-  CreateRegretReviewResponseDto,
-} from './transactions/dto/transaction-risk-review.dto';
-import {
   TransactionManageHandleRequestDto,
   TransactionManageHandleResponseDto,
 } from './transactions/dto/transaction-manage.dto';
@@ -227,13 +223,6 @@ export class VeyraController {
     @Body() body: EmailTransactionResolveReviewRequestDto,
   ): Promise<EmailTransactionResolveReviewResponseDto> {
     return this.transactionService.resolveEmailTransactionReview(body);
-  }
-
-  @Post('transactions/risk-reviews/regret-detector')
-  createRegretDetectorReview(
-    @Body() body: CreateRegretReviewRequestDto,
-  ): Promise<CreateRegretReviewResponseDto> {
-    return this.transactionService.createRegretDetectorReview(body);
   }
 
   @Post('transactions/manage/handle')

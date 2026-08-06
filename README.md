@@ -1229,7 +1229,7 @@ Delete is a soft delete: Core API updates `transactions.status = 'rejected'` and
 
 ### `POST /api/veyra/transactions/email/handle`
 
-Handles one Gmail-sourced transaction notification. Core API tries existing hard-coded bank parsers first, then active user-scoped learned templates. It never invokes an LLM. An AI-created candidate remains pending until the user confirms it; confirmation activates its validated learned template only when the stored Gmail sender metadata has aligned DKIM or DMARC authentication.
+Handles one Gmail-sourced transaction notification. Core API tries existing hard-coded bank parsers first, then active user-scoped learned templates, then invokes its email AI fallback for an authenticated likely transaction. The fallback uses the existing `VeyraAiService`, `gpt-4.1-mini`, the Responses API with `store: false`, and a strict JSON schema. Every AI-created candidate remains pending until the user confirms it; confirmation activates its validated learned template only when the stored Gmail sender metadata has aligned DKIM or DMARC authentication.
 
 The handler derives the internal `userId` from `telegramUserId`; an included `userId` is treated as a compatibility assertion and must match. It deduplicates Gmail messages through `transaction_imports` using `source = "email"` and `source_reference = email.messageId`. It normalizes the email body, parses `emailText` first, then falls back to `emailHtml` converted with `html-to-text` when the text body is missing, too short, or not parseable. Import metadata stores only the normalized sender, sanitized authentication, and a SHA-256 binding of the normalized subject and body; it does not store subject or body content. Resolve and correction submissions must match that stored sender, authentication, and binding before they can persist a result. Imports created before the binding was introduced remain review-compatible only when sender and authentication match, but they cannot learn or activate a template.
 
@@ -1311,9 +1311,9 @@ Example confirmed response:
 
 Possible statuses are `confirmed`, `needs_review`, `needs_ai`, `duplicate`, `ignored_non_transaction`, `unsupported_provider`, `unsupported_template`, and `parse_failed`. The `telegram.text` field is HTML-safe and suitable for n8n Telegram routing with `parseMode: "HTML"`.
 
-`needs_ai` means the message looks transactional but neither deterministic path produced a usable result. Core API returns `aiRequest.reviewToken` (the Gmail `messageId`) and a reason; it does not include the body in that handoff. n8n owns the fallback: it calls its existing AI node with the original Gmail data, then posts only the structured result to `resolve-review`.
+`needs_ai` is the internal rollback handoff when neither deterministic path produced a usable result and no AI service is injected. In the normal application module, Core sends the already validated Gmail request to its AI service and feeds the structured result through the same identity-bound review validator used by `resolve-review`. A valid candidate returns `needs_review`; an inference failure returns `needs_review` / `ai_failed` without inserting a transaction or template.
 
-This endpoint can replace deterministic email parser Code nodes and the high-confidence direct insert branch for supported templates. Gmail triggers, email fetching and refetching, HTML/plain-text extraction, AI invocation, Telegram sends, retries, and callback routing stay in n8n.
+This endpoint can replace deterministic email parser Code nodes, the high-confidence direct insert branch, and the initial n8n AI round trip. Gmail triggers, email fetching/refetching, Telegram sends, retries, callback routing, and correction collection remain in n8n. The existing correction flow may continue calling AI in n8n until it receives its own migration slice.
 
 ### `POST /api/veyra/transactions/email/source-reference`
 
@@ -1347,7 +1347,7 @@ interception, Telegram handling, and workflow activation remain in n8n.
 
 ### `POST /api/veyra/transactions/email/resolve-review`
 
-Accepts a structured result from n8n after an email returned `needs_ai`. Every AI candidate is persisted as a pending email transaction for user confirmation, regardless of confidence. Core API validates the transaction fields and retains a learned-template proposal only when it can replay safely against the supplied email. It does not call an LLM or send Telegram messages.
+Accepts a structured email AI result for correction and rollback compatibility. Initial fallback inference now enters this same validation and persistence path internally from `email/handle`. Every AI candidate is persisted as a pending email transaction for user confirmation, regardless of confidence. Core API validates the transaction fields and retains a learned-template proposal only when it can replay safely against the supplied email. This endpoint does not itself call an LLM or send Telegram messages.
 
 The endpoint accepts confidence as `0..1` or `0..100`; the response normalizes it to `0..100`. It does not create budgets. If the AI category is not an active budget category, the candidate still remains pending with that category for the user to correct.
 
@@ -1565,7 +1565,7 @@ When AI explicitly classifies the email as a non-transaction, n8n submits the sa
 
 Core API returns `status: "ignored_non_transaction"` with `reason: "ai_non_transaction"`, records only a body-free decision in the existing import diagnostics, and creates no transaction or template. Repeating the same submission is idempotent. A failed AI attempt with no transaction remains retryable: a repeated Gmail delivery resumes the same `needs_ai` handoff.
 
-This endpoint owns only validation and pending review persistence. Gmail triggers, Gmail refetching, AI prompting/invocation, correction collection, Telegram sends, retries, and callback routing stay in n8n. Do not alter or activate a production n8n workflow as part of this API change.
+This endpoint owns only validation and pending review persistence. Initial fallback prompting/invocation is owned by `email/handle`; Gmail triggers, Gmail refetching, correction prompting/invocation, correction collection, Telegram sends, retries, and callback routing stay in n8n. Do not alter or activate a production n8n workflow as part of this API change.
 
 ### `POST /api/veyra/transactions/confirmation-payload`
 

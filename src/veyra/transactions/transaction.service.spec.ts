@@ -45,9 +45,7 @@ const watchdogN8nFixture = JSON.parse(
     messages: string[];
     riskCallbackData: string[];
     riskReplyMarkup: {
-      inline_keyboard: Array<
-        Array<{ text: string; callback_data: string }>
-      >;
+      inline_keyboard: Array<Array<{ text: string; callback_data: string }>>;
     };
   };
   callbackContext: {
@@ -619,10 +617,6 @@ function createRiskReviewRepository(review = riskReview) {
   return {
     calls,
     repository: {
-      createPendingReview: async (...args: unknown[]) => {
-        calls.push({ method: "createPendingReview", args });
-        return review;
-      },
       saveLargeTransactionEvaluation: async (...args: unknown[]) => {
         calls.push({ method: "saveLargeTransactionEvaluation", args });
         return { review, shouldNotify: true };
@@ -2673,37 +2667,6 @@ test("handles catid callback by setting category and confirming transaction", as
   assert.deepEqual(calls[2].values, ["Food", "123", "1"]);
 });
 
-test("creates large transaction review with Telegram-safe keyboard", async () => {
-  const riskReviews = createRiskReviewRepository();
-  const { service } = createService([], undefined, riskReviews.repository);
-
-  const result = await service.createRegretDetectorReview({
-    userId: 1,
-    transactionId: 123,
-    riskLevel: "high",
-    riskScore: 82.5,
-    riskReasons: ["large_purchase"],
-    riskMetrics: riskReview.riskMetrics,
-  });
-
-  assert.equal(result.status, "ok");
-  assert.match(result.telegram.text, /<b>⚠️ Large transaction detected<\/b>/);
-  assert.match(result.telegram.text, /Rp850\.000 at Uniqlo/);
-  assert.match(result.telegram.text, /38% of your monthly budget/);
-  assert.deepEqual(result.telegram.reply_markup, {
-    inline_keyboard: [
-      [
-        { text: "Planned", callback_data: "veyra_risk:7:planned" },
-        { text: "Necessary", callback_data: "veyra_risk:7:necessary" },
-      ],
-      [
-        { text: "Regret it", callback_data: "veyra_risk:7:regret" },
-        { text: "Ignore", callback_data: "veyra_risk:7:ignore" },
-      ],
-    ],
-  });
-});
-
 test("handles immediate risk callbacks from the n8n fixture", async () => {
   const riskReviews = createRiskReviewRepository();
   const { service } = createService([], undefined, riskReviews.repository);
@@ -2825,7 +2788,10 @@ test("regret callback fails safely when note state is unavailable", async () => 
   });
 
   assert.equal(result.status, "error");
-  assert.equal(result.telegram.text, "Unable to collect a regret note right now.");
+  assert.equal(
+    result.telegram.text,
+    "Unable to collect a regret note right now.",
+  );
   assert.equal(
     riskReviews.calls.some((call) => call.method === "resolve"),
     false,
@@ -2947,9 +2913,7 @@ test("resolved regret review state does not update transaction", async () => {
   assert.equal(result.status, "cancelled");
   assert.equal(result.message, "Regret review expired.");
   assert.equal(calls.length, 0);
-  assert.deepEqual(riskReviews.calls, [
-    { method: "findById", args: ["7", 1] },
-  ]);
+  assert.deepEqual(riskReviews.calls, [{ method: "findById", args: ["7", 1] }]);
   assert.equal(state.state.stateName, "idle");
 });
 
@@ -4926,6 +4890,159 @@ test("returns needs_ai for a likely Mandiri transaction with no parser", async (
   assert.equal(calls.length, 3);
 });
 
+test("resolves a needs_ai email inside Core through the existing review path", async () => {
+  const emailRequest: EmailTransactionHandleRequestDto = {
+    telegramUserId: "976684739",
+    userId: 1,
+    source: "email",
+    email: {
+      messageId: "gmail-mandiri-core-ai",
+      from: "bankmandiri@bankmandiri.co.id",
+      subject: "Mandiri Transaction",
+      date: "2026-06-22T10:00:00+07:00",
+      emailText: "Mandiri Transaction berhasil sebesar Rp50.000",
+      authentication: {
+        dkim: "pass",
+        spf: "pass",
+        dmarc: "pass",
+        domain: "bankmandiri.co.id",
+      },
+    },
+  };
+  const aiCalls: unknown[] = [];
+  const veyraAiService = {
+    reviewEmailTransaction: async (input: unknown) => {
+      aiCalls.push(input);
+      return {
+        isTransaction: true as const,
+        transactionCandidate: {
+          source: "email" as const,
+          bank: "Mandiri",
+          transactionType: "expense",
+          amount: 50000,
+          merchant: "Toko Buku",
+          merchantNormalized: "Toko Buku",
+          transactionDate: "2026-06-22T10:00:00+07:00",
+          rawPayload: {},
+        },
+        resolution: {
+          category: "Shopping",
+          confidence: 0.98,
+          resolver: "llm",
+        },
+        templateProposal: null,
+      };
+    },
+  } as unknown as VeyraAiService;
+  const { calls, service } = createService(
+    [
+      [],
+      [{ id: "import-mandiri" }],
+      [],
+      [{ id: "1", telegram_id: "976684739", timezone: "Asia/Jakarta" }],
+      [{ category: "Shopping" }],
+      [
+        {
+          id: "import-mandiri",
+          transaction_id: null,
+          status: "needs_ai",
+          raw_payload: boundImportRaw(emailRequest.email),
+        },
+      ],
+      [{ id: "123" }],
+      [{ id: "import-mandiri" }],
+    ],
+    undefined,
+    undefined,
+    undefined,
+    "1",
+    veyraAiService,
+  );
+
+  const result = await service.handleEmailTransaction(emailRequest);
+
+  assert.deepEqual(aiCalls, [
+    {
+      email: emailRequest.email,
+      aiRequest: {
+        reviewToken: "gmail-mandiri-core-ai",
+        reason: "unsupported_template",
+      },
+    },
+  ]);
+  assert.equal(result.status, "needs_review");
+  assert.equal(result.provider, "Mandiri");
+  assert.equal(result.transaction?.id, "123");
+  assert.equal(result.transaction?.status, "pending");
+  assert.equal(result.transaction?.confidence, 98);
+  assert.equal(result.aiRequest, undefined);
+  assert.ok(
+    result.replyMarkup?.inline_keyboard
+      .flat()
+      .some((button) => button.callback_data === "save_transaction:123"),
+  );
+  assert.equal(
+    calls.filter((call) => /INSERT INTO transactions/.test(call.text)).length,
+    1,
+  );
+});
+
+test("records Core email AI failure without persisting a transaction", async () => {
+  const emailRequest: EmailTransactionHandleRequestDto = {
+    telegramUserId: "976684739",
+    source: "email",
+    email: {
+      messageId: "gmail-mandiri-ai-failure",
+      from: "bankmandiri@bankmandiri.co.id",
+      subject: "Mandiri Transaction",
+      emailText: "Mandiri Transaction berhasil sebesar Rp50.000",
+      authentication: {
+        dkim: "pass",
+        spf: "pass",
+        dmarc: "pass",
+        domain: "bankmandiri.co.id",
+      },
+    },
+  };
+  const veyraAiService = {
+    reviewEmailTransaction: async () => {
+      throw new ServiceUnavailableException("private model failure");
+    },
+  } as unknown as VeyraAiService;
+  const { calls, service } = createService(
+    [
+      [],
+      [{ id: "import-mandiri" }],
+      [],
+      [{ id: "1", telegram_id: "976684739" }],
+      [
+        {
+          id: "import-mandiri",
+          raw_payload: boundImportRaw(emailRequest.email),
+        },
+      ],
+      [],
+    ],
+    undefined,
+    undefined,
+    undefined,
+    "1",
+    veyraAiService,
+  );
+
+  const result = await service.handleEmailTransaction(emailRequest);
+
+  assert.equal(result.status, "needs_review");
+  assert.equal(result.reason, "ai_failed");
+  assert.equal(result.transaction, undefined);
+  assert.equal(result.aiRequest, undefined);
+  assert.doesNotMatch(JSON.stringify(result), /private model failure/);
+  assert.equal(
+    calls.some((call) => /INSERT INTO transactions/.test(call.text)),
+    false,
+  );
+});
+
 test("returns duplicate for existing Gmail message import", async () => {
   const templates = createTemplateRepository([]);
   const { calls, service } = createService(
@@ -6263,6 +6380,48 @@ test("a failed AI import without a transaction resumes the AI handoff", async ()
 
   assert.equal(result.status, "needs_ai");
   assert.equal(result.aiRequest?.reviewToken, "gmail-learned-1");
+});
+
+test("rejects altered redelivery before resuming Core email AI", async () => {
+  const storedRaw = boundImportRaw(originalAiEmail.email);
+  let aiCalls = 0;
+  const veyraAiService = {
+    reviewEmailTransaction: async () => {
+      aiCalls += 1;
+      return { isTransaction: false as const };
+    },
+  } as unknown as VeyraAiService;
+  const { service } = createService(
+    [
+      [
+        {
+          id: "import-1",
+          transaction_id: null,
+          status: "needs_ai",
+          raw_payload: storedRaw,
+        },
+      ],
+      [{ id: "import-1", raw_payload: storedRaw }],
+    ],
+    undefined,
+    undefined,
+    undefined,
+    "1",
+    veyraAiService,
+  );
+
+  await assert.rejects(
+    () =>
+      service.handleEmailTransaction({
+        ...originalAiEmail,
+        email: {
+          ...originalAiEmail.email,
+          emailText: `${originalAiEmail.email.emailText} altered`,
+        },
+      }),
+    /email does not match original import/,
+  );
+  assert.equal(aiCalls, 0);
 });
 
 test("records an explicit AI non-transaction decision idempotently", async () => {

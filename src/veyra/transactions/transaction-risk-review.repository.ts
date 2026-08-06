@@ -68,12 +68,6 @@ interface TransactionRiskReviewRow extends QueryResultRow {
 export class TransactionRiskReviewRepository {
   constructor(private readonly database: DatabaseService) {}
 
-  async createPendingReview(
-    input: CreatePendingRiskReviewInput,
-  ): Promise<TransactionRiskReview> {
-    return (await this.saveLargeTransactionEvaluation(input)).review;
-  }
-
   async saveLargeTransactionEvaluation(
     input: CreatePendingRiskReviewInput,
   ): Promise<SaveRiskEvaluationResult> {

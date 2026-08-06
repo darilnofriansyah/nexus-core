@@ -62,16 +62,16 @@ This checklist turns the parity audit into reviewable migration work. Its checkb
 - [x] Add bank email parser endpoint only if explicitly migrating email parsing.
   - Phase 1 endpoint: `POST /api/veyra/transactions/email/handle` for deterministic BCA credit-card, Mandiri e-money, and Krom transfer/QRIS templates.
   - [x] Add user-scoped learned templates after hard-coded parsing, with safe literal-anchor validation and sender-authentication gating.
-  - [x] Return `needs_ai` for likely transaction emails that neither deterministic parser can handle; Core API never invokes an AI model.
+  - [x] Keep `needs_ai` as the internal rollback handoff for likely transaction emails that neither deterministic parser can handle.
   - [x] Accept n8n's structured AI result as a pending confirmation, and activate only its validated template after user confirmation.
   - [x] Support correction through `transactionId`, regenerated structured AI output, and the n8n-only `edit_email_details:*` interception contract.
   - [x] Record an n8n AI failure as `needs_review` / `ai_failed` without inserting a transaction or template.
-- [ ] Invoke the existing n8n AI node for `needs_ai` and submit its structured result to `POST /api/veyra/transactions/email/resolve-review`.
-- [ ] Apply `docs/migration/2026-07-27-email-parser-templates.sql` after review and approval.
+- [x] Invoke the preserved `gpt-4.1-mini` email fallback inside Core and feed its structured result through the existing identity-bound review path.
+- [x] Verify `docs/migration/2026-07-27-email-parser-templates.sql` in production. On 2026-08-06 the table, constraints, columns, and active-sender index already matched the migration, so no DDL was rerun; the table contained zero rows.
 - [ ] Prepare, fixture-test, approve, and only then activate the production n8n Gmail/AI/callback workflow changes.
 - [ ] Add `merchant_review_queue` upsert only if replacing the normalizer/categorizer side effects.
 - [x] Add tests for dirty amount strings, reversal/refund mapping, alias hit, alias miss, category rule hit, and missing merchant validation.
-- [x] Keep Gmail trigger, email fetch, n8n orchestration, Telegram send, and credentials in n8n.
+- [x] Keep Gmail trigger/fetch/refetch, correction AI orchestration, Telegram send, callbacks, and credentials in n8n; Core owns only the initial email fallback inference.
 
 ### 6. Transaction Confirmation Payload
 

@@ -45,10 +45,6 @@ import {
   TransactionCallbackHandleResponseDto,
 } from "./dto/transaction-callback-handle.dto";
 import {
-  CreateRegretReviewRequestDto,
-  CreateRegretReviewResponseDto,
-} from "./dto/transaction-risk-review.dto";
-import {
   TransactionManageChangesDto,
   TransactionManageHandleRequestDto,
   TransactionManageHandleResponseDto,
@@ -78,7 +74,6 @@ import {
   ParsedEmailTransactionDto,
 } from "./dto/email-transaction.dto";
 import {
-  CreatePendingRiskReviewInput,
   TransactionRiskLevel,
   TransactionRiskReview,
   TransactionRiskReviewRepository,
@@ -799,9 +794,7 @@ export class TransactionService {
   ): Promise<EmailSourceReferenceResponseDto> {
     const rawTelegramUserId = request?.telegramUserId;
     const rawTransactionId = request?.transactionId;
-    const telegramUserId = this.cleanString(
-      String(rawTelegramUserId ?? ""),
-    );
+    const telegramUserId = this.cleanString(String(rawTelegramUserId ?? ""));
     const transactionId = this.cleanString(String(rawTransactionId ?? ""));
 
     if (
@@ -870,7 +863,23 @@ export class TransactionService {
     );
 
     if (existingImport) {
-      return this.resumeExistingEmailImport(validated, existingImport);
+      const handoff = await this.resumeExistingEmailImport(
+        validated,
+        existingImport,
+      );
+
+      if (
+        handoff.status === "needs_ai" &&
+        this.veyraAiService &&
+        !this.assertEmailImportBinding(
+          existingImport.raw_payload,
+          this.buildEmailIdentityMetadata(validated.email),
+        )
+      ) {
+        return handoff;
+      }
+
+      return this.resolveEmailAiHandoff(validated, handoff);
     }
 
     const parserInputs = this.buildEmailParserInputs(validated);
@@ -900,27 +909,30 @@ export class TransactionService {
     ) {
       const aiReason = parsedAttempt ? "parse_failed" : "unsupported_template";
 
-      return this.recordUnconfirmedEmailAttempt({
-        request: validated,
-        status: "needs_ai",
-        provider: provider === "unknown" ? null : provider,
-        templateKey:
-          parsedAttempt?.parsed?.templateKey ??
-          parser?.templateKey ??
-          detection.templateKey,
-        reason:
-          aiReason === "parse_failed"
-            ? (parsedAttempt?.reason ?? "email parse failed")
-            : provider === "unknown"
-              ? "email template is not supported"
-              : `${provider} email template is not supported`,
-        parsed: parsedAttempt?.parsed,
-        detection,
-        aiRequest: {
-          reviewToken: validated.email.messageId,
-          reason: aiReason,
-        },
-      });
+      return this.resolveEmailAiHandoff(
+        validated,
+        await this.recordUnconfirmedEmailAttempt({
+          request: validated,
+          status: "needs_ai",
+          provider: provider === "unknown" ? null : provider,
+          templateKey:
+            parsedAttempt?.parsed?.templateKey ??
+            parser?.templateKey ??
+            detection.templateKey,
+          reason:
+            aiReason === "parse_failed"
+              ? (parsedAttempt?.reason ?? "email parse failed")
+              : provider === "unknown"
+                ? "email template is not supported"
+                : `${provider} email template is not supported`,
+          parsed: parsedAttempt?.parsed,
+          detection,
+          aiRequest: {
+            reviewToken: validated.email.messageId,
+            reason: aiReason,
+          },
+        }),
+      );
     }
 
     if (provider === "unknown") {
@@ -2973,6 +2985,11 @@ export class TransactionService {
     const subject = this.cleanString(email.subject);
     const emailText = this.cleanString(email.emailText);
     const emailHtml = this.cleanString(email.emailHtml);
+    const threadId = this.cleanString(email.threadId);
+    const date = this.cleanString(email.date);
+    const authentication = this.sanitizeEmailAuthentication(
+      email.authentication,
+    );
 
     if (!messageId) {
       throw new BadRequestException("email.messageId is required");
@@ -3014,13 +3031,13 @@ export class TransactionService {
       source: "email",
       email: {
         messageId,
-        threadId: this.cleanString(email.threadId),
+        ...(threadId ? { threadId } : {}),
         from,
         subject,
-        date: this.cleanString(email.date),
+        ...(date ? { date } : {}),
         emailText: emailText ?? "",
-        emailHtml,
-        authentication: this.sanitizeEmailAuthentication(email.authentication),
+        ...(emailHtml ? { emailHtml } : {}),
+        ...(authentication ? { authentication } : {}),
       },
     };
   }
@@ -3355,6 +3372,78 @@ export class TransactionService {
       reason: input.reason,
       parsed: input.parsed,
       aiRequest: input.aiRequest,
+    });
+  }
+
+  private async resolveEmailAiHandoff(
+    request: EmailTransactionHandleRequestDto & {
+      userId: string;
+      source: "email";
+    },
+    handoff: EmailTransactionHandleResponseDto,
+  ): Promise<EmailTransactionHandleResponseDto> {
+    if (
+      handoff.status !== "needs_ai" ||
+      !handoff.aiRequest ||
+      !this.veyraAiService
+    ) {
+      return handoff;
+    }
+
+    let aiResult;
+    try {
+      aiResult = await this.veyraAiService.reviewEmailTransaction({
+        email: request.email,
+        aiRequest: handoff.aiRequest,
+      });
+    } catch {
+      await this.resolveEmailTransactionReview({
+        telegramUserId: request.telegramUserId,
+        reviewToken: handoff.aiRequest.reviewToken,
+        email: request.email,
+        aiError: "AI processing failed",
+      });
+      return this.buildEmailResponse({
+        status: "needs_review",
+        provider: handoff.provider,
+        templateKey: handoff.templateKey,
+        reason: "ai_failed",
+      });
+    }
+
+    const resolved = await this.resolveEmailTransactionReview({
+      telegramUserId: request.telegramUserId,
+      reviewToken: handoff.aiRequest.reviewToken,
+      email: request.email,
+      isTransaction: aiResult.isTransaction,
+      ...(aiResult.isTransaction
+        ? {
+            transactionCandidate: aiResult.transactionCandidate,
+            resolution: aiResult.resolution,
+            ...(aiResult.templateProposal
+              ? { templateProposal: aiResult.templateProposal }
+              : {}),
+          }
+        : {}),
+    });
+
+    if (!aiResult.isTransaction) {
+      return this.buildEmailResponse({
+        status: "ignored_non_transaction",
+        provider: handoff.provider,
+        templateKey: handoff.templateKey,
+        reason: "ai_non_transaction",
+      });
+    }
+
+    return this.buildEmailResponse({
+      status: "needs_review",
+      provider: aiResult.transactionCandidate.bank ?? handoff.provider,
+      templateKey:
+        aiResult.templateProposal?.templateKey ?? handoff.templateKey,
+      reason: "AI transaction requires confirmation",
+      transaction: resolved.transaction,
+      telegramText: resolved.telegramText,
     });
   }
 
@@ -4140,12 +4229,14 @@ export class TransactionService {
     transaction?: EmailTransactionHandleResponseDto["transaction"];
     watchdog?: TransactionWatchdogResponseDto;
     aiRequest?: EmailTransactionHandleResponseDto["aiRequest"];
+    telegramText?: string;
   }): EmailTransactionHandleResponseDto {
     const pendingReview =
       input.status === "needs_review" && input.transaction?.status === "pending"
         ? input.transaction
         : null;
-    const baseMessage = this.buildEmailTelegramText(input);
+    const baseMessage =
+      input.telegramText ?? this.buildEmailTelegramText(input);
 
     return {
       status: input.status,
@@ -4297,35 +4388,6 @@ export class TransactionService {
     request: ConfirmTransactionRequestDto,
   ): Promise<ConfirmTransactionResponseDto> {
     return this.updateTransactionStatus(request, "rejected");
-  }
-
-  createPendingReview(
-    input: CreatePendingRiskReviewInput,
-  ): Promise<TransactionRiskReview> {
-    return this.requireRiskReviewRepository().createPendingReview(input);
-  }
-
-  async createRegretDetectorReview(
-    request: CreateRegretReviewRequestDto,
-  ): Promise<CreateRegretReviewResponseDto> {
-    const review = await this.createPendingReview({
-      userId: request.userId,
-      transactionId: request.transactionId,
-      riskLevel: request.riskLevel,
-      riskScore: request.riskScore,
-      riskReasons: request.riskReasons,
-      riskMetrics: request.riskMetrics,
-    });
-
-    return {
-      status: "ok",
-      review,
-      telegram: {
-        text: this.buildLargeTransactionReviewText(review),
-        parse_mode: "HTML",
-        reply_markup: this.buildWatchdogRiskReplyMarkup(review.id),
-      },
-    };
   }
 
   getReviewById(
@@ -5178,10 +5240,7 @@ export class TransactionService {
       return null;
     }
 
-    if (
-      state.expiresAt &&
-      new Date(state.expiresAt).getTime() <= Date.now()
-    ) {
+    if (state.expiresAt && new Date(state.expiresAt).getTime() <= Date.now()) {
       await this.resetConversationState(request.userId, stateStore);
       return {
         status: "cancelled",
@@ -6005,9 +6064,7 @@ export class TransactionService {
     merchantNormalized: string | null | undefined;
     category: string | null | undefined;
   }): string | null {
-    if (
-      this.cleanString(input.transactionType)?.toLowerCase() !== "expense"
-    ) {
+    if (this.cleanString(input.transactionType)?.toLowerCase() !== "expense") {
       return null;
     }
 
