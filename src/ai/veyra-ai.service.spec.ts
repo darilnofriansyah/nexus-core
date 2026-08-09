@@ -1,4 +1,6 @@
 import * as assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { test } from "node:test";
 import { ServiceUnavailableException } from "@nestjs/common";
 import OpenAI from "openai";
@@ -7,8 +9,13 @@ import {
   EMAIL_TRANSACTION_SCHEMA,
   MANUAL_TRANSACTION_INSTRUCTIONS,
   MANUAL_TRANSACTION_SCHEMA,
+  MASTER_INTENT_INSTRUCTIONS,
+  MASTER_INTENT_MODEL,
+  MASTER_INTENT_SCHEMA,
+  MASTER_INTENTS,
 } from "./veyra-prompts";
-import { VeyraAiService } from "./veyra-ai.service";
+import type { MasterIntentResultDto } from "../veyra/messages/dto/message-route.dto";
+import { ClassifyMasterIntentInput, VeyraAiService } from "./veyra-ai.service";
 
 const validResult = {
   intent: "record_transaction",
@@ -41,6 +48,77 @@ const validEmailResult = {
   },
   templateProposal: null,
 };
+
+const validMasterIntentResult = {
+  intent: "spending_summary",
+  period: "this_month",
+  merchant: null,
+  category: null,
+  limit: null,
+  target: {
+    id: null,
+    merchant: null,
+    category: null,
+    amount: null,
+    period: null,
+  },
+  changes: {
+    amount: null,
+    merchant: null,
+    merchant_normalized: null,
+    category: null,
+    transaction_date: null,
+    transaction_type: null,
+    notes: null,
+  },
+  selection: null,
+  confidence: 0.97,
+};
+
+type FixtureExpected = Partial<
+  Omit<MasterIntentResultDto, "target" | "changes">
+> & {
+  target?: Partial<MasterIntentResultDto["target"]>;
+  changes?: Partial<MasterIntentResultDto["changes"]>;
+};
+
+const masterIntentFixture = JSON.parse(
+  readFileSync(
+    join(
+      process.cwd(),
+      "src/ai/test/fixtures/master-intent/n8n-classifier.json",
+    ),
+    "utf8",
+  ),
+) as {
+  evidence: {
+    workflowId: string;
+    workflowVersionId: string;
+    model: string;
+    liveOutputsCaptured: boolean;
+  };
+  defaults: MasterIntentResultDto;
+  cases: Array<{
+    name: string;
+    input: ClassifyMasterIntentInput;
+    expected: FixtureExpected;
+  }>;
+};
+
+function expectedFixtureResult(expected: FixtureExpected) {
+  return {
+    ...masterIntentFixture.defaults,
+    ...expected,
+    target: {
+      ...masterIntentFixture.defaults.target,
+      ...expected.target,
+    },
+    changes: {
+      ...masterIntentFixture.defaults.changes,
+      ...expected.changes,
+    },
+  } satisfies MasterIntentResultDto;
+}
 
 function clientFor(response: unknown): OpenAI {
   return {
@@ -216,6 +294,187 @@ test("reviews an email with the preserved stateless strict-schema contract", asy
       },
     },
   ]);
+});
+
+test("classifies master intent with the audited stateless strict-schema contract", async () => {
+  const requests: unknown[] = [];
+  const client = {
+    responses: {
+      create: async (request: unknown) => {
+        requests.push(request);
+        return {
+          id: "resp_master_123",
+          status: "completed",
+          output_text: JSON.stringify(validMasterIntentResult),
+          usage: { input_tokens: 12, output_tokens: 24 },
+        };
+      },
+    },
+  } as unknown as OpenAI;
+
+  const result = await new VeyraAiService(client).classifyMasterIntent({
+    message: "How much did I spend?",
+    currentState: null,
+    stateData: {},
+  });
+
+  assert.deepEqual(result, validMasterIntentResult);
+  assert.deepEqual(requests, [
+    {
+      model: "gpt-5.4-mini",
+      store: false,
+      input: [
+        { role: "developer", content: MASTER_INTENT_INSTRUCTIONS },
+        {
+          role: "user",
+          content: JSON.stringify({
+            message: "How much did I spend?",
+            current_state: null,
+            state_data: {},
+          }),
+        },
+      ],
+      text: {
+        format: {
+          type: "json_schema",
+          name: "master_intent",
+          strict: true,
+          schema: MASTER_INTENT_SCHEMA,
+        },
+      },
+    },
+  ]);
+});
+
+test("sanitized n8n fixture covers and validates every audited master intent", async () => {
+  assert.equal(masterIntentFixture.evidence.model, MASTER_INTENT_MODEL);
+  assert.equal(masterIntentFixture.evidence.liveOutputsCaptured, false);
+  assert.deepEqual(
+    masterIntentFixture.cases.map(({ expected }) => expected.intent).sort(),
+    [...MASTER_INTENTS].sort(),
+  );
+
+  for (const fixture of masterIntentFixture.cases) {
+    const expected = expectedFixtureResult(fixture.expected);
+    const service = new VeyraAiService(
+      clientFor({
+        id: `fixture_${fixture.name}`,
+        status: "completed",
+        output_text: JSON.stringify(expected),
+      }),
+    );
+
+    assert.deepEqual(
+      await service.classifyMasterIntent(fixture.input),
+      expected,
+      fixture.name,
+    );
+  }
+});
+
+test("rejects malformed and refused master-intent output without exposing input", async () => {
+  const privateMessage = "private Telegram 976684739";
+  const cases = [
+    {
+      status: "completed",
+      output_text: JSON.stringify({ ...validMasterIntentResult, extra: true }),
+    },
+    {
+      status: "completed",
+      output_text: JSON.stringify({
+        ...validMasterIntentResult,
+        intent: "invented_intent",
+      }),
+    },
+    {
+      status: "completed",
+      output_text: JSON.stringify({
+        ...validMasterIntentResult,
+        target: { ...validMasterIntentResult.target, extra: true },
+      }),
+    },
+    {
+      status: "completed",
+      output_text: JSON.stringify({
+        ...validMasterIntentResult,
+        changes: {
+          ...validMasterIntentResult.changes,
+          transaction_type: "refund",
+        },
+      }),
+    },
+    {
+      status: "completed",
+      output_text: JSON.stringify({ ...validMasterIntentResult, selection: 0 }),
+    },
+    {
+      status: "completed",
+      output_text: JSON.stringify({
+        ...validMasterIntentResult,
+        confidence: 2,
+      }),
+    },
+    { status: "completed", output_text: "{" },
+    {
+      status: "completed",
+      output_text: JSON.stringify(validMasterIntentResult),
+      output: [{ type: "message", content: [{ type: "refusal" }] }],
+    },
+  ];
+
+  for (const response of cases) {
+    await assert.rejects(
+      new VeyraAiService(clientFor(response)).classifyMasterIntent({
+        message: privateMessage,
+        currentState: null,
+        stateData: {},
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof ServiceUnavailableException);
+        assert.equal(error.getStatus(), 503);
+        assert.equal(error.message, "AI master intent classification failed");
+        assert.doesNotMatch(error.message, /976684739/);
+        return true;
+      },
+    );
+  }
+});
+
+test("times out master-intent inference and logs metadata only", async () => {
+  const previousTimeout = process.env.OPENAI_TIMEOUT_MS;
+  const logged: unknown[] = [];
+  process.env.OPENAI_TIMEOUT_MS = "5";
+  const client = {
+    responses: {
+      create: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return {
+          status: "completed",
+          output_text: JSON.stringify(validMasterIntentResult),
+        };
+      },
+    },
+  } as unknown as OpenAI;
+  const service = new VeyraAiService(client);
+  (service as unknown as { logger: { log(value: unknown): void } }).logger = {
+    log: (value) => logged.push(value),
+  };
+
+  try {
+    await assert.rejects(
+      service.classifyMasterIntent({
+        message: "private Telegram 976684739",
+        currentState: null,
+        stateData: {},
+      }),
+      ServiceUnavailableException,
+    );
+    assert.match(JSON.stringify(logged), /master-intent/);
+    assert.doesNotMatch(JSON.stringify(logged), /private Telegram|976684739/);
+  } finally {
+    if (previousTimeout === undefined) delete process.env.OPENAI_TIMEOUT_MS;
+    else process.env.OPENAI_TIMEOUT_MS = previousTimeout;
+  }
 });
 
 test("rejects malformed email AI output without exposing email content", async () => {

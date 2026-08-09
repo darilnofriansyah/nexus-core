@@ -14,6 +14,7 @@ import {
   EmailTransactionMessageDto,
 } from "../veyra/transactions/dto/email-transaction.dto";
 import { ManualTransactionLlmResultDto } from "../veyra/transactions/dto/handle-transaction.dto";
+import type { MasterIntentResultDto } from "../veyra/messages/dto/message-route.dto";
 import {
   EMAIL_TRANSACTION_INSTRUCTIONS,
   EMAIL_TRANSACTION_MODEL,
@@ -23,6 +24,11 @@ import {
   MANUAL_TRANSACTION_MODEL,
   MANUAL_TRANSACTION_PROMPT_VERSION,
   MANUAL_TRANSACTION_SCHEMA,
+  MASTER_INTENT_INSTRUCTIONS,
+  MASTER_INTENT_MODEL,
+  MASTER_INTENT_PROMPT_VERSION,
+  MASTER_INTENT_SCHEMA,
+  MASTER_INTENTS,
 } from "./veyra-prompts";
 
 const RESULT_KEYS = [
@@ -49,6 +55,12 @@ export interface ReviewEmailTransactionInput {
   aiRequest: EmailAiHandoffDto;
 }
 
+export interface ClassifyMasterIntentInput {
+  message: string;
+  currentState: string | null;
+  stateData: Record<string, unknown>;
+}
+
 export type EmailAiReviewResult =
   | { isTransaction: false }
   | {
@@ -65,6 +77,91 @@ export class VeyraAiService {
 
   constructor(@Optional() client?: OpenAI) {
     this.client = client;
+  }
+
+  async classifyMasterIntent(
+    input: ClassifyMasterIntentInput,
+  ): Promise<MasterIntentResultDto> {
+    const startedAt = Date.now();
+    let responseId: string | undefined;
+    let inputTokens: number | undefined;
+    let outputTokens: number | undefined;
+
+    try {
+      const signal = AbortSignal.timeout(readEnv().openAiTimeoutMs);
+      const response = await Promise.race([
+        this.getClient().responses.create(
+          {
+            model: MASTER_INTENT_MODEL,
+            store: false,
+            input: [
+              { role: "developer", content: MASTER_INTENT_INSTRUCTIONS },
+              {
+                role: "user",
+                content: JSON.stringify({
+                  message: input.message,
+                  current_state: input.currentState,
+                  state_data: input.stateData,
+                }),
+              },
+            ],
+            text: {
+              format: {
+                type: "json_schema",
+                name: "master_intent",
+                strict: true,
+                schema: MASTER_INTENT_SCHEMA,
+              },
+            },
+          },
+          { signal },
+        ),
+        new Promise<never>((_, reject) =>
+          signal.addEventListener("abort", () => reject(signal.reason), {
+            once: true,
+          }),
+        ),
+      ]);
+
+      responseId = response.id;
+      inputTokens = response.usage?.input_tokens;
+      outputTokens = response.usage?.output_tokens;
+
+      if (
+        response.status !== "completed" ||
+        this.hasRefusal(response.output) ||
+        !response.output_text.trim()
+      ) {
+        throw new Error("Invalid response");
+      }
+
+      const result = this.parseMasterIntentResult(response.output_text);
+      this.logResult({
+        capability: "master-intent",
+        model: MASTER_INTENT_MODEL,
+        promptVersion: MASTER_INTENT_PROMPT_VERSION,
+        responseId,
+        latencyMs: Date.now() - startedAt,
+        inputTokens,
+        outputTokens,
+        validation: "passed",
+      });
+      return result;
+    } catch {
+      this.logResult({
+        capability: "master-intent",
+        model: MASTER_INTENT_MODEL,
+        promptVersion: MASTER_INTENT_PROMPT_VERSION,
+        responseId,
+        latencyMs: Date.now() - startedAt,
+        inputTokens,
+        outputTokens,
+        validation: "failed",
+      });
+      throw new ServiceUnavailableException(
+        "AI master intent classification failed",
+      );
+    }
   }
 
   async extractTransaction(
@@ -327,6 +424,71 @@ export class VeyraAiService {
     return parsed as ManualTransactionLlmResultDto;
   }
 
+  private parseMasterIntentResult(output: string): MasterIntentResultDto {
+    const parsed = JSON.parse(output) as unknown;
+
+    if (
+      !this.hasExactKeys(parsed, [
+        "intent",
+        "period",
+        "merchant",
+        "category",
+        "limit",
+        "target",
+        "changes",
+        "selection",
+        "confidence",
+      ]) ||
+      !MASTER_INTENTS.includes(
+        parsed.intent as (typeof MASTER_INTENTS)[number],
+      ) ||
+      !this.isNullableString(parsed.period) ||
+      !this.isNullableString(parsed.merchant) ||
+      !this.isNullableString(parsed.category) ||
+      !this.isNullablePositiveInteger(parsed.limit) ||
+      !this.hasExactKeys(parsed.target, [
+        "id",
+        "merchant",
+        "category",
+        "amount",
+        "period",
+      ]) ||
+      !this.isNullableIdentifier(parsed.target.id) ||
+      !this.isNullableString(parsed.target.merchant) ||
+      !this.isNullableString(parsed.target.category) ||
+      !this.isNullablePositiveNumber(parsed.target.amount) ||
+      !this.isNullableString(parsed.target.period) ||
+      !this.hasExactKeys(parsed.changes, [
+        "amount",
+        "merchant",
+        "merchant_normalized",
+        "category",
+        "transaction_date",
+        "transaction_type",
+        "notes",
+      ]) ||
+      !this.isNullablePositiveNumber(parsed.changes.amount) ||
+      !this.isNullableString(parsed.changes.merchant) ||
+      !this.isNullableString(parsed.changes.merchant_normalized) ||
+      !this.isNullableString(parsed.changes.category) ||
+      !this.isNullableString(parsed.changes.transaction_date) ||
+      (parsed.changes.transaction_type !== null &&
+        !["expense", "income", "transfer", "reversal"].includes(
+          parsed.changes.transaction_type as string,
+        )) ||
+      !this.isNullableString(parsed.changes.notes) ||
+      !this.isNullablePositiveInteger(parsed.selection) ||
+      typeof parsed.confidence !== "number" ||
+      !Number.isFinite(parsed.confidence) ||
+      parsed.confidence < 0 ||
+      parsed.confidence > 1
+    ) {
+      throw new Error("Invalid master intent result");
+    }
+
+    return parsed as unknown as MasterIntentResultDto;
+  }
+
   private parseEmailReviewResult(output: string): EmailAiReviewResult {
     const parsed = JSON.parse(output) as unknown;
 
@@ -517,6 +679,27 @@ export class VeyraAiService {
     return value === null || typeof value === "string";
   }
 
+  private isNullableIdentifier(
+    value: unknown,
+  ): value is string | number | null {
+    return (
+      value === null ||
+      this.isNonEmptyString(value) ||
+      (typeof value === "number" && Number.isFinite(value) && value > 0)
+    );
+  }
+
+  private isNullablePositiveNumber(value: unknown): value is number | null {
+    return (
+      value === null ||
+      (typeof value === "number" && Number.isFinite(value) && value > 0)
+    );
+  }
+
+  private isNullablePositiveInteger(value: unknown): value is number | null {
+    return value === null || (Number.isInteger(value) && Number(value) > 0);
+  }
+
   private isNonEmptyString(value: unknown): value is string {
     return typeof value === "string" && value.trim().length > 0;
   }
@@ -548,7 +731,10 @@ export class VeyraAiService {
   }
 
   private logResult(input: {
-    capability: "transaction-extract" | "email-transaction-review";
+    capability:
+      | "master-intent"
+      | "transaction-extract"
+      | "email-transaction-review";
     model: string;
     promptVersion: string;
     responseId: string | undefined;

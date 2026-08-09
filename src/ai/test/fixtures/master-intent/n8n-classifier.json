@@ -1,0 +1,308 @@
+{
+  "evidence": {
+    "auditedAt": "2026-07-28",
+    "workflowId": "DNABjIGVH0vYErI7",
+    "workflowVersionId": "8f39587a-826b-490c-ab90-53d6c38bce74",
+    "model": "gpt-5.4-mini",
+    "source": "audited production prompt and sanitized hand-derived expectations",
+    "liveOutputsCaptured": false
+  },
+  "defaults": {
+    "intent": "unknown",
+    "period": "this_month",
+    "merchant": null,
+    "category": null,
+    "limit": null,
+    "target": {
+      "id": null,
+      "merchant": null,
+      "category": null,
+      "amount": null,
+      "period": null
+    },
+    "changes": {
+      "amount": null,
+      "merchant": null,
+      "merchant_normalized": null,
+      "category": null,
+      "transaction_date": null,
+      "transaction_type": null,
+      "notes": null
+    },
+    "selection": null,
+    "confidence": 0.95
+  },
+  "cases": [
+    {
+      "name": "spending summary",
+      "input": {
+        "message": "How much did I spend this month?",
+        "currentState": null,
+        "stateData": {}
+      },
+      "expected": { "intent": "spending_summary" }
+    },
+    {
+      "name": "category spending",
+      "input": {
+        "message": "How much did I spend on Food last month?",
+        "currentState": null,
+        "stateData": {}
+      },
+      "expected": {
+        "intent": "category_spending",
+        "period": "last_month",
+        "category": "Food"
+      }
+    },
+    {
+      "name": "merchant spending",
+      "input": {
+        "message": "How much did I spend at Grab this week?",
+        "currentState": null,
+        "stateData": {}
+      },
+      "expected": {
+        "intent": "merchant_spending",
+        "period": "this_week",
+        "merchant": "Grab"
+      }
+    },
+    {
+      "name": "top merchants",
+      "input": {
+        "message": "Show my top 5 merchants this month",
+        "currentState": null,
+        "stateData": {}
+      },
+      "expected": { "intent": "top_merchants", "limit": 5 }
+    },
+    {
+      "name": "top categories",
+      "input": {
+        "message": "Show my top 3 categories last month",
+        "currentState": null,
+        "stateData": {}
+      },
+      "expected": {
+        "intent": "top_categories",
+        "period": "last_month",
+        "limit": 3
+      }
+    },
+    {
+      "name": "spending comparison",
+      "input": {
+        "message": "Compare my spending this month with last month",
+        "currentState": null,
+        "stateData": {}
+      },
+      "expected": { "intent": "spending_comparison" }
+    },
+    {
+      "name": "merchant comparison",
+      "input": {
+        "message": "Compare Grab spending this month with last month",
+        "currentState": null,
+        "stateData": {}
+      },
+      "expected": { "intent": "merchant_comparison", "merchant": "Grab" }
+    },
+    {
+      "name": "category comparison",
+      "input": {
+        "message": "Compare Food spending this month with last month",
+        "currentState": null,
+        "stateData": {}
+      },
+      "expected": { "intent": "category_comparison", "category": "Food" }
+    },
+    {
+      "name": "largest transactions",
+      "input": {
+        "message": "Show my 10 largest transactions this month",
+        "currentState": null,
+        "stateData": {}
+      },
+      "expected": { "intent": "largest_transactions", "limit": 10 }
+    },
+    {
+      "name": "recent transactions",
+      "input": {
+        "message": "Show my last 5 transactions",
+        "currentState": null,
+        "stateData": {}
+      },
+      "expected": { "intent": "recent_transactions", "limit": 5 }
+    },
+    {
+      "name": "subscription summary",
+      "input": {
+        "message": "Summarize my subscriptions",
+        "currentState": null,
+        "stateData": {}
+      },
+      "expected": { "intent": "subscription_summary" }
+    },
+    {
+      "name": "subscription detail",
+      "input": {
+        "message": "Show my Netflix subscription",
+        "currentState": null,
+        "stateData": {}
+      },
+      "expected": {
+        "intent": "subscription_detail",
+        "merchant": "Netflix"
+      }
+    },
+    {
+      "name": "spending trend",
+      "input": {
+        "message": "Show my spending trend this month",
+        "currentState": null,
+        "stateData": {}
+      },
+      "expected": { "intent": "spending_trend" }
+    },
+    {
+      "name": "daily average spending",
+      "input": {
+        "message": "What is my average daily spending?",
+        "currentState": null,
+        "stateData": {}
+      },
+      "expected": { "intent": "daily_average_spending" }
+    },
+    {
+      "name": "burn rate forecast",
+      "input": {
+        "message": "When will my Food budget run out?",
+        "currentState": null,
+        "stateData": {}
+      },
+      "expected": { "intent": "burn_rate_forecast", "category": "Food" }
+    },
+    {
+      "name": "most frequent merchant",
+      "input": {
+        "message": "What is my most frequent merchant this month?",
+        "currentState": null,
+        "stateData": {}
+      },
+      "expected": { "intent": "most_frequent_merchant" }
+    },
+    {
+      "name": "transaction count",
+      "input": {
+        "message": "How many transactions did I make this month?",
+        "currentState": null,
+        "stateData": {}
+      },
+      "expected": { "intent": "transaction_count" }
+    },
+    {
+      "name": "spending by day",
+      "input": {
+        "message": "Break down my spending by day this week",
+        "currentState": null,
+        "stateData": {}
+      },
+      "expected": { "intent": "spending_by_day", "period": "this_week" }
+    },
+    {
+      "name": "weekday analysis",
+      "input": {
+        "message": "Analyze my weekday spending",
+        "currentState": null,
+        "stateData": {}
+      },
+      "expected": { "intent": "weekday_analysis" }
+    },
+    {
+      "name": "cashflow summary",
+      "input": {
+        "message": "Show my cashflow summary this month",
+        "currentState": null,
+        "stateData": {}
+      },
+      "expected": { "intent": "cashflow_summary" }
+    },
+    {
+      "name": "budget status",
+      "input": {
+        "message": "How much Food budget do I have left?",
+        "currentState": null,
+        "stateData": {}
+      },
+      "expected": { "intent": "budget_status", "category": "Food" }
+    },
+    {
+      "name": "edit transaction",
+      "input": {
+        "message": "Change Grab category to Transportation",
+        "currentState": null,
+        "stateData": {}
+      },
+      "expected": {
+        "intent": "edit_transaction",
+        "period": null,
+        "target": { "merchant": "Grab", "period": "recent" },
+        "changes": { "category": "Transportation" }
+      }
+    },
+    {
+      "name": "delete transaction",
+      "input": {
+        "message": "Delete my last transaction",
+        "currentState": null,
+        "stateData": {}
+      },
+      "expected": {
+        "intent": "delete_transaction",
+        "period": null,
+        "target": { "period": "recent" }
+      }
+    },
+    {
+      "name": "select transaction",
+      "input": {
+        "message": "2",
+        "currentState": "awaiting_transaction_selection",
+        "stateData": { "options": ["Coffee", "Transport"] }
+      },
+      "expected": {
+        "intent": "select_transaction",
+        "period": null,
+        "selection": 2
+      }
+    },
+    {
+      "name": "confirm action",
+      "input": {
+        "message": "yes",
+        "currentState": "awaiting_confirmation",
+        "stateData": {}
+      },
+      "expected": { "intent": "confirm_action", "period": null }
+    },
+    {
+      "name": "cancel action",
+      "input": {
+        "message": "batal",
+        "currentState": null,
+        "stateData": {}
+      },
+      "expected": { "intent": "cancel_action", "period": null }
+    },
+    {
+      "name": "unknown",
+      "input": {
+        "message": "Tell me a joke about clouds",
+        "currentState": null,
+        "stateData": {}
+      },
+      "expected": { "intent": "unknown", "confidence": 0 }
+    }
+  ]
+}

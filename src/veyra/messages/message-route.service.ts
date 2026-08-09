@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
+import { VeyraAiService } from '../../ai/veyra-ai.service';
 import {
   RouteVeyraMessageRequestDto,
   RouteVeyraMessageResponseDto,
@@ -13,7 +14,10 @@ import {
 
 @Injectable()
 export class VeyraMessageRouteService {
-  constructor(private readonly repository: VeyraMessageRouteRepository) {}
+  constructor(
+    private readonly repository: VeyraMessageRouteRepository,
+    private readonly aiService: VeyraAiService,
+  ) {}
 
   async routeMessage(
     request: RouteVeyraMessageRequestDto,
@@ -73,16 +77,23 @@ export class VeyraMessageRouteService {
     const activeState = await this.repository.findActiveState(user.id);
 
     if (!activeState) {
-      return this.buildResponse({
-        route: 'conversational',
-        reason: 'no_active_state',
-        user,
-        telegramUserId,
-        text,
-        messageType,
-        command: null,
-        state: null,
-      });
+      return {
+        ...this.buildResponse({
+          route: 'conversational',
+          reason: 'no_active_state',
+          user,
+          telegramUserId,
+          text,
+          messageType,
+          command: null,
+          state: null,
+        }),
+        masterIntent: await this.aiService.classifyMasterIntent({
+          message: text ?? '',
+          currentState: null,
+          stateData: {},
+        }),
+      };
     }
 
     const stateRoute = this.routeActiveState(activeState.name);

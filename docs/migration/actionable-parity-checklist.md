@@ -116,15 +116,18 @@ This checklist turns the parity audit into reviewable migration work. Its checkb
   - [x] `merchant`
   - [x] `category`
   - [x] `limit`
-  - [x] `target: { type, value }`
+  - [x] `target: { id, merchant, category, amount, period }`
   - [x] `changes`
   - [x] `selection`
   - [x] `confidence`
 - [x] Add missing production intents, especially conversation control and analytics intents.
 - [x] Implement conversation-state priority rules before generic text classification.
 - [ ] Add cycle-day-aware period resolver output if replacing n8n period logic.
-- [ ] Build a fixture suite from real n8n classifier examples before switching.
-- [ ] Keep the production LLM classifier and analytics routing in n8n until fixture parity is high.
+- [x] Add a sanitized executable contract fixture covering all 27 audited production intents and strict Core validation.
+- [ ] Capture and approve sanitized outputs from the existing n8n classifier before switching; the local fixture currently records `liveOutputsCaptured: false`.
+- [x] Add `gpt-5.4-mini` strict Responses API classification to the conversational branch of `POST /api/veyra/messages/route`, with deterministic route precedence, `store: false`, application validation, and no model-driven writes.
+- [x] Preserve all existing route response fields and append optional `masterIntent`; document the unchanged n8n request and prior-workflow rollback boundary.
+- [ ] Replace the production `Master Intent Classifier` node only after fixture parity is accepted; until then, keep the production LLM classifier and analytics routing in n8n.
 
 ### 10. n8n Error Handling
 

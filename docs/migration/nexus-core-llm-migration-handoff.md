@@ -8,6 +8,20 @@ Purpose: transfer this file into the Nexus Core API NestJS project, inspect that
 
 ## Current Nexus Core state
 
+Repository update on 2026-08-09:
+
+- Master-intent classification is implemented inside
+  `POST /api/veyra/messages/route` for the `conversational` branch only.
+- The audited production baseline remains `gpt-5.4-mini`; requests use strict
+  Responses API structured output with `store: false` and application-side
+  validation.
+- Callback, slash-command, active conversation-state, unknown-state, and
+  unresolved-user routes remain deterministic and do not call OpenAI.
+- Existing route response fields are unchanged; conversational responses append
+  optional `masterIntent`.
+- Core deployment, production n8n edits, and production cutover were not
+  performed.
+
 Rollout update on 2026-08-06:
 
 - Initial authenticated email fallback inference is now implemented inside
@@ -26,7 +40,7 @@ Repository review on 2026-07-29 found:
 - There is no OpenAI SDK dependency, client, AI module, API-key configuration, or model configuration.
 - `/api/veyra/transactions/handle`, `/api/veyra/budgets/handle`, and `/api/veyra/conversational/handle` consume `llmResult` produced by n8n.
 - `/api/veyra/transactions/email/handle` returns `needs_ai`; n8n performs inference and sends the result back through the existing email review path.
-- `/api/veyra/messages/route` performs deterministic user, callback, slash-command, and conversation-state routing only. It does not classify master intent.
+- Before the 2026-08-09 repository change, `/api/veyra/messages/route` performed deterministic user, callback, slash-command, and conversation-state routing only.
 
 This document describes a phased migration, not a single all-at-once change. Manual transaction extraction is phase 1. The other five capabilities remain in n8n until their own phase is implemented, compared against sanitized fixtures, accepted, and cut over.
 
@@ -165,10 +179,55 @@ Implementation rules:
 |---|---|---|
 | transaction-extract | `transactions/handle` accepts optional `llmResult` | When `llmResult` is absent, produce it from `text` inside Core, then reuse the existing validation and persistence path. Keep accepting caller-provided `llmResult` during the rollback window. |
 | budget-intent | `budgets/handle` accepts optional `llmResult` | When absent, parse `text` inside Core, then reuse the existing merge, missing-field, state, and budget logic. |
-| master-intent | `messages/route` returns deterministic route/state fields only | For conversational messages, append an optional structured intent result while preserving all existing route fields. Do not let the model override callback, slash-command, or active-state precedence. |
+| master-intent | `messages/route` preserves deterministic route/state fields and appends optional `masterIntent` only for conversational messages | Implemented in Core; do not let the model override callback, slash-command, or active-state precedence. |
 | email-transaction-review | `transactions/email/handle` returns `needs_ai`, and `email/resolve-review` already validates AI results | Invoke AI only where deterministic parsing would return `needs_ai`, then feed the result through the existing review validation path. Do not duplicate email persistence or template validation. |
 | analytics-insight | `conversational/handle` returns deterministic facts and `insight_payload` | Render the existing insight payload inside Core and return it through the existing Telegram message field. Keep deterministic facts outside the prompt. |
 | weekly-review | `weekly_spending_review` already produces deterministic facts | Reuse the analytics renderer boundary with the weekly voice prompt. Do not add another endpoint unless the existing conversational contract cannot preserve the scheduled workflow payload. |
+
+### Master-intent phase 3 cutover contract
+
+Exact n8n HTTP Request payload (unchanged from the route seam):
+
+~~~text
+Method: POST
+URL: http://core-api:3001/api/veyra/messages/route
+Send Body: JSON
+Body:
+{
+  "telegramUserId": "={{$json.message.from.id}}",
+  "userId": "={{$json.user_id}}",
+  "text": "={{$json.message.text || ''}}",
+  "messageType": "={{$json.message ? 'text' : 'callback_query'}}",
+  "callbackQuery": "={{$json.callback_query || null}}"
+}
+~~~
+
+After an accepted cutover, the n8n `Master Intent Classifier` node in
+`Veyra Message Router with Master Intent - Nexus Core API`
+(`DNABjIGVH0vYErI7`) can be replaced by the optional
+`{{$json.masterIntent}}` result on the `conversational` route. n8n retains the
+Telegram Trigger, route Switch, callback/slash/state branches, downstream
+budget/transaction/conversational orchestration, Telegram sending, credentials,
+retries, Aegis alerting, and production workflow management.
+
+Rollback remains the previously active n8n workflow version. It can ignore the
+optional response field and restore its classifier node without changing the
+HTTP request. This repository implementation did not inspect or modify n8n,
+deploy Core, or alter production state.
+
+Local parity contract:
+
+- `src/ai/test/fixtures/master-intent/n8n-classifier.json` contains sanitized
+  inputs and expected structured results for all 27 audited intents.
+- `src/ai/veyra-ai.service.spec.ts` loads that fixture and verifies every
+  result passes the same application validator used at runtime.
+- Run it with
+  `npx tsc -p tsconfig.test.json && node --test --test-name-pattern="sanitized n8n fixture" dist-test/src/ai/veyra-ai.service.spec.js`.
+- This follows the Watchdog callback fixture pattern: local executable
+  contract first, separately authorized production evidence later.
+- The fixture records `liveOutputsCaptured: false`; its values are derived
+  from the audited production prompt. Do not treat it as live model parity or
+  cutover approval until sanitized legacy outputs are captured and reviewed.
 
 ## Privacy and failure contract
 
@@ -203,6 +262,8 @@ Each numbered item is a separate migration. Cut over and verify one capability b
 1. Move manual transaction extraction into /api/veyra/transactions/handle.
 2. Move budget parsing into /api/veyra/budgets/handle.
 3. Move master-intent classification into /api/veyra/messages/route.
+   Repository implementation complete; production fixture approval and n8n
+   cutover remain pending.
 4. Move email fallback review into /api/veyra/transactions/email/handle.
 5. Move analytics insight rendering into /api/veyra/conversational/handle.
 6. Add weekly-review rendering in Core.

@@ -372,7 +372,7 @@ curl -X POST "$CORE_API_URL/api/veyra/dashboard/overview" \
 
 ### `POST /api/veyra/messages/route`
 
-Selects the Veyra sub-workflow route for one Telegram update. This endpoint only resolves the user, checks active `conversation_states`, and returns a route for n8n; it does not classify intent, call an LLM, execute budget/transaction logic, update conversation state, or send Telegram messages.
+Selects the Veyra sub-workflow route for one Telegram update. The endpoint resolves the user and checks active `conversation_states`; only when the deterministic result is `conversational` does it classify master intent with `gpt-5.4-mini` and append `masterIntent`. It does not execute budget/transaction logic, update conversation state, or send Telegram messages.
 
 Example request body:
 
@@ -398,10 +398,12 @@ Routing priority is deterministic:
    - `awaiting_confirmation` -> `transaction_edit`.
    - `awaiting_transaction_selection` -> `transaction_edit`.
    - Unknown active state -> `fallback`.
-4. No state, `idle`, or expired state -> `conversational`.
+4. No state, `idle`, or expired state -> `conversational`, then classify `masterIntent`.
 5. Unknown user -> `fallback`.
 
 A state is active only when the row exists, `state_name` is not null, `state_name` is not `idle`, and `expires_at` is null or in the future. Expired states are not cleared by this endpoint.
+
+Callback queries, slash commands, and every active state bypass OpenAI. Conversational classification uses the Responses API with strict structured output and `store: false`. Refusal, timeout, incomplete/empty output, invalid JSON, or application validation failure returns HTTP `503` without state or database mutation.
 
 Example response:
 
@@ -423,6 +425,46 @@ Example response:
 
 Supported `route` values are `callback`, `slash_command`, `budget`, `record`, `transaction_edit`, `conversational`, and `fallback`.
 
+Conversational responses preserve those eight route fields and append the optional production-compatible classifier result:
+
+```json
+{
+  "route": "conversational",
+  "reason": "no_active_state",
+  "userId": 1,
+  "telegramUserId": "976684739",
+  "text": "How much did I spend this month?",
+  "messageType": "text",
+  "command": null,
+  "state": null,
+  "masterIntent": {
+    "intent": "spending_summary",
+    "period": "this_month",
+    "merchant": null,
+    "category": null,
+    "limit": null,
+    "target": {
+      "id": null,
+      "merchant": null,
+      "category": null,
+      "amount": null,
+      "period": null
+    },
+    "changes": {
+      "amount": null,
+      "merchant": null,
+      "merchant_normalized": null,
+      "category": null,
+      "transaction_date": null,
+      "transaction_type": null,
+      "notes": null
+    },
+    "selection": null,
+    "confidence": 0.97
+  }
+}
+```
+
 Recommended Veyra message route node settings:
 
 ```txt
@@ -439,7 +481,26 @@ Body:
 }
 ```
 
-Use `{{$json.route}}` in an n8n Switch node to dispatch to the callback, slash-command, budget, record, transaction-edit, conversational, or fallback sub-workflow. This replaces only the duplicated route-selection Code/Switch pre-processing at the front of the Veyra message workflow. Keep Telegram Trigger nodes, callback handling, LLM/intent classification, budget/record/conversational sub-workflows, Telegram sending, credentials, retries, and production workflow management in n8n.
+Use `{{$json.route}}` in an n8n Switch node to dispatch to the callback, slash-command, budget, record, transaction-edit, conversational, or fallback sub-workflow. For `conversational`, pass `{{$json.masterIntent}}` as the existing downstream `llmResult`. This replaces the `Master Intent Classifier` node in `Veyra Message Router with Master Intent - Nexus Core API` only. Keep Telegram Trigger nodes, the route Switch, callback/slash/state handling, budget/record/conversational sub-workflows, Telegram sending, credentials, retries, and production workflow management in n8n.
+
+Rollback remains the previously active n8n workflow version: it may ignore the optional `masterIntent` field and restore its classifier node without changing this request payload. This repository change does not deploy Core, edit n8n, or change production activation state.
+
+The sanitized master-intent contract fixture is
+`src/ai/test/fixtures/master-intent/n8n-classifier.json`. It covers every
+audited production intent with synthetic messages and drives the existing AI
+service test:
+
+```bash
+npx tsc -p tsconfig.test.json && \
+  node --test --test-name-pattern="sanitized n8n fixture" \
+  dist-test/src/ai/veyra-ai.service.spec.js
+```
+
+This matches the callback-testing pattern: the fixture is executable local
+contract evidence, while live n8n/model comparison remains a separate,
+explicitly approved step. `liveOutputsCaptured: false` means the current
+expectations are derived from the audited production prompt, not retained
+production executions, so the fixture alone does not authorize cutover.
 
 ### `POST /api/veyra/budgets/status`
 
