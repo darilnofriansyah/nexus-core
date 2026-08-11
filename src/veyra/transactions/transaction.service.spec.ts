@@ -2592,6 +2592,40 @@ test("handles save_transaction callback with Telegram edit payload", async () =>
   assert.deepEqual(calls[1].values, ["confirmed", "123", "1"]);
 });
 
+test("handles save_transaction callback with risk-review keyboard", async () => {
+  const { service } = createService([
+    [{ ...transaction, id: "123", user_id: "1" }],
+    [],
+  ]);
+  const riskReplyMarkup = watchdogN8nFixture.notifications.riskReplyMarkup;
+
+  spyOnWatchdog(service, {
+    notifications: [
+      {
+        type: "risk_review",
+        priority: 1,
+        severity: "high",
+        review_id: 55,
+        message: watchdogN8nFixture.notifications.messages[0],
+        reply_markup: riskReplyMarkup,
+      },
+    ],
+  });
+
+  const result = await service.handleTransactionCallback({
+    telegramUserId: "976684739",
+    userId: 1,
+    callbackData: "save_transaction:123",
+    chatId: "chat-1",
+    messageId: 42,
+  });
+
+  assert.equal(result.status, "ok");
+  assert.equal(result.action, "save_transaction");
+  assert.match(result.telegram.text, /Large transaction detected/);
+  assert.deepEqual(result.telegram.reply_markup, riskReplyMarkup);
+});
+
 test("handles cancel_transaction callback with Telegram edit payload", async () => {
   const { calls, service } = createService([
     [{ ...transaction, id: "123", user_id: "1" }],

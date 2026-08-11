@@ -1830,6 +1830,15 @@ Example response:
 
 For `change_categories:{transactionId}`, `telegram.reply_markup` contains `inline_keyboard` buttons using `catid:{budgetId}:{transactionId}`. For `veyra_risk:{reviewId}:{response}`, Core API validates ownership, requires a pending `large_transaction` review, stores `user_response` as `planned`, `necessary`, `regret`, or `ignore`, sets `status = "resolved"`, clears the inline keyboard, and returns Telegram-safe text. Duplicate risk callbacks return `This transaction review was already answered.` and do not overwrite the first response. Unknown or invalid callback data returns `status: "error"` and safe user-facing `telegram.text`.
 
+For a successful `save_transaction:{transactionId}`, Core runs Watchdog and
+keeps the existing aggregated confirmation text. When Watchdog returns a
+pending `risk_review`, `telegram.reply_markup` contains that review's existing
+`planned`, `necessary`, `regret`, and `ignore` keyboard; otherwise it is null.
+n8n should pass this field through unchanged when editing the original
+confirmation message. Clicking a risk action replaces the combined message
+with the existing acknowledgement or regret-note prompt and removes the
+keyboard.
+
 Manage callback example:
 
 ```json
