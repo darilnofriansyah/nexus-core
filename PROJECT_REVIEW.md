@@ -2,47 +2,36 @@
 
 ## Review Metadata
 
-- Reviewed: 2026-08-06 Asia/Jakarta
+- Reviewed: 2026-08-10 09:01 Asia/Jakarta
 - Branch: `main`
-- Commit: `a140f39` (`chore: finish rollout follow-up`)
-- Review scope: production rollout evidence, Watchdog endpoint ownership, failure recovery ownership, and remaining migration work.
-- Checks run: `npm test` passed 20/20 spec files; `npm run build` and `npm run lint` passed.
+- Commit: `d12bd1c7c530aeeb06c78c86ac9b03c60e846bc0` (`feat(veyra): migrate master intent routing`)
+- Working tree: clean before this review
+- Review scope: current source and history, top-level documentation, migration checklist and plans, tests, and explicit task markers.
+- Checks run: repository inspection only; tests, build, and lint were not run for this review.
 
 ## Completed Work
 
-- NestJS modules cover health, Aegis alerting, Telegram routing, dashboard overview, budgets, conversation state, transactions, email review, conversational analytics, and AI integration.
-- Recent feature commits added dashboard credit-card cycle summaries and confirmed-email credit-card usage, with reversal handling documented separately.
-- OpenAI SDK-based LLM integration and callback fixes are present in merged history and current source.
-- Veyra transaction Watchdog v1 runs after confirmed transaction creation, confirmation, category confirmation, and managed edits. It combines budget alerts, burn-rate projection, and deterministic large-transaction risk reviews with idempotent persistence and Telegram callback responses.
-- The Watchdog risk-review migration is applied in production. Outbound notification delivery and parent callback routing are rolled out and verified.
-- The Watchdog `regret` callback and follow-up note flow passed live production E2E verification on 2026-08-06.
-- The unused caller-supplied regret-detector endpoint was removed after repository and production n8n inspection found no consumers.
-- Telegram delivery recovery remains in n8n's three-attempt reliable sender. Core evaluation recovery is deferred until an observed failure requires a dedicated idempotent re-evaluation path.
-- README endpoint contracts, schema/migration documentation, the parity checklist, and 20 focused `*.spec.ts` files provide implementation evidence.
+- The NestJS API has implemented modules for health, Aegis alerting, Telegram routing, dashboard overview, budgets, conversation state, transactions/email review, conversational analytics, and AI integration. The repository currently contains 20 recursive `*.spec.ts` files.
+- The Watchdog risk-review migration, ordered outbound notifications, parent callback routing, and regret follow-up note flow have production evidence recorded in `docs/migration/watchdog-production-verification.md`. The report also records the applied SQL migration and the decision to keep Telegram delivery retry in n8n.
+- Credit-card cycle-summary read access for Veyra and confirmed-email credit-card usage are represented in the current migration/docs history; reversal handling is documented separately.
+- `POST /api/veyra/transactions/email/handle` now invokes the preserved `gpt-4.1-mini` fallback in Core for authenticated likely transaction emails, validates the result through the identity-bound review path, and keeps AI-created candidates pending until confirmation. The email parser-template migration was verified as already matching production on 2026-08-06, with no DDL rerun.
+- `POST /api/veyra/messages/route` now classifies only the deterministic `conversational` branch with strict `gpt-5.4-mini` Responses API output (`store: false`); callbacks, slash commands, active states, and unresolved users remain deterministic. A sanitized 27-intent fixture and service tests provide local contract evidence.
+- README endpoint contracts, schema/migration docs, the actionable parity checklist, and the LLM handoff document record the current n8n ownership and rollback boundaries.
 
 ## Remaining Tasks
 
-- Complete the explicit open production work in `docs/migration/actionable-parity-checklist.md`: email AI orchestration and approved SQL rollout, confirmation cutover verification, cycle-aware intent fixtures/parity, and n8n HTTP/network error branches.
-- Keep legacy n8n paths restorable until production fixture coverage confirms each Core API cutover.
-
-### Transaction Watchdog Actions
-
-- [x] Confirm `2026-07-06-transaction-risk-reviews.sql` and `2026-07-12-large-transaction-risk-review-v1.sql` are approved and applied in production.
-- [x] Fixture-test the n8n mapping that sends ordered `risk_review`, `budget_alert`, and `burn_rate` notifications and routes `veyra_risk:*` callbacks.
-  - [x] Local fixture: `src/veyra/transactions/test/fixtures/watchdog/n8n-mapping.json`.
-  - [x] Ordered outbound notification delivery is live.
-  - [x] The parent Telegram callback router invokes the existing callback workflow.
-- [x] Connect the `regret` callback to bounded `veyra_regret_note` state without resolving the review immediately.
-- [x] Live-retest the `regret` callback after automatic deployment.
-- [x] Remove the unused `POST /transactions/risk-reviews/regret-detector` endpoint; all configured production n8n paths originate evaluations from `evaluateTransactionWatchdog()`.
-- [x] Keep Telegram delivery retry in n8n and defer Core evaluation recovery until observed failures justify a dedicated idempotent re-evaluation path. Do not retry transaction mutation endpoints.
-- [ ] Decide whether transaction-time evaluation is sufficient or whether n8n needs a scheduled reconciliation sweep for missed or historical confirmed transactions.
+- Treat `docs/migration/actionable-parity-checklist.md` as the authoritative backlog. Its open items are: approve/fixture-test/activate the production Gmail/AI/callback workflow; add `merchant_review_queue` writes only if that side effect is migrated; verify confirmation-payload cutover; add cycle-day-aware period output if replacing n8n logic; capture and approve sanitized legacy master-intent outputs (`liveOutputsCaptured: false`); and cut over the production Master Intent Classifier only after parity acceptance.
+- Add n8n branches/documentation for Core HTTP `400` and `404` responses and network-error retry/fallback behavior. Keep the existing n8n branches restorable until each cutover has fixture evidence and a pilot run.
+- Decide whether transaction-time Watchdog evaluation is sufficient or whether n8n needs a scheduled reconciliation sweep for missed or historical confirmed transactions.
+- No production deployment, n8n workflow edit, or production cutover is evidenced by the 2026-08-09 master-intent commit; the repository implementation remains behind the documented rollback boundary.
 
 ## Needed Improvements
 
-- Keep the actionable checklist as the authoritative current backlog.
-- Record rollout owner, applied environment, and rollback evidence beside every production SQL activation.
+- Reconcile the legacy `/api/veyra/intents/classify` README wording with the newer `/api/veyra/messages/route` master-intent implementation so operators do not confuse the experimental deterministic helper with the production-cutover candidate.
+- Keep every production SQL or workflow activation record beside its owner, target environment, approval, applied version/timestamp, and rollback evidence.
+- Add the approved legacy-vs-Core master-intent comparison evidence and explicit HTTP failure-path behavior before removing n8n ownership.
+- Keep generated project status concise and update it from the actionable checklist; unchecked boxes in older `docs/superpowers/plans/` files are historical implementation notes, not independent proof of unfinished code.
 
 ## Summary
 
-Core API has broad implemented coverage, focused tests, and completed Watchdog migration, outbound delivery, callback routing, regret follow-up verification, and production credit-card summary read access. Remaining work is the explicit production migration backlog and the decision on scheduled Watchdog reconciliation.
+At `d12bd1c7c530aeeb06c78c86ac9b03c60e846bc0`, Core has broad implemented coverage, documented Watchdog production evidence, and two recent AI moves (email fallback and master-intent route). Production AI cutover/parity, remaining n8n error branches, confirmation cutover, and Watchdog reconciliation remain open. Tests, build, and lint were not run during this review.
