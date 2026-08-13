@@ -1,4 +1,12 @@
-import { Body, Controller, Param, Patch, Post } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  HttpCode,
+  HttpStatus,
+  Param,
+  Patch,
+  Post,
+} from '@nestjs/common';
 import {
   WebTransactionDto,
   WebTransactionUpdateRequestDto,
@@ -12,6 +20,7 @@ export class WebTransactionsController {
   constructor(private readonly service: WebTransactionsService) {}
 
   @Post('query')
+  @HttpCode(HttpStatus.OK)
   query(
     @Body() body: WebTransactionsQueryRequestDto,
   ): Promise<WebTransactionsQueryResponseDto> {

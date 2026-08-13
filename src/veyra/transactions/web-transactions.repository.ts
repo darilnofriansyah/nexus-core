@@ -193,11 +193,13 @@ export class WebTransactionsRepository {
         return { kind: 'no_change' };
       }
 
+      const merchantChanged = this.hasMerchantChanged(locked, changes);
       const updated = await this.updateLockedTransaction(
         client,
         userId,
         transactionId,
         changes,
+        merchantChanged,
       );
       const oldAmount = Number(locked.amount);
       if (
@@ -328,10 +330,18 @@ export class WebTransactionsRepository {
     return (
       (this.supplied(changes, 'amount') &&
         changes.amount !== Number(locked.amount)) ||
-      (this.supplied(changes, 'merchant') &&
-        changes.merchant !== locked.merchant) ||
+      this.hasMerchantChanged(locked, changes) ||
       (this.supplied(changes, 'category') &&
         changes.category !== locked.category)
+    );
+  }
+
+  private hasMerchantChanged(
+    locked: LockedTransactionRow,
+    changes: WebTransactionChanges,
+  ): boolean {
+    return (
+      this.supplied(changes, 'merchant') && changes.merchant !== locked.merchant
     );
   }
 
@@ -340,11 +350,15 @@ export class WebTransactionsRepository {
     userId: string,
     transactionId: string,
     changes: WebTransactionChanges,
+    merchantChanged: boolean,
   ): Promise<TransactionRow> {
     const assignments: string[] = [];
     const values: unknown[] = [];
     this.addAssignment(assignments, values, changes, 'amount');
-    this.addAssignment(assignments, values, changes, 'merchant');
+    if (merchantChanged) {
+      this.addAssignment(assignments, values, changes, 'merchant');
+      assignments.push('merchant_normalized = NULL');
+    }
     this.addAssignment(assignments, values, changes, 'category');
     values.push(transactionId, userId);
     const transactionIdParameter = values.length - 1;

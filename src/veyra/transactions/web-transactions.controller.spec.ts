@@ -1,6 +1,11 @@
 import * as assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
+import { HttpStatus } from '@nestjs/common';
+import { HTTP_CODE_METADATA, MODULE_METADATA } from '@nestjs/common/constants';
+import { APP_GUARD } from '@nestjs/core';
+import { AppModule } from '../../app.module';
+import { ApiKeyGuard } from '../../common/guards/api-key.guard';
+import { VeyraModule } from '../veyra.module';
 import {
   WebTransactionDto,
   WebTransactionUpdateRequestDto,
@@ -11,9 +16,37 @@ import { WebTransactionsController } from './web-transactions.controller';
 import { WebTransactionsService } from './web-transactions.service';
 
 test('web transaction routes are registered under the globally API-key-guarded app', () => {
-  assert.equal(WebTransactionsController.name, 'WebTransactionsController');
-  assert.match(readFileSync('src/app.module.ts', 'utf8'), /provide: APP_GUARD/);
-  assert.match(readFileSync('src/app.module.ts', 'utf8'), /useClass: ApiKeyGuard/);
+  const appImports = Reflect.getMetadata(
+    MODULE_METADATA.IMPORTS,
+    AppModule,
+  ) as unknown[];
+  const appProviders = Reflect.getMetadata(
+    MODULE_METADATA.PROVIDERS,
+    AppModule,
+  ) as Array<{ provide?: unknown; useClass?: unknown }>;
+  const veyraControllers = Reflect.getMetadata(
+    MODULE_METADATA.CONTROLLERS,
+    VeyraModule,
+  ) as unknown[];
+
+  assert.ok(appImports.includes(VeyraModule));
+  assert.ok(veyraControllers.includes(WebTransactionsController));
+  assert.ok(
+    appProviders.some(
+      (provider) =>
+        provider.provide === APP_GUARD && provider.useClass === ApiKeyGuard,
+    ),
+  );
+});
+
+test('web transactions query explicitly returns HTTP 200', () => {
+  assert.equal(
+    Reflect.getMetadata(
+      HTTP_CODE_METADATA,
+      WebTransactionsController.prototype.query,
+    ),
+    HttpStatus.OK,
+  );
 });
 
 test('web transactions controller delegates query to the service', async () => {

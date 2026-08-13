@@ -98,6 +98,36 @@ test('findTransactions reads only confirmed income and expenses in local dates',
   ]);
 });
 
+test('findTransactions displays a corrected merchant after normalization is cleared', async () => {
+  const correctedMerchant = 'Kopi Tetangga';
+  const { calls, repository } = createRepository([
+    [
+      {
+        id: '123',
+        transaction_type: 'expense',
+        amount: '25000.00',
+        merchant: correctedMerchant,
+        category: 'Food',
+        transaction_day: '2026-07-24',
+        transaction_date: '2026-07-24T03:00:00.000Z',
+      },
+    ],
+  ]);
+
+  const transactions = await repository.findTransactions(
+    '1',
+    '2026-05-01',
+    '2026-07-26',
+    'Asia/Jakarta',
+  );
+
+  assert.match(
+    calls[0].text,
+    /COALESCE\(merchant_normalized, merchant\) AS merchant/,
+  );
+  assert.equal(transactions[0]?.merchant, correctedMerchant);
+});
+
 test('findActiveBudgets returns active top-level budgets and active children', async () => {
   const { calls, repository } = createRepository([
     [

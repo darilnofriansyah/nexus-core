@@ -241,6 +241,29 @@ test('web transactions repository scopes finalized rows to filters and a duplica
   });
 });
 
+test('web transactions repository search falls back to a corrected merchant when normalization is cleared', async () => {
+  const correctedMerchant = 'Kopi Tetangga';
+  const { calls, repository } = createRepository([
+    [
+      {
+        ...transactionRows[0],
+        merchant: correctedMerchant,
+      },
+    ],
+  ]);
+
+  const rows = await repository.findTransactions(
+    '1',
+    filter({ merchantQuery: 'tetangga' }),
+  );
+
+  assert.match(
+    calls[0].text,
+    /COALESCE\(merchant_normalized, merchant, ''\) ILIKE '%' \|\| \$\d+ \|\| '%'/,
+  );
+  assert.equal(rows[0]?.merchant, correctedMerchant);
+});
+
 test('web transactions repository queries newer rows ascending then reverses previous results', async () => {
   const { calls, repository } = createRepository([transactionRows]);
 
@@ -449,6 +472,52 @@ test('web transactions repository update permits null merchant and category for 
   assert.equal(calls.length, 2);
 });
 
+test('web transactions repository merchant correction atomically clears stale normalization', async () => {
+  const { calls, repository } = createUpdateRepository([
+    [lockedRow()],
+    [returnedRow({ amount: '25000', merchant: 'Kopi Tetangga' })],
+  ]);
+
+  const result = await repository.updateTransaction(
+    updateInput({ merchant: 'Kopi Tetangga' }),
+  );
+
+  assert.equal(result.kind, 'updated');
+  assert.match(
+    calls[1].text,
+    /SET merchant = \$1, merchant_normalized = NULL, updated_at = now\(\)/,
+  );
+  assert.deepEqual(calls[1].values, ['Kopi Tetangga', '123', '1']);
+  assert.equal(calls.length, 2);
+});
+
+test('web transactions repository unchanged merchant remains a no-op', async () => {
+  const { calls, repository } = createUpdateRepository([[lockedRow()]]);
+
+  const result = await repository.updateTransaction(
+    updateInput({ merchant: 'TUKU' }),
+  );
+
+  assert.deepEqual(result, { kind: 'no_change' });
+  assert.equal(calls.length, 1);
+});
+
+test('web transactions repository unchanged merchant is not rewritten with another change', async () => {
+  const { calls, repository } = createUpdateRepository([
+    [lockedRow({ source: 'manual' })],
+    [returnedRow({ amount: '30000', source: 'manual', credit_card: false })],
+  ]);
+
+  const result = await repository.updateTransaction(
+    updateInput({ amount: 30000, merchant: 'TUKU' }),
+  );
+
+  assert.equal(result.kind, 'updated');
+  assert.match(calls[1].text, /SET amount = \$1, updated_at = now\(\)/);
+  assert.doesNotMatch(calls[1].text, /merchant(?:_normalized)?\s*=/);
+  assert.deepEqual(calls[1].values, [30000, '123', '1']);
+});
+
 test('web transactions repository update binds every and only supplied patch column', async () => {
   const { calls, repository } = createUpdateRepository([
     [lockedRow()],
@@ -462,7 +531,7 @@ test('web transactions repository update binds every and only supplied patch col
 
   assert.match(
     calls[1].text,
-    /SET amount = \$1, merchant = \$2, category = \$3, updated_at = now\(\)/,
+    /SET amount = \$1, merchant = \$2, merchant_normalized = NULL, category = \$3, updated_at = now\(\)/,
   );
   assert.deepEqual(calls[1].values, [27500, 'Tuku Blok M', 'Coffee', '123', '1']);
 });

@@ -485,12 +485,12 @@ per-card model is introduced.
 ### Error outcomes
 
 Both routes return `401` when `x-core-api-key` is missing or invalid (when Core
-API-key protection is configured). Query returns `201` on success and PATCH
-returns `200` on success. Both return `400` for unsupported fields or invalid
-request values. Query returns `404` for a missing or inactive Telegram identity.
-PATCH returns `404` for a missing, inactive, or foreign transaction; `409` when
-`expectedUpdatedAt` is stale; and `400` when no effective change remains or the
-final expense merchant/category would be empty.
+API-key protection is configured). Query and PATCH return `200` on success. Both
+return `400` for unsupported fields or invalid request values. Query returns
+`404` for a missing or inactive Telegram identity. PATCH returns `404` for a
+missing, inactive, or foreign transaction; `409` when `expectedUpdatedAt` is
+stale; and `400` when no effective change remains or the final expense
+merchant/category would be empty.
 
 ### `POST /api/veyra/messages/route`
 
