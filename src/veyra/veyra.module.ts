@@ -10,6 +10,9 @@ import { TelegramResponseFormatterService } from './telegram/telegram-response-f
 import { EmailParserTemplateRepository } from './transactions/email-parser-template.repository';
 import { TransactionRiskReviewRepository } from './transactions/transaction-risk-review.repository';
 import { TransactionService } from './transactions/transaction.service';
+import { WebTransactionsController } from './transactions/web-transactions.controller';
+import { WebTransactionsRepository } from './transactions/web-transactions.repository';
+import { WebTransactionsService } from './transactions/web-transactions.service';
 import { VeyraController } from './veyra.controller';
 
 @Module({
@@ -21,13 +24,15 @@ import { VeyraController } from './veyra.controller';
     IntentsModule,
     VeyraMessagesModule,
   ],
-  controllers: [VeyraController],
+  controllers: [VeyraController, WebTransactionsController],
   providers: [
     IntentService,
     TelegramResponseFormatterService,
     EmailParserTemplateRepository,
     TransactionRiskReviewRepository,
     TransactionService,
+    WebTransactionsRepository,
+    WebTransactionsService,
   ],
 })
 export class VeyraModule {}
