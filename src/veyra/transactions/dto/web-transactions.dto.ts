@@ -1,5 +1,8 @@
-export type WebTransactionType = 'income' | 'expense';
-export type WebTransactionDirection = 'next' | 'previous';
+export type WebTransactionType = "income" | "expense";
+export type WebTransactionDirection = "next" | "previous";
+
+export const WEB_TRANSACTION_MAX_TEXT_LENGTH = 200;
+export const WEB_TRANSACTION_MAX_CURSOR_LENGTH = 512;
 
 export interface WebTransactionsQueryRequestDto {
   telegramUserId: string | number;
@@ -7,7 +10,7 @@ export interface WebTransactionsQueryRequestDto {
   direction?: WebTransactionDirection | null;
   limit?: number | null;
   type?: WebTransactionType | null;
-  cycle?: 'current' | 'previous' | null;
+  cycle?: "current" | "previous" | null;
   category?: string | null;
   merchantQuery?: string | null;
   asOfDate?: string | null;
@@ -28,7 +31,7 @@ export interface WebTransactionDto {
   merchant: string | null;
   category: string | null;
   type: WebTransactionType;
-  source: 'telegram' | 'email' | 'manual' | 'import';
+  source: "telegram" | "email" | "manual" | "import";
   transactionDate: string;
   updatedAt: string;
   creditCard: boolean;
@@ -53,7 +56,7 @@ export interface WebTransactionsFilter {
   type: WebTransactionType | null;
   category: string | null;
   merchantQuery: string | null;
-  cycle: 'current' | 'previous' | null;
+  cycle: "current" | "previous" | null;
   asOfDate: string;
   startDate: string | null;
   endDate: string | null;
@@ -72,7 +75,7 @@ export interface WebTransactionRow {
   merchant: string | null;
   category: string | null;
   transactionType: WebTransactionType;
-  source: 'telegram' | 'email' | 'manual' | 'import';
+  source: "telegram" | "email" | "manual" | "import";
   transactionDate: string;
   updatedAt: string;
   creditCard: boolean;
@@ -85,11 +88,11 @@ export interface WebTransactionChanges {
 }
 
 export type WebTransactionUpdateResult =
-  | { kind: 'not_found' }
-  | { kind: 'conflict' }
+  | { kind: "not_found" }
+  | { kind: "conflict" }
   | {
-      kind: 'invalid';
-      message: 'expense merchant and category are required';
+      kind: "invalid";
+      message: "expense merchant and category are required";
     }
-  | { kind: 'no_change' }
-  | { kind: 'updated'; transaction: WebTransactionRow };
+  | { kind: "no_change" }
+  | { kind: "updated"; transaction: WebTransactionRow };
