@@ -1,6 +1,8 @@
 import * as assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  WebTransactionDto,
+  WebTransactionUpdateRequestDto,
   WebTransactionsQueryRequestDto,
   WebTransactionsQueryResponseDto,
 } from './dto/web-transactions.dto';
@@ -35,6 +37,36 @@ test('web transactions controller delegates query to the service', async () => {
   assert.deepEqual(calls, [request]);
 });
 
-test('web transactions controller does not expose PATCH behavior before Task 4', () => {
-  assert.equal('update' in WebTransactionsController.prototype, false);
+test('web transactions controller delegates update to the real service method', async () => {
+  const request: WebTransactionUpdateRequestDto = {
+    telegramUserId: '976684739',
+    expectedUpdatedAt: '2026-08-13T03:01:00.654321Z',
+    amount: 30000,
+  };
+  const response: WebTransactionDto = {
+    id: '123',
+    amount: 30000,
+    merchant: 'TUKU',
+    category: 'Dining',
+    type: 'expense',
+    source: 'email',
+    transactionDate: '2026-08-13T03:00:00.123456Z',
+    updatedAt: '2026-08-13T04:00:00.000001Z',
+    creditCard: true,
+  };
+  const calls: unknown[] = [];
+  const service = {
+    updateTransaction: async (input: unknown) => {
+      calls.push(input);
+      return response;
+    },
+  };
+  const controller = new WebTransactionsController(
+    service as unknown as WebTransactionsService,
+  );
+
+  const result = await controller.update('123', request);
+
+  assert.equal(result, response);
+  assert.deepEqual(calls, [{ transactionId: '123', request }]);
 });

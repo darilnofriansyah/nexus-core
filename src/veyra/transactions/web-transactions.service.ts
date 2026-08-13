@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -7,9 +8,11 @@ import {
   WEB_TRANSACTION_MAX_CURSOR_LENGTH,
   WEB_TRANSACTION_MAX_TEXT_LENGTH,
   WebTransactionCursor,
+  WebTransactionChanges,
   WebTransactionDirection,
   WebTransactionDto,
   WebTransactionRow,
+  WebTransactionUpdateRequestDto,
   WebTransactionsFilter,
   WebTransactionsQueryRequestDto,
   WebTransactionsQueryResponseDto,
@@ -34,6 +37,13 @@ const QUERY_KEYS = new Set([
   'timezone',
 ]);
 const POSTGRES_MAX_BIGINT = BigInt('9223372036854775807');
+const UPDATE_KEYS = new Set([
+  'telegramUserId',
+  'expectedUpdatedAt',
+  'amount',
+  'merchant',
+  'category',
+]);
 
 @Injectable()
 export class WebTransactionsService {
@@ -67,6 +77,46 @@ export class WebTransactionsService {
       nextCursor: page.hasOlder ? this.edgeCursor(page.rows.at(-1)) : null,
       categories,
     };
+  }
+
+  async updateTransaction({
+    transactionId: rawTransactionId,
+    request,
+  }: {
+    transactionId: string;
+    request: WebTransactionUpdateRequestDto;
+  }): Promise<WebTransactionDto> {
+    this.rejectUnknownUpdateKeys(request);
+    const transactionId = this.identifier(rawTransactionId);
+    const telegramUserId = this.identifier(request.telegramUserId);
+    const expectedUpdatedAt = this.expectedUpdatedAt(request.expectedUpdatedAt);
+    const changes = this.updateChanges(request);
+    const user =
+      await this.repository.findActiveUserByTelegramId(telegramUserId);
+
+    if (!user) {
+      throw new NotFoundException('Transaction not found');
+    }
+
+    const result = await this.repository.updateTransaction({
+      userId: user.id,
+      transactionId,
+      expectedUpdatedAt,
+      changes,
+    });
+
+    switch (result.kind) {
+      case 'updated':
+        return this.publicTransaction(result.transaction);
+      case 'not_found':
+        throw new NotFoundException('Transaction not found');
+      case 'conflict':
+        throw new ConflictException('Transaction has changed');
+      case 'invalid':
+        throw new BadRequestException(result.message);
+      case 'no_change':
+        throw new BadRequestException('Transaction update has no changes');
+    }
   }
 
   private filter(
@@ -264,6 +314,72 @@ export class WebTransactionsService {
     ) {
       throw new BadRequestException('query contains unsupported fields');
     }
+  }
+
+  private rejectUnknownUpdateKeys(request: WebTransactionUpdateRequestDto): void {
+    if (
+      typeof request !== 'object' ||
+      request === null ||
+      Object.keys(request).some((key) => !UPDATE_KEYS.has(key))
+    ) {
+      throw new BadRequestException('update contains unsupported fields');
+    }
+  }
+
+  private updateChanges(
+    request: WebTransactionUpdateRequestDto,
+  ): WebTransactionChanges {
+    const changes: WebTransactionChanges = {};
+    if (this.supplied(request, 'amount')) {
+      changes.amount = this.updateAmount(request.amount);
+    }
+    if (this.supplied(request, 'merchant')) {
+      changes.merchant = this.updateText(request.merchant, 'merchant');
+    }
+    if (this.supplied(request, 'category')) {
+      changes.category = this.updateText(request.category, 'category');
+    }
+    if (Object.keys(changes).length === 0) {
+      throw new BadRequestException('at least one changed field is required');
+    }
+    return changes;
+  }
+
+  private supplied(
+    request: WebTransactionUpdateRequestDto,
+    field: keyof WebTransactionChanges,
+  ): boolean {
+    return Object.prototype.hasOwnProperty.call(request, field);
+  }
+
+  private updateAmount(value: unknown): number {
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
+      throw new BadRequestException('amount must be a positive safe integer');
+    }
+    return value;
+  }
+
+  private updateText(value: unknown, name: string): string | null {
+    if (value === null) {
+      return null;
+    }
+    if (typeof value !== 'string') {
+      throw new BadRequestException(`${name} must be valid`);
+    }
+    const text = value.trim();
+    if (!text || text.length > WEB_TRANSACTION_MAX_TEXT_LENGTH) {
+      throw new BadRequestException(`${name} must be valid`);
+    }
+    return text;
+  }
+
+  private expectedUpdatedAt(value: unknown): string {
+    if (typeof value !== 'string' || !this.validMicrosecondTimestamp(value)) {
+      throw new BadRequestException(
+        'expectedUpdatedAt must be a microsecond UTC timestamp',
+      );
+    }
+    return value;
   }
 
   private identifier(value: unknown): string {

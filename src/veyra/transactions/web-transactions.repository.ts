@@ -1,8 +1,11 @@
 import { Injectable } from '@nestjs/common';
-import { QueryResultRow } from 'pg';
+import { PoolClient, QueryResultRow } from 'pg';
 import { DatabaseService } from '../../database/database.service';
+import { applyCreditCardCycleUsageDelta } from './credit-card-cycle-usage';
 import {
+  WebTransactionChanges,
   WebTransactionRow,
+  WebTransactionUpdateResult,
   WebTransactionsFilter,
   WebTransactionsUser,
 } from './dto/web-transactions.dto';
@@ -23,6 +26,28 @@ interface TransactionRow extends QueryResultRow {
   transaction_date: string;
   updated_at: string;
   credit_card: boolean;
+}
+
+interface LockedTransactionRow extends QueryResultRow {
+  id: string | number;
+  user_id: string | number;
+  transaction_type: WebTransactionRow['transactionType'];
+  amount: string | number;
+  merchant: string | null;
+  category: string | null;
+  transaction_date: string | Date;
+  source: WebTransactionRow['source'];
+  status: string;
+  updated_at: string;
+  version_matches: boolean;
+  raw_payload: unknown;
+}
+
+export interface UpdateWebTransactionInput {
+  userId: string;
+  transactionId: string;
+  expectedUpdatedAt: string;
+  changes: WebTransactionChanges;
 }
 
 interface CategoryRow extends QueryResultRow {
@@ -123,6 +148,75 @@ export class WebTransactionsRepository {
     return result.rows.map((row) => row.category);
   }
 
+  async updateTransaction({
+    userId,
+    transactionId,
+    expectedUpdatedAt,
+    changes,
+  }: UpdateWebTransactionInput): Promise<WebTransactionUpdateResult> {
+    return this.database.withTransaction(async (client) => {
+      const lockedResult = await client.query<LockedTransactionRow>(
+        `
+          SELECT id, user_id, transaction_type, amount, merchant, category,
+                 transaction_date, source, status,
+                 to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at,
+                 updated_at = $3::timestamptz AS version_matches,
+                 raw_payload
+          FROM transactions
+          WHERE id = $1 AND user_id = $2
+            AND status = 'confirmed'
+            AND transaction_type IN ('income', 'expense')
+          FOR UPDATE
+        `,
+        [transactionId, userId, expectedUpdatedAt],
+      );
+      const locked = lockedResult.rows[0];
+
+      if (!locked) {
+        return { kind: 'not_found' };
+      }
+      if (!locked.version_matches) {
+        return { kind: 'conflict' };
+      }
+
+      const finalState = this.composeFinalState(locked, changes);
+      if (
+        locked.transaction_type === 'expense' &&
+        (!this.hasText(finalState.merchant) || !this.hasText(finalState.category))
+      ) {
+        return {
+          kind: 'invalid',
+          message: 'expense merchant and category are required',
+        };
+      }
+      if (!this.hasChanges(locked, changes)) {
+        return { kind: 'no_change' };
+      }
+
+      const updated = await this.updateLockedTransaction(
+        client,
+        userId,
+        transactionId,
+        changes,
+      );
+      const oldAmount = Number(locked.amount);
+      if (
+        changes.amount !== undefined &&
+        changes.amount !== oldAmount &&
+        this.isEligibleCreditCardExpense(locked)
+      ) {
+        await applyCreditCardCycleUsageDelta({
+          userId,
+          transactionDate: locked.transaction_date,
+          delta: changes.amount - oldAmount,
+          query: client.query.bind(client),
+        });
+      }
+
+      return { kind: 'updated', transaction: this.transaction(updated) };
+    });
+  }
+
   private filteredQuery(
     userId: string,
     filter: CategoryFilter | WebTransactionsFilter,
@@ -211,6 +305,123 @@ export class WebTransactionsRepository {
       updatedAt: row.updated_at,
       creditCard: row.credit_card,
     };
+  }
+
+  private composeFinalState(
+    locked: LockedTransactionRow,
+    changes: WebTransactionChanges,
+  ): { merchant: string | null; category: string | null } {
+    return {
+      merchant: this.supplied(changes, 'merchant')
+        ? (changes.merchant ?? null)
+        : locked.merchant,
+      category: this.supplied(changes, 'category')
+        ? (changes.category ?? null)
+        : locked.category,
+    };
+  }
+
+  private hasChanges(
+    locked: LockedTransactionRow,
+    changes: WebTransactionChanges,
+  ): boolean {
+    return (
+      (this.supplied(changes, 'amount') &&
+        changes.amount !== Number(locked.amount)) ||
+      (this.supplied(changes, 'merchant') &&
+        changes.merchant !== locked.merchant) ||
+      (this.supplied(changes, 'category') &&
+        changes.category !== locked.category)
+    );
+  }
+
+  private async updateLockedTransaction(
+    client: Pick<PoolClient, 'query'>,
+    userId: string,
+    transactionId: string,
+    changes: WebTransactionChanges,
+  ): Promise<TransactionRow> {
+    const assignments: string[] = [];
+    const values: unknown[] = [];
+    this.addAssignment(assignments, values, changes, 'amount');
+    this.addAssignment(assignments, values, changes, 'merchant');
+    this.addAssignment(assignments, values, changes, 'category');
+    values.push(transactionId, userId);
+    const transactionIdParameter = values.length - 1;
+    const userIdParameter = values.length;
+    const result = await client.query<TransactionRow>(
+      `
+        UPDATE transactions
+        SET ${assignments.join(', ')}, updated_at = now()
+        WHERE id = $${transactionIdParameter}::bigint
+          AND user_id = $${userIdParameter}::bigint
+        RETURNING
+          id,
+          amount,
+          merchant,
+          category,
+          transaction_type,
+          source,
+          to_char(transaction_date AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS transaction_date,
+          to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at,
+          source = 'email'
+            AND lower(trim(COALESCE(raw_payload -> 'parsed' ->> 'paymentType', ''))) = 'credit card'
+            AND transaction_type = 'expense' AS credit_card
+      `,
+      values,
+    );
+    const updated = result.rows[0];
+
+    if (!updated) {
+      throw new Error('locked transaction update returned no row');
+    }
+    return updated;
+  }
+
+  private addAssignment(
+    assignments: string[],
+    values: unknown[],
+    changes: WebTransactionChanges,
+    column: keyof WebTransactionChanges,
+  ): void {
+    if (!this.supplied(changes, column)) {
+      return;
+    }
+    values.push(changes[column]);
+    assignments.push(`${column} = $${values.length}`);
+  }
+
+  private supplied(
+    changes: WebTransactionChanges,
+    field: keyof WebTransactionChanges,
+  ): boolean {
+    return Object.prototype.hasOwnProperty.call(changes, field);
+  }
+
+  private hasText(value: string | null): value is string {
+    return typeof value === 'string' && value.trim().length > 0;
+  }
+
+  private isEligibleCreditCardExpense(row: LockedTransactionRow): boolean {
+    return (
+      row.transaction_type === 'expense' &&
+      row.source === 'email' &&
+      this.paymentType(row.raw_payload) === 'credit card'
+    );
+  }
+
+  private paymentType(rawPayload: unknown): string {
+    if (!this.isRecord(rawPayload) || !this.isRecord(rawPayload.parsed)) {
+      return '';
+    }
+    const paymentType = rawPayload.parsed.paymentType;
+    return typeof paymentType === 'string'
+      ? paymentType.trim().toLowerCase()
+      : '';
+  }
+
+  private isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
   }
 
   private cycleStartDay(value: string | number | null): number {

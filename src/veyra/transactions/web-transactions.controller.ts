@@ -1,5 +1,7 @@
-import { Body, Controller, Post } from '@nestjs/common';
+import { Body, Controller, Param, Patch, Post } from '@nestjs/common';
 import {
+  WebTransactionDto,
+  WebTransactionUpdateRequestDto,
   WebTransactionsQueryRequestDto,
   WebTransactionsQueryResponseDto,
 } from './dto/web-transactions.dto';
@@ -14,5 +16,13 @@ export class WebTransactionsController {
     @Body() body: WebTransactionsQueryRequestDto,
   ): Promise<WebTransactionsQueryResponseDto> {
     return this.service.queryTransactions(body);
+  }
+
+  @Patch(':id')
+  update(
+    @Param('id') id: string,
+    @Body() body: WebTransactionUpdateRequestDto,
+  ): Promise<WebTransactionDto> {
+    return this.service.updateTransaction({ transactionId: id, request: body });
   }
 }

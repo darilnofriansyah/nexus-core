@@ -1,8 +1,15 @@
 import * as assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { BadRequestException, NotFoundException } from '@nestjs/common';
 import {
+  BadRequestException,
+  ConflictException,
+  NotFoundException,
+} from '@nestjs/common';
+import {
+  WebTransactionChanges,
   WebTransactionRow,
+  WebTransactionUpdateRequestDto,
+  WebTransactionUpdateResult,
   WebTransactionsFilter,
   WebTransactionsQueryRequestDto,
   WebTransactionsUser,
@@ -43,6 +50,16 @@ class RepositoryFake {
       'category' | 'cursor' | 'direction' | 'limit'
     >;
   }> = [];
+  updateResult: WebTransactionUpdateResult = {
+    kind: 'updated',
+    transaction: row(),
+  };
+  updateCalls: Array<{
+    userId: string;
+    transactionId: string;
+    expectedUpdatedAt: string;
+    changes: WebTransactionChanges;
+  }> = [];
 
   async findActiveUserByTelegramId(
     telegramUserId: string,
@@ -69,6 +86,16 @@ class RepositoryFake {
     this.categoryCalls.push({ userId, filter });
     return this.categories;
   }
+
+  async updateTransaction(input: {
+    userId: string;
+    transactionId: string;
+    expectedUpdatedAt: string;
+    changes: WebTransactionChanges;
+  }): Promise<WebTransactionUpdateResult> {
+    this.updateCalls.push(input);
+    return this.updateResult;
+  }
 }
 
 function createService() {
@@ -86,6 +113,13 @@ function decodeCursor(cursor: string | null): unknown {
     ? JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'))
     : null;
 }
+
+const oldTime = '2026-08-13T03:01:00.654321Z';
+const updateRequest: WebTransactionUpdateRequestDto = {
+  telegramUserId: '976684739',
+  expectedUpdatedAt: oldTime,
+  amount: 30000,
+};
 
 test('web transactions service rejects invalid public query values and forbidden fields', async () => {
   const invalidRequests: WebTransactionsQueryRequestDto[] = [
@@ -330,4 +364,136 @@ test('web transactions service maps unsafe or non-whole IDR amounts to safe inte
     result.items.map(({ amount }) => amount),
     [25000, 0],
   );
+});
+
+test('web transactions service requires valid update identity version and a supplied change', async () => {
+  const { repository, service } = createService();
+  const invalidRequests: Array<{
+    transactionId: string;
+    request: WebTransactionUpdateRequestDto;
+  }> = [
+    {
+      transactionId: '0',
+      request: updateRequest,
+    },
+    {
+      transactionId: '123',
+      request: { ...updateRequest, telegramUserId: 'x' },
+    },
+    {
+      transactionId: '123',
+      request: { ...updateRequest, expectedUpdatedAt: 'not-a-date' },
+    },
+    {
+      transactionId: '123',
+      request: {
+        telegramUserId: '976684739',
+        expectedUpdatedAt: oldTime,
+      },
+    },
+    {
+      transactionId: '123',
+      request: { ...updateRequest, amount: 0 },
+    },
+    {
+      transactionId: '123',
+      request: { ...updateRequest, amount: 25000.5 },
+    },
+    {
+      transactionId: '123',
+      request: { ...updateRequest, amount: null },
+    },
+    {
+      transactionId: '123',
+      request: { ...updateRequest, merchant: ' ' },
+    },
+    {
+      transactionId: '123',
+      request: { ...updateRequest, category: 'x'.repeat(201) },
+    },
+    {
+      transactionId: '123',
+      request: { ...updateRequest, status: 'confirmed' } as never,
+    },
+  ];
+
+  for (const input of invalidRequests) {
+    await assert.rejects(
+      () => service.updateTransaction(input),
+      BadRequestException,
+    );
+  }
+
+  assert.equal(repository.userLookups.length, 0);
+});
+
+test('web transactions service update preserves omitted fields and normalizes supplied nullable text after resolving the user', async () => {
+  const { repository, service } = createService();
+
+  const result = await service.updateTransaction({
+    transactionId: '123',
+    request: {
+      telegramUserId: 976684739,
+      expectedUpdatedAt: oldTime,
+      merchant: null,
+      category: ' Income ',
+    },
+  });
+
+  assert.deepEqual(repository.userLookups, ['976684739']);
+  assert.deepEqual(repository.updateCalls, [
+    {
+      userId: '1',
+      transactionId: '123',
+      expectedUpdatedAt: oldTime,
+      changes: { merchant: null, category: 'Income' },
+    },
+  ]);
+  assert.equal(result.id, '123');
+  assert.equal('transactionType' in result, false);
+});
+
+test('web transactions service maps missing or foreign rows alike and stale rows to conflict', async () => {
+  const { repository, service } = createService();
+  repository.updateResult = { kind: 'not_found' };
+  await assert.rejects(
+    () => service.updateTransaction({ transactionId: '123', request: updateRequest }),
+    NotFoundException,
+  );
+
+  repository.updateResult = { kind: 'conflict' };
+  await assert.rejects(
+    () => service.updateTransaction({ transactionId: '123', request: updateRequest }),
+    ConflictException,
+  );
+});
+
+test('web transactions service update maps locked invalid and no-change results to bad request', async () => {
+  const { repository, service } = createService();
+  repository.updateResult = {
+    kind: 'invalid',
+    message: 'expense merchant and category are required',
+  };
+  await assert.rejects(
+    () => service.updateTransaction({ transactionId: '123', request: updateRequest }),
+    BadRequestException,
+  );
+
+  repository.updateResult = { kind: 'no_change' };
+  await assert.rejects(
+    () => service.updateTransaction({ transactionId: '123', request: updateRequest }),
+    BadRequestException,
+  );
+});
+
+test('web transactions service update returns not found without transaction access when the user is inactive', async () => {
+  const { repository, service } = createService();
+  repository.user = null;
+
+  await assert.rejects(
+    () => service.updateTransaction({ transactionId: '123', request: updateRequest }),
+    NotFoundException,
+  );
+
+  assert.deepEqual(repository.updateCalls, []);
 });
