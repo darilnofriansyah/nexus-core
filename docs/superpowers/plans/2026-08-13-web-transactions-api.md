@@ -30,7 +30,7 @@
 - Create `src/veyra/transactions/credit-card-cycle-usage.ts`: one shared, parameterized financial-cycle upsert for signed credit usage deltas.
 - Create `src/veyra/transactions/web-transactions.repository.ts`: user-scoped SQL, category query, keyset pagination, row locking, and one transaction for PATCH plus card delta.
 - Create `src/veyra/transactions/web-transactions.service.ts`: public validation, cursor codec, active-user resolution, error mapping, and DTO mapping.
-- Create `src/veyra/transactions/web-transactions.controller.ts`: `POST query` and `PATCH :id` route delegation only.
+- Create `src/veyra/transactions/web-transactions.controller.ts`: `POST query` delegation; Task 4 adds `PATCH :id` with its real service implementation.
 - Modify `src/veyra/transactions/transaction.service.ts`: replace local credit-card SQL/helper with shared helper; preserve confirmation behavior.
 - Modify `src/veyra/veyra.module.ts`: register the new controller and repository/service providers.
 - Create focused `*.spec.ts` files beside every new Core unit; modify `transaction.service.spec.ts` only to prove confirmation keeps using shared cycle behavior.
@@ -274,6 +274,7 @@ git commit -m "feat(transactions): add web transaction contract"
 - Consumes DTOs from Task 2.
 - Produces `queryTransactions(request): Promise<WebTransactionsQueryResponseDto>` used by controller.
 - Repository returns only internal rows; service maps to public DTO and creates/reads opaque cursors.
+- Registers only `POST /api/veyra/transactions/query`; PATCH remains absent until Task 4 creates its real service behavior.
 
 - [ ] **Step 1: Write failing repository tests for scope, filters, and pagination SQL**
 
@@ -372,11 +373,10 @@ Accept only positive integer Telegram IDs, `direction` `next|previous`, `limit` 
 export class WebTransactionsController {
   constructor(private readonly service: WebTransactionsService) {}
   @Post('query') query(@Body() body: WebTransactionsQueryRequestDto) { return this.service.queryTransactions(body); }
-  @Patch(':id') update(@Param('id') transactionId: string, @Body() body: WebTransactionUpdateRequestDto) { return this.service.updateTransaction({ transactionId, request: body }); }
 }
 ```
 
-Write controller delegation tests for both calls, then register `WebTransactionsController`, `WebTransactionsService`, and `WebTransactionsRepository` in `VeyraModule`. Do not add this controller to `DashboardModule` or alter existing `VeyraController` routes.
+Write the query controller delegation test, then register `WebTransactionsController`, `WebTransactionsService`, and `WebTransactionsRepository` in `VeyraModule`. Do not add this controller to `DashboardModule` or alter existing `VeyraController` routes.
 
 - [ ] **Step 7: Run focused query and controller suite**
 
@@ -399,12 +399,14 @@ git commit -m "feat(transactions): query finalized web transactions"
 - Modify: `src/veyra/transactions/web-transactions.repository.spec.ts`
 - Modify: `src/veyra/transactions/web-transactions.service.ts`
 - Modify: `src/veyra/transactions/web-transactions.service.spec.ts`
+- Modify: `src/veyra/transactions/web-transactions.controller.ts`
 - Modify: `src/veyra/transactions/web-transactions.controller.spec.ts`
 
 **Interfaces:**
 
 - Consumes `applyCreditCardCycleUsageDelta` from Task 1 and update DTO from Task 2.
 - Produces `updateTransaction({ transactionId, request }): Promise<WebTransactionDto>`.
+- Adds `PATCH /api/veyra/transactions/:id` only after that real service method exists.
 
 - [ ] **Step 1: Write failing service tests for accepted/rejected edit shapes**
 
@@ -501,10 +503,14 @@ Run: `npm test -- --test-name-pattern="web transactions.*(update|credit-card|con
 
 Expected: PASS; check no summary query for non-card or non-amount patch and signed increase/decrease values for eligible expense.
 
-- [ ] **Step 7: Commit PATCH vertical slice**
+- [ ] **Step 7: Add the PATCH route and commit the vertical slice**
+
+Add `@Patch(':id')` controller delegation and its focused test in this task.
+Call the real `WebTransactionsService.updateTransaction` directly; do not use a
+type assertion or placeholder method.
 
 ```bash
-git add src/veyra/transactions/web-transactions.repository.ts src/veyra/transactions/web-transactions.repository.spec.ts src/veyra/transactions/web-transactions.service.ts src/veyra/transactions/web-transactions.service.spec.ts src/veyra/transactions/web-transactions.controller.spec.ts
+git add src/veyra/transactions/web-transactions.repository.ts src/veyra/transactions/web-transactions.repository.spec.ts src/veyra/transactions/web-transactions.service.ts src/veyra/transactions/web-transactions.service.spec.ts src/veyra/transactions/web-transactions.controller.ts src/veyra/transactions/web-transactions.controller.spec.ts
 git commit -m "feat(transactions): edit web transactions safely"
 ```
 
