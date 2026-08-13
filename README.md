@@ -370,6 +370,128 @@ curl -X POST "$CORE_API_URL/api/veyra/dashboard/overview" \
   -d '{"telegramUserId":"976684739","asOfDate":"2026-07-25","timezone":"Asia/Jakarta"}'
 ```
 
+## Transactions Web API
+
+These endpoints are for the authenticated Veyra server only. The server resolves
+the signed-in session to a Telegram identity, sends that verified
+`telegramUserId`, and includes `x-core-api-key: <CORE_API_KEY>`. A browser must
+never call Core directly or receive the Core API key. Core resolves only active
+Telegram users; missing, inactive, and foreign transaction resources are
+intentionally indistinguishable.
+
+The API exposes only finalized transactions: `status: "confirmed"` and
+`type: "income" | "expense"`, newest first by transaction date and ID. It
+never returns `raw_payload`, ownership fields, or other internal data. Every
+public transaction has exactly these fields:
+
+```json
+{
+  "id": "123",
+  "amount": 25000,
+  "merchant": "TUKU",
+  "category": "Dining",
+  "type": "expense",
+  "source": "email",
+  "transactionDate": "2026-08-13T03:00:00.123456Z",
+  "updatedAt": "2026-08-13T04:00:00.000001Z",
+  "creditCard": true
+}
+```
+
+`transactionDate` and `updatedAt` are UTC timestamp strings with microsecond
+precision. `amount` is a positive safe whole-IDR integer. `source` is one of
+`telegram`, `email`, `manual`, or `import`.
+
+### `POST /api/veyra/transactions/query`
+
+Queries the active user's finalized income and expense transactions. Send the
+API key and JSON body from the Veyra server:
+
+```json
+{
+  "telegramUserId": "976684739",
+  "cycle": "current",
+  "asOfDate": "2026-08-13",
+  "timezone": "Asia/Jakarta",
+  "type": "expense",
+  "category": "Dining",
+  "merchantQuery": "tuku",
+  "limit": 50,
+  "direction": "next",
+  "cursor": null
+}
+```
+
+`telegramUserId` is required. `limit` is `1..50` (default `50`);
+`direction` is `next` or `previous` (default `next`); `type` is `income` or
+`expense`; and `cycle` is `current` or `previous`. `asOfDate` defaults to today
+in `timezone`, which defaults to `Asia/Jakarta`. Cycle boundaries are computed
+by Core from the active user's financial-cycle start day. `category` is exact;
+`merchantQuery` is a case-insensitive contains match. Callers cannot supply
+status, source, sort fields, or date boundaries.
+
+`previousCursor` and `nextCursor` are opaque base64url values. Pass a returned
+cursor back unchanged with the matching direction; do not decode, construct, or
+interpret it. Both directions always return rows in UI-descending order.
+
+```json
+{
+  "items": [
+    {
+      "id": "123",
+      "amount": 25000,
+      "merchant": "TUKU",
+      "category": "Dining",
+      "type": "expense",
+      "source": "email",
+      "transactionDate": "2026-08-13T03:00:00.123456Z",
+      "updatedAt": "2026-08-13T04:00:00.000001Z",
+      "creditCard": true
+    }
+  ],
+  "previousCursor": null,
+  "nextCursor": "eyJ0cmFuc2FjdGlvbkRhdGUiOiIyMDI2LTA4LTEzVDAzOjAwOjAwLjEyMzQ1NloiLCJpZCI6IjEyMyJ9",
+  "categories": ["Dining", "Transport"]
+}
+```
+
+### `PATCH /api/veyra/transactions/:id`
+
+Updates only `amount`, `merchant`, and `category` on one finalized income or
+expense transaction owned by the active user. `expectedUpdatedAt` is required
+and must exactly equal the public microsecond UTC `updatedAt` from the last
+read. At least one editable field is required. `amount` must be a positive safe
+whole-IDR integer; non-null text is trimmed and limited to 200 characters.
+Expense merchant and category must remain non-empty. Income merchant and
+category may be `null`. Date, type, source, status, notes, and raw payload are
+immutable through this API.
+
+```json
+{
+  "telegramUserId": "976684739",
+  "expectedUpdatedAt": "2026-08-13T04:00:00.000001Z",
+  "amount": 30000,
+  "merchant": "TUKU Kemang",
+  "category": "Dining"
+}
+```
+
+On success (`200`), the response is the updated public transaction object shown
+above. If the amount changes on an eligible confirmed email credit-card expense
+row, Core atomically applies the signed amount delta to that financial cycle's
+`credit_used`. It never changes `credit_limit` or `statement_balance`; no
+per-card model is introduced.
+
+### Error outcomes
+
+Both routes return `401` when `x-core-api-key` is missing or invalid (when Core
+API-key protection is configured). Query returns `201` on success and PATCH
+returns `200` on success. Both return `400` for unsupported fields or invalid
+request values. Query returns `404` for a missing or inactive Telegram identity.
+PATCH returns `404` for a missing, inactive, or foreign transaction; `409` when
+`expectedUpdatedAt` is stale; and `400` when no effective change remains or the
+final expense merchant/category would be empty.
+
 ### `POST /api/veyra/messages/route`
 
 Selects the Veyra sub-workflow route for one Telegram update. The endpoint resolves the user and checks active `conversation_states`; only when the deterministic result is `conversational` does it classify master intent with `gpt-5.4-mini` and append `masterIntent`. It does not execute budget/transaction logic, update conversation state, or send Telegram messages.

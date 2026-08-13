@@ -1,4 +1,5 @@
 import * as assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import {
   WebTransactionDto,
@@ -8,6 +9,12 @@ import {
 } from './dto/web-transactions.dto';
 import { WebTransactionsController } from './web-transactions.controller';
 import { WebTransactionsService } from './web-transactions.service';
+
+test('web transaction routes are registered under the globally API-key-guarded app', () => {
+  assert.equal(WebTransactionsController.name, 'WebTransactionsController');
+  assert.match(readFileSync('src/app.module.ts', 'utf8'), /provide: APP_GUARD/);
+  assert.match(readFileSync('src/app.module.ts', 'utf8'), /useClass: ApiKeyGuard/);
+});
 
 test('web transactions controller delegates query to the service', async () => {
   const request: WebTransactionsQueryRequestDto = {
