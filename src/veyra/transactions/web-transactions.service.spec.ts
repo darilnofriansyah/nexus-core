@@ -373,7 +373,7 @@ test('web transactions service rejects invalid stored amounts instead of fabrica
 test('web transactions service trims legacy public text and deduplicates category options', async () => {
   const { repository, service } = createService();
   repository.rows = [
-    row({ merchant: '  TUKU  ', category: '  Dining  ' }),
+    row({ merchant: '\tTUKU\n', category: '\tDining\n' }),
     row({
       id: '122',
       transactionType: 'income',
@@ -381,7 +381,7 @@ test('web transactions service trims legacy public text and deduplicates categor
       category: null,
     }),
   ];
-  repository.categories = ['  Dining  ', 'Dining', '  Transport  '];
+  repository.categories = ['\tDining\n', 'Dining', '\nTransport\t'];
 
   const result = await service.queryTransactions({
     telegramUserId: '976684739',

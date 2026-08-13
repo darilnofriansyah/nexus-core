@@ -2,7 +2,6 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
-  InternalServerErrorException,
   NotFoundException,
 } from '@nestjs/common';
 import {
@@ -18,6 +17,12 @@ import {
   WebTransactionsQueryRequestDto,
   WebTransactionsQueryResponseDto,
 } from './dto/web-transactions.dto';
+import {
+  isPositivePostgresBigint,
+  isValidMicrosecondUtcTimestamp,
+  toPublicWebTransaction,
+  toPublicWebTransactionCategories,
+} from './web-transaction-public-contract';
 import { WebTransactionsRepository } from './web-transactions.repository';
 
 interface Month {
@@ -37,7 +42,6 @@ const QUERY_KEYS = new Set([
   'asOfDate',
   'timezone',
 ]);
-const POSTGRES_MAX_BIGINT = BigInt('9223372036854775807');
 const UPDATE_KEYS = new Set([
   'telegramUserId',
   'expectedUpdatedAt',
@@ -73,10 +77,10 @@ export class WebTransactionsService {
     const page = this.page(rows, filter);
 
     return {
-      items: page.rows.map((row) => this.publicTransaction(row)),
+      items: page.rows.map(toPublicWebTransaction),
       previousCursor: page.hasNewer ? this.edgeCursor(page.rows[0]) : null,
       nextCursor: page.hasOlder ? this.edgeCursor(page.rows.at(-1)) : null,
-      categories: this.publicCategories(categories),
+      categories: toPublicWebTransactionCategories(categories),
     };
   }
 
@@ -108,7 +112,7 @@ export class WebTransactionsService {
 
     switch (result.kind) {
       case 'updated':
-        return this.publicTransaction(result.transaction);
+        return toPublicWebTransaction(result.transaction);
       case 'not_found':
         throw new NotFoundException('Transaction not found');
       case 'conflict':
@@ -182,43 +186,6 @@ export class WebTransactionsService {
     };
   }
 
-  private publicTransaction(row: WebTransactionRow): WebTransactionDto {
-    const type = this.publicTransactionType(row.transactionType);
-    const merchant = this.publicNullableText(row.merchant);
-    const category = this.publicNullableText(row.category);
-    if (type === 'expense' && (merchant === null || category === null)) {
-      this.invalidPublicData();
-    }
-
-    return {
-      id: this.publicIdentifier(row.id),
-      amount: this.publicAmount(row.amount),
-      merchant,
-      category,
-      type,
-      source: this.publicSource(row.source),
-      transactionDate: this.publicTimestamp(row.transactionDate),
-      updatedAt: this.publicTimestamp(row.updatedAt),
-      creditCard: this.publicBoolean(row.creditCard),
-    };
-  }
-
-  private publicCategories(categories: string[]): string[] {
-    const result: string[] = [];
-    const seen = new Set<string>();
-    for (const value of categories) {
-      const category = this.publicNullableText(value);
-      if (category === null) {
-        this.invalidPublicData();
-      }
-      if (!seen.has(category)) {
-        seen.add(category);
-        result.push(category);
-      }
-    }
-    return result;
-  }
-
   private edgeCursor(row: WebTransactionRow | undefined): string | null {
     return row
       ? Buffer.from(
@@ -269,25 +236,9 @@ export class WebTransactionsService {
       keys[0] === 'id' &&
       keys[1] === 'transactionDate' &&
       typeof cursor.id === 'string' &&
-      this.positiveBigint(cursor.id) &&
+      isPositivePostgresBigint(cursor.id) &&
       typeof cursor.transactionDate === 'string' &&
-      this.validMicrosecondTimestamp(cursor.transactionDate)
-    );
-  }
-
-  private validMicrosecondTimestamp(value: string): boolean {
-    const match =
-      /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})\.(\d{6})Z$/.exec(value);
-    if (!match) {
-      return false;
-    }
-    const [, year, month, day, hour, minute, second] = match.map(Number);
-    return (
-      year >= 1 &&
-      this.validCalendarDate(year, month, day) &&
-      hour <= 23 &&
-      minute <= 59 &&
-      second <= 59
+      isValidMicrosecondUtcTimestamp(cursor.transactionDate)
     );
   }
 
@@ -398,7 +349,10 @@ export class WebTransactionsService {
   }
 
   private expectedUpdatedAt(value: unknown): string {
-    if (typeof value !== 'string' || !this.validMicrosecondTimestamp(value)) {
+    if (
+      typeof value !== 'string' ||
+      !isValidMicrosecondUtcTimestamp(value)
+    ) {
       throw new BadRequestException(
         'expectedUpdatedAt must be a microsecond UTC timestamp',
       );
@@ -412,7 +366,7 @@ export class WebTransactionsService {
     }
     if (typeof value === 'string') {
       const identifier = value.trim();
-      if (this.positiveBigint(identifier)) {
+      if (isPositivePostgresBigint(identifier)) {
         return identifier;
       }
     }
@@ -508,10 +462,6 @@ export class WebTransactionsService {
     );
   }
 
-  private positiveBigint(value: string): boolean {
-    return /^[1-9]\d*$/.test(value) && BigInt(value) <= POSTGRES_MAX_BIGINT;
-  }
-
   private text(value: unknown, name: string): string | null {
     if (value === null || value === undefined) {
       return null;
@@ -541,68 +491,4 @@ export class WebTransactionsService {
     throw new BadRequestException(`${name} must be valid`);
   }
 
-  private publicIdentifier(value: unknown): string {
-    if (typeof value !== 'string' || !this.positiveBigint(value)) {
-      return this.invalidPublicData();
-    }
-    return value;
-  }
-
-  private publicAmount(value: unknown): number {
-    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
-      return this.invalidPublicData();
-    }
-    return value;
-  }
-
-  private publicNullableText(value: unknown): string | null {
-    if (value === null) {
-      return null;
-    }
-    if (typeof value !== 'string') {
-      return this.invalidPublicData();
-    }
-    const text = value.trim();
-    if (text.length > WEB_TRANSACTION_MAX_TEXT_LENGTH) {
-      return this.invalidPublicData();
-    }
-    return text || null;
-  }
-
-  private publicTransactionType(value: unknown): WebTransactionDto['type'] {
-    if (value !== 'income' && value !== 'expense') {
-      return this.invalidPublicData();
-    }
-    return value;
-  }
-
-  private publicSource(value: unknown): WebTransactionDto['source'] {
-    if (
-      value !== 'telegram' &&
-      value !== 'email' &&
-      value !== 'manual' &&
-      value !== 'import'
-    ) {
-      return this.invalidPublicData();
-    }
-    return value;
-  }
-
-  private publicTimestamp(value: unknown): string {
-    if (typeof value !== 'string' || !this.validMicrosecondTimestamp(value)) {
-      return this.invalidPublicData();
-    }
-    return value;
-  }
-
-  private publicBoolean(value: unknown): boolean {
-    if (typeof value !== 'boolean') {
-      return this.invalidPublicData();
-    }
-    return value;
-  }
-
-  private invalidPublicData(): never {
-    throw new InternalServerErrorException('Transaction data is invalid');
-  }
 }

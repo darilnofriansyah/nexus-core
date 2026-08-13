@@ -1,5 +1,6 @@
 import * as assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { InternalServerErrorException } from '@nestjs/common';
 import { DatabaseService } from '../../database/database.service';
 import {
   WebTransactionChanges,
@@ -211,7 +212,7 @@ test('web transactions repository scopes finalized rows to filters and a duplica
   assert.match(calls[0].text, /status = 'confirmed'/);
   assert.match(calls[0].text, /transaction_type IN \('income', 'expense'\)/);
   assert.match(calls[0].text, /transaction_type = \$\d+/);
-  assert.match(calls[0].text, /btrim\(category\) = \$\d+/);
+  assert.match(calls[0].text, /regexp_replace\(category[\s\S]*\) = \$\d+/);
   assert.match(
     calls[0].text,
     /COALESCE\(merchant_normalized, merchant, ''\) ILIKE '%' \|\| \$\d+ \|\| '%'/,
@@ -264,6 +265,17 @@ test('web transactions repository search falls back to a corrected merchant when
   assert.equal(rows[0]?.merchant, correctedMerchant);
 });
 
+test('web transactions repository rejects a raw fractional amount that JavaScript would round into a safe integer', async () => {
+  const { repository } = createRepository([
+    [{ ...transactionRows[0], amount: '9007199254740991.4' }],
+  ]);
+
+  await assert.rejects(
+    () => repository.findTransactions('1', filter()),
+    InternalServerErrorException,
+  );
+});
+
 test('web transactions repository queries newer rows ascending then reverses previous results', async () => {
   const { calls, repository } = createRepository([transactionRows]);
 
@@ -304,7 +316,7 @@ test('web transactions repository category options retain type date and search s
     timezone: 'Asia/Jakarta',
   });
 
-  assert.match(calls[0].text, /GROUP BY btrim\(category\)/);
+  assert.match(calls[0].text, /GROUP BY regexp_replace\(category/);
   assert.match(calls[0].text, /WHERE user_id = \$1/);
   assert.match(calls[0].text, /transaction_type = \$\d+/);
   assert.match(calls[0].text, /merchant_normalized/);
@@ -314,10 +326,10 @@ test('web transactions repository category options retain type date and search s
   assert.deepEqual(categories, ['Dining', 'Transport']);
 });
 
-test('web transactions repository normalizes legacy categories for options and exact filters', async () => {
+test('web transactions repository normalizes tabbed legacy categories consistently for list options and filters', async () => {
   const { calls, repository } = createRepository([
     [{ category: 'Dining' }],
-    [transactionRows[0]],
+    [{ ...transactionRows[0], category: 'Dining' }],
   ]);
 
   await repository.findCategories('1', {
@@ -329,11 +341,21 @@ test('web transactions repository normalizes legacy categories for options and e
     endDate: null,
     timezone: 'Asia/Jakarta',
   });
-  await repository.findTransactions('1', filter({ category: 'Dining' }));
+  const rows = await repository.findTransactions(
+    '1',
+    filter({ category: 'Dining' }),
+  );
 
-  assert.match(calls[0].text, /SELECT btrim\(category\) AS category/);
-  assert.match(calls[0].text, /GROUP BY btrim\(category\)/);
-  assert.match(calls[1].text, /btrim\(category\) = \$\d+/);
+  const canonicalCategory =
+    "regexp_replace(category, '^[[:space:]]+|[[:space:]]+$', '', 'g')";
+  assert.ok(calls[0].text.includes(`SELECT ${canonicalCategory} AS category`));
+  assert.ok(calls[0].text.includes(`GROUP BY ${canonicalCategory}`));
+  assert.ok(
+    calls[1].text.includes(`NULLIF(${canonicalCategory}, '') AS category`),
+  );
+  assert.ok(calls[1].text.includes(`${canonicalCategory} = $2`));
+  assert.equal(calls[1].values[1], 'Dining');
+  assert.equal(rows[0]?.category, 'Dining');
 });
 
 test('web transactions repository update locks owned finalized row and atomically writes eligible amount increase', async () => {
@@ -430,6 +452,39 @@ test('web transactions repository credit-card update rolls back when the eligibl
   assert.equal(lifecycle.rolledBack, true);
 });
 
+test('web transactions repository rolls back before mutation when untouched public state is corrupt', async () => {
+  const cases = [
+    {
+      locked: lockedRow({ amount: '25000.5' }),
+      changes: { category: 'Coffee' },
+    },
+    {
+      locked: lockedRow({ merchant: 'x'.repeat(201) }),
+      changes: { amount: 30000 },
+    },
+  ];
+
+  for (const scenario of cases) {
+    const { calls, lifecycle, repository } = createUpdateRepository([
+      [scenario.locked],
+      [returnedRow()],
+    ]);
+
+    await assert.rejects(
+      () => repository.updateTransaction(updateInput(scenario.changes)),
+      InternalServerErrorException,
+    );
+    assert.equal(lifecycle.committed, false);
+    assert.equal(lifecycle.rolledBack, true);
+    assert.equal(calls.length, 1);
+    assert.doesNotMatch(calls.map(({ text }) => text).join('\n'), /UPDATE transactions/);
+    assert.doesNotMatch(
+      calls.map(({ text }) => text).join('\n'),
+      /INSERT INTO credit_card_cycle_summaries/,
+    );
+  }
+});
+
 test('web transactions repository update returns not found conflict invalid and no-change under one lock', async () => {
   const scenarios: Array<{
     rows: unknown[][];
@@ -443,8 +498,8 @@ test('web transactions repository update returns not found conflict invalid and 
       kind: 'conflict',
     },
     {
-      rows: [[lockedRow({ merchant: null })]],
-      changes: { category: null },
+      rows: [[lockedRow()]],
+      changes: { merchant: null },
       kind: 'invalid',
     },
     {

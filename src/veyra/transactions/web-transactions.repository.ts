@@ -9,6 +9,10 @@ import {
   WebTransactionsFilter,
   WebTransactionsUser,
 } from './dto/web-transactions.dto';
+import {
+  toPublicIdrAmount,
+  toPublicWebTransaction,
+} from './web-transaction-public-contract';
 
 interface UserRow extends QueryResultRow {
   id: string | number;
@@ -35,7 +39,7 @@ interface LockedTransactionRow extends QueryResultRow {
   amount: string | number;
   merchant: string | null;
   category: string | null;
-  transaction_date: string | Date;
+  transaction_date: string;
   source: WebTransactionRow['source'];
   status: string;
   updated_at: string;
@@ -63,6 +67,9 @@ interface QueryParts {
   predicates: string[];
   values: unknown[];
 }
+
+const CATEGORY_CANONICAL_SQL =
+  "regexp_replace(category, '^[[:space:]]+|[[:space:]]+$', '', 'g')";
 
 @Injectable()
 export class WebTransactionsRepository {
@@ -106,7 +113,7 @@ export class WebTransactionsRepository {
           id,
           amount,
           merchant,
-          category,
+          NULLIF(${CATEGORY_CANONICAL_SQL}, '') AS category,
           transaction_type,
           source,
           to_char(transaction_date AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS transaction_date,
@@ -134,13 +141,13 @@ export class WebTransactionsRepository {
     const query = this.filteredQuery(userId, filter);
     const result = await this.database.query<CategoryRow>(
       `
-        SELECT btrim(category) AS category
+        SELECT ${CATEGORY_CANONICAL_SQL} AS category
         FROM transactions
         WHERE ${query.predicates.join('\n          AND ')}
           AND category IS NOT NULL
-          AND btrim(category) <> ''
-        GROUP BY btrim(category)
-        ORDER BY btrim(category)
+          AND ${CATEGORY_CANONICAL_SQL} <> ''
+        GROUP BY ${CATEGORY_CANONICAL_SQL}
+        ORDER BY ${CATEGORY_CANONICAL_SQL}
       `,
       query.values,
     );
@@ -158,7 +165,8 @@ export class WebTransactionsRepository {
       const lockedResult = await client.query<LockedTransactionRow>(
         `
           SELECT id, user_id, transaction_type, amount, merchant, category,
-                 transaction_date, source, status,
+                 to_char(transaction_date AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS transaction_date,
+                 source, status,
                  to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at,
                  updated_at = $3::timestamptz AS version_matches,
                  raw_payload
@@ -179,6 +187,8 @@ export class WebTransactionsRepository {
         return { kind: 'conflict' };
       }
 
+      const currentTransaction = this.lockedTransaction(locked);
+      toPublicWebTransaction(currentTransaction);
       const finalState = this.composeFinalState(locked, changes);
       if (
         locked.transaction_type === 'expense' &&
@@ -192,6 +202,12 @@ export class WebTransactionsRepository {
       if (!this.hasChanges(locked, changes)) {
         return { kind: 'no_change' };
       }
+      toPublicWebTransaction({
+        ...currentTransaction,
+        amount: changes.amount ?? currentTransaction.amount,
+        merchant: finalState.merchant,
+        category: finalState.category,
+      });
 
       const merchantChanged = this.hasMerchantChanged(locked, changes);
       const updated = await this.updateLockedTransaction(
@@ -201,7 +217,7 @@ export class WebTransactionsRepository {
         changes,
         merchantChanged,
       );
-      const oldAmount = Number(locked.amount);
+      const oldAmount = currentTransaction.amount;
       if (
         changes.amount !== undefined &&
         changes.amount !== oldAmount &&
@@ -250,7 +266,8 @@ export class WebTransactionsRepository {
       return;
     }
     query.values.push(value);
-    const expression = column === 'category' ? 'btrim(category)' : column;
+    const expression =
+      column === 'category' ? CATEGORY_CANONICAL_SQL : column;
     query.predicates.push(`${expression} = $${query.values.length}`);
   }
 
@@ -299,7 +316,7 @@ export class WebTransactionsRepository {
   private transaction(row: TransactionRow): WebTransactionRow {
     return {
       id: String(row.id),
-      amount: Number(row.amount),
+      amount: toPublicIdrAmount(row.amount),
       merchant: row.merchant,
       category: row.category,
       transactionType: row.transaction_type,
@@ -307,6 +324,20 @@ export class WebTransactionsRepository {
       transactionDate: row.transaction_date,
       updatedAt: row.updated_at,
       creditCard: row.credit_card,
+    };
+  }
+
+  private lockedTransaction(row: LockedTransactionRow): WebTransactionRow {
+    return {
+      id: String(row.id),
+      amount: toPublicIdrAmount(row.amount),
+      merchant: row.merchant,
+      category: row.category,
+      transactionType: row.transaction_type,
+      source: row.source,
+      transactionDate: row.transaction_date,
+      updatedAt: row.updated_at,
+      creditCard: this.isEligibleCreditCardExpense(row),
     };
   }
 
@@ -374,7 +405,7 @@ export class WebTransactionsRepository {
           id,
           amount,
           merchant,
-          category,
+          NULLIF(${CATEGORY_CANONICAL_SQL}, '') AS category,
           transaction_type,
           source,
           to_char(transaction_date AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS transaction_date,
