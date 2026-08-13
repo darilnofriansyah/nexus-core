@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  InternalServerErrorException,
   NotFoundException,
 } from '@nestjs/common';
 import {
@@ -75,7 +76,7 @@ export class WebTransactionsService {
       items: page.rows.map((row) => this.publicTransaction(row)),
       previousCursor: page.hasNewer ? this.edgeCursor(page.rows[0]) : null,
       nextCursor: page.hasOlder ? this.edgeCursor(page.rows.at(-1)) : null,
-      categories,
+      categories: this.publicCategories(categories),
     };
   }
 
@@ -182,17 +183,40 @@ export class WebTransactionsService {
   }
 
   private publicTransaction(row: WebTransactionRow): WebTransactionDto {
+    const type = this.publicTransactionType(row.transactionType);
+    const merchant = this.publicNullableText(row.merchant);
+    const category = this.publicNullableText(row.category);
+    if (type === 'expense' && (merchant === null || category === null)) {
+      this.invalidPublicData();
+    }
+
     return {
-      id: row.id,
-      amount: this.safeIdr(row.amount),
-      merchant: row.merchant,
-      category: row.category,
-      type: row.transactionType,
-      source: row.source,
-      transactionDate: row.transactionDate,
-      updatedAt: row.updatedAt,
-      creditCard: row.creditCard,
+      id: this.publicIdentifier(row.id),
+      amount: this.publicAmount(row.amount),
+      merchant,
+      category,
+      type,
+      source: this.publicSource(row.source),
+      transactionDate: this.publicTimestamp(row.transactionDate),
+      updatedAt: this.publicTimestamp(row.updatedAt),
+      creditCard: this.publicBoolean(row.creditCard),
     };
+  }
+
+  private publicCategories(categories: string[]): string[] {
+    const result: string[] = [];
+    const seen = new Set<string>();
+    for (const value of categories) {
+      const category = this.publicNullableText(value);
+      if (category === null) {
+        this.invalidPublicData();
+      }
+      if (!seen.has(category)) {
+        seen.add(category);
+        result.push(category);
+      }
+    }
+    return result;
   }
 
   private edgeCursor(row: WebTransactionRow | undefined): string | null {
@@ -517,8 +541,68 @@ export class WebTransactionsService {
     throw new BadRequestException(`${name} must be valid`);
   }
 
-  private safeIdr(value: number): number {
-    const amount = Math.round(value);
-    return Number.isSafeInteger(amount) && amount >= 0 ? amount : 0;
+  private publicIdentifier(value: unknown): string {
+    if (typeof value !== 'string' || !this.positiveBigint(value)) {
+      return this.invalidPublicData();
+    }
+    return value;
+  }
+
+  private publicAmount(value: unknown): number {
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
+      return this.invalidPublicData();
+    }
+    return value;
+  }
+
+  private publicNullableText(value: unknown): string | null {
+    if (value === null) {
+      return null;
+    }
+    if (typeof value !== 'string') {
+      return this.invalidPublicData();
+    }
+    const text = value.trim();
+    if (text.length > WEB_TRANSACTION_MAX_TEXT_LENGTH) {
+      return this.invalidPublicData();
+    }
+    return text || null;
+  }
+
+  private publicTransactionType(value: unknown): WebTransactionDto['type'] {
+    if (value !== 'income' && value !== 'expense') {
+      return this.invalidPublicData();
+    }
+    return value;
+  }
+
+  private publicSource(value: unknown): WebTransactionDto['source'] {
+    if (
+      value !== 'telegram' &&
+      value !== 'email' &&
+      value !== 'manual' &&
+      value !== 'import'
+    ) {
+      return this.invalidPublicData();
+    }
+    return value;
+  }
+
+  private publicTimestamp(value: unknown): string {
+    if (typeof value !== 'string' || !this.validMicrosecondTimestamp(value)) {
+      return this.invalidPublicData();
+    }
+    return value;
+  }
+
+  private publicBoolean(value: unknown): boolean {
+    if (typeof value !== 'boolean') {
+      return this.invalidPublicData();
+    }
+    return value;
+  }
+
+  private invalidPublicData(): never {
+    throw new InternalServerErrorException('Transaction data is invalid');
   }
 }

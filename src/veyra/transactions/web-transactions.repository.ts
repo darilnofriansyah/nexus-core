@@ -134,13 +134,13 @@ export class WebTransactionsRepository {
     const query = this.filteredQuery(userId, filter);
     const result = await this.database.query<CategoryRow>(
       `
-        SELECT category
+        SELECT btrim(category) AS category
         FROM transactions
         WHERE ${query.predicates.join('\n          AND ')}
           AND category IS NOT NULL
           AND btrim(category) <> ''
-        GROUP BY category
-        ORDER BY category
+        GROUP BY btrim(category)
+        ORDER BY btrim(category)
       `,
       query.values,
     );
@@ -250,7 +250,8 @@ export class WebTransactionsRepository {
       return;
     }
     query.values.push(value);
-    query.predicates.push(`${column} = $${query.values.length}`);
+    const expression = column === 'category' ? 'btrim(category)' : column;
+    query.predicates.push(`${expression} = $${query.values.length}`);
   }
 
   private addMerchantPredicate(

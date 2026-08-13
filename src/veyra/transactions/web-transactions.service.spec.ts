@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import {
   BadRequestException,
   ConflictException,
+  InternalServerErrorException,
   NotFoundException,
 } from '@nestjs/common';
 import {
@@ -349,21 +350,96 @@ test('web transactions service does not expose a previous cursor without a reque
   assert.equal(result.previousCursor, null);
 });
 
-test('web transactions service maps unsafe or non-whole IDR amounts to safe integers', async () => {
+test('web transactions service rejects invalid stored amounts instead of fabricating public IDR values', async () => {
+  const invalidAmounts = [
+    0,
+    -1,
+    25000.49,
+    Number.POSITIVE_INFINITY,
+    Number.MAX_SAFE_INTEGER + 1,
+  ];
+
+  for (const amount of invalidAmounts) {
+    const { repository, service } = createService();
+    repository.rows = [row({ amount })];
+
+    await assert.rejects(
+      () => service.queryTransactions({ telegramUserId: '976684739' }),
+      InternalServerErrorException,
+    );
+  }
+});
+
+test('web transactions service trims legacy public text and deduplicates category options', async () => {
   const { repository, service } = createService();
   repository.rows = [
-    row({ amount: 25000.49 }),
-    row({ id: '122', amount: Number.POSITIVE_INFINITY }),
+    row({ merchant: '  TUKU  ', category: '  Dining  ' }),
+    row({
+      id: '122',
+      transactionType: 'income',
+      merchant: '   ',
+      category: null,
+    }),
   ];
+  repository.categories = ['  Dining  ', 'Dining', '  Transport  '];
 
   const result = await service.queryTransactions({
     telegramUserId: '976684739',
   });
 
   assert.deepEqual(
-    result.items.map(({ amount }) => amount),
-    [25000, 0],
+    result.items.map(({ merchant, category }) => ({ merchant, category })),
+    [
+      { merchant: 'TUKU', category: 'Dining' },
+      { merchant: null, category: null },
+    ],
   );
+  assert.deepEqual(result.categories, ['Dining', 'Transport']);
+});
+
+test('web transactions service rejects stored text that cannot satisfy the public contract', async () => {
+  const invalidRows = [
+    row({ merchant: ' ' }),
+    row({ category: 'x'.repeat(201) }),
+  ];
+
+  for (const invalidRow of invalidRows) {
+    const { repository, service } = createService();
+    repository.rows = [invalidRow];
+
+    await assert.rejects(
+      () => service.queryTransactions({ telegramUserId: '976684739' }),
+      InternalServerErrorException,
+    );
+  }
+
+  const { repository, service } = createService();
+  repository.categories = ['x'.repeat(201)];
+  await assert.rejects(
+    () => service.queryTransactions({ telegramUserId: '976684739' }),
+    InternalServerErrorException,
+  );
+});
+
+test('web transactions service rejects invalid stored structural fields at the public boundary', async () => {
+  const invalidRows = [
+    row({ id: '0' }),
+    row({ transactionType: 'transfer' as never }),
+    row({ source: 'bank' as never }),
+    row({ transactionDate: '2026-08-13T03:00:00Z' }),
+    row({ updatedAt: 'not-a-timestamp' }),
+    row({ creditCard: 'yes' as never }),
+  ];
+
+  for (const invalidRow of invalidRows) {
+    const { repository, service } = createService();
+    repository.rows = [invalidRow];
+
+    await assert.rejects(
+      () => service.queryTransactions({ telegramUserId: '976684739' }),
+      InternalServerErrorException,
+    );
+  }
 });
 
 test('web transactions service requires valid update identity version and a supplied change', async () => {

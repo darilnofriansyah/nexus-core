@@ -211,7 +211,7 @@ test('web transactions repository scopes finalized rows to filters and a duplica
   assert.match(calls[0].text, /status = 'confirmed'/);
   assert.match(calls[0].text, /transaction_type IN \('income', 'expense'\)/);
   assert.match(calls[0].text, /transaction_type = \$\d+/);
-  assert.match(calls[0].text, /category = \$\d+/);
+  assert.match(calls[0].text, /btrim\(category\) = \$\d+/);
   assert.match(
     calls[0].text,
     /COALESCE\(merchant_normalized, merchant, ''\) ILIKE '%' \|\| \$\d+ \|\| '%'/,
@@ -304,7 +304,7 @@ test('web transactions repository category options retain type date and search s
     timezone: 'Asia/Jakarta',
   });
 
-  assert.match(calls[0].text, /GROUP BY category/);
+  assert.match(calls[0].text, /GROUP BY btrim\(category\)/);
   assert.match(calls[0].text, /WHERE user_id = \$1/);
   assert.match(calls[0].text, /transaction_type = \$\d+/);
   assert.match(calls[0].text, /merchant_normalized/);
@@ -312,6 +312,28 @@ test('web transactions repository category options retain type date and search s
   assert.doesNotMatch(calls[0].text, /category = \$\d+/);
   assert.doesNotMatch(calls[0].text, /\(transaction_date, id\) [<>]/);
   assert.deepEqual(categories, ['Dining', 'Transport']);
+});
+
+test('web transactions repository normalizes legacy categories for options and exact filters', async () => {
+  const { calls, repository } = createRepository([
+    [{ category: 'Dining' }],
+    [transactionRows[0]],
+  ]);
+
+  await repository.findCategories('1', {
+    type: null,
+    merchantQuery: null,
+    cycle: null,
+    asOfDate: '2026-08-13',
+    startDate: null,
+    endDate: null,
+    timezone: 'Asia/Jakarta',
+  });
+  await repository.findTransactions('1', filter({ category: 'Dining' }));
+
+  assert.match(calls[0].text, /SELECT btrim\(category\) AS category/);
+  assert.match(calls[0].text, /GROUP BY btrim\(category\)/);
+  assert.match(calls[1].text, /btrim\(category\) = \$\d+/);
 });
 
 test('web transactions repository update locks owned finalized row and atomically writes eligible amount increase', async () => {
