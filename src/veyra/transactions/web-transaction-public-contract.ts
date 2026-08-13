@@ -7,7 +7,7 @@ import {
 
 const POSTGRES_MAX_BIGINT = BigInt('9223372036854775807');
 const MICROSECOND_UTC_TIMESTAMP =
-  /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\.\d{6}Z$/;
+  /^(\d{4})(-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\.\d{6}Z$/;
 
 export function toPublicWebTransaction(
   row: WebTransactionRow,
@@ -59,9 +59,14 @@ export function isValidMicrosecondUtcTimestamp(value: string): boolean {
   if (!match) {
     return false;
   }
-  const date = new Date(`${match[1]}.000Z`);
+  const timestampToSeconds = `${match[1]}${match[2]}`;
+  if (Number(match[1]) < 1) {
+    return false;
+  }
+  const date = new Date(`${timestampToSeconds}.000Z`);
   return (
-    !Number.isNaN(date.valueOf()) && date.toISOString().slice(0, 19) === match[1]
+    !Number.isNaN(date.valueOf()) &&
+    date.toISOString().slice(0, 19) === timestampToSeconds
   );
 }
 

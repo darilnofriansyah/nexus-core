@@ -165,6 +165,7 @@ test('web transactions service rejects malformed or non-exact cursor payloads', 
     },
     { transactionDate: '2026-02-31T03:00:00.000000Z', id: '1' },
     { transactionDate: '2026-08-13T24:00:00.000000Z', id: '1' },
+    { transactionDate: '0000-01-01T03:00:00.000000Z', id: '1' },
     { transactionDate: '2026-08-13T03:00:00.000Z', id: '1' },
     { transactionDate: '2026-08-13T03:00:00.000000Z', id: '0' },
     {
@@ -172,7 +173,7 @@ test('web transactions service rejects malformed or non-exact cursor payloads', 
       id: '9223372036854775808',
     },
   ].map((value) => Buffer.from(JSON.stringify(value)).toString('base64url'));
-  const { service } = createService();
+  const { repository, service } = createService();
 
   for (const cursor of cursors) {
     await assert.rejects(
@@ -180,6 +181,10 @@ test('web transactions service rejects malformed or non-exact cursor payloads', 
       BadRequestException,
     );
   }
+
+  assert.equal(repository.userLookups.length, 0);
+  assert.equal(repository.transactionCalls.length, 0);
+  assert.equal(repository.categoryCalls.length, 0);
 });
 
 test('web transactions service returns the same not found error for an inactive or unknown identity', async () => {
@@ -463,6 +468,13 @@ test('web transactions service requires valid update identity version and a supp
     {
       transactionId: '123',
       request: {
+        ...updateRequest,
+        expectedUpdatedAt: '0000-01-01T03:00:00.000000Z',
+      },
+    },
+    {
+      transactionId: '123',
+      request: {
         telegramUserId: '976684739',
         expectedUpdatedAt: oldTime,
       },
@@ -501,6 +513,7 @@ test('web transactions service requires valid update identity version and a supp
   }
 
   assert.equal(repository.userLookups.length, 0);
+  assert.equal(repository.updateCalls.length, 0);
 });
 
 test('web transactions service update preserves omitted fields and normalizes supplied nullable text after resolving the user', async () => {
