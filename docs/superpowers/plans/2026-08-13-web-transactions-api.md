@@ -16,6 +16,8 @@
 - Query supports only validated `cycle`, `asOfDate`, `type`, exact `category`, `merchantQuery`, opaque keyset cursor, and `next|previous` direction. Core resolves the local-date `[startDate, endDate)` internally from the active user's `cycle_start_day`.
 - PATCH only changes `amount`, `merchant`, and `category`; date, type, source, status, notes, and raw payload remain immutable.
 - Amount is a positive safe whole-IDR integer. Text is trimmed, at most 200 characters; expense merchant/category must remain non-empty; income merchant/category may be `null`.
+- Merchant/category/search inputs are at most 200 characters; opaque cursor input is at most 512 characters.
+- Query and PATCH expose PostgreSQL UTC timestamp text with microsecond precision. Preserve `transactionDate` and `updatedAt` strings exactly; do not parse/serialize them through JavaScript `Date`.
 - Missing, inactive, and foreign resources return identical `404`. `expectedUpdatedAt` mismatch returns `409`. No changed fields returns `400`.
 - Eligible confirmed email-card amount corrections atomically adjust only `credit_used`; never modify `credit_limit` or `statement_balance`.
 - Preserve unrelated worktree changes. Core deployment precedes Veyra deployment.
@@ -118,6 +120,8 @@ export interface WebTransactionsUser { id: string; telegramUserId: string; cycle
 export type WebTransactionUpdateResult =
   | { kind: 'not_found' }
   | { kind: 'conflict' }
+  | { kind: 'invalid'; message: 'expense merchant and category are required' }
+  | { kind: 'no_change' }
   | { kind: 'updated'; transaction: WebTransactionRow };
 
 findActiveUserByTelegramId(telegramUserId: string): Promise<WebTransactionsUser | null>;
@@ -198,72 +202,59 @@ git add src/veyra/transactions/credit-card-cycle-usage.ts src/veyra/transactions
 git commit -m "refactor(transactions): share credit-card cycle usage"
 ```
 
-### Task 2: Define DTO contract and strict controller delegation
+### Task 2: Define DTO contract
 
 **Files:**
 
 - Create: `src/veyra/transactions/dto/web-transactions.dto.ts`
-- Create: `src/veyra/transactions/web-transactions.controller.ts`
-- Create: `src/veyra/transactions/web-transactions.controller.spec.ts`
-- Modify: `src/veyra/veyra.module.ts:10-31`
+- Create: `src/veyra/transactions/dto/web-transactions.dto.spec.ts`
 
 **Interfaces:**
 
-- Consumes `WebTransactionsQueryRequestDto`, `WebTransactionUpdateRequestDto`, and service methods from Task 3.
-- Produces `POST /api/veyra/transactions/query` and `PATCH /api/veyra/transactions/:id`.
+- Produces the DTOs and repository types consumed by Tasks 3 and 4.
 
-- [ ] **Step 1: Write failing controller delegation tests**
+- [ ] **Step 1: Write failing DTO compile-time contract test**
 
 ```ts
-test('query delegates body without trusting route-level identity', async () => {
-  const request = { telegramUserId: '976684739', type: 'expense', limit: 50 };
-  await controller.query(request);
-  assert.deepEqual(calls, [{ method: 'queryTransactions', value: request }]);
-});
-
-test('patch delegates path ID and body to service', async () => {
-  const body = { telegramUserId: '976684739', amount: 30000, expectedUpdatedAt: '2026-08-13T03:01:00.000Z' };
-  await controller.update('123', body);
-  assert.deepEqual(calls, [{ method: 'updateTransaction', value: { transactionId: '123', request: body } }]);
+test('web transaction DTOs represent only approved public fields', () => {
+  const query: WebTransactionsQueryRequestDto = { telegramUserId: '976684739', cycle: 'current', asOfDate: '2026-08-13', limit: 50 };
+  const update: WebTransactionUpdateRequestDto = { telegramUserId: '976684739', amount: 30000, expectedUpdatedAt: '2026-08-13T03:01:00.123456Z' };
+  assert.equal(query.cycle, 'current');
+  assert.equal(update.amount, 30000);
 });
 ```
 
-- [ ] **Step 2: Run controller test and verify failure**
+- [ ] **Step 2: Run DTO test and verify failure**
 
-Run: `npm test -- --test-name-pattern="web transactions controller"`
+Run: `npm test -- --test-name-pattern="web transaction DTOs"`
 
-Expected: FAIL because controller/DTO imports do not exist.
+Expected: FAIL because DTO imports do not exist.
 
-- [ ] **Step 3: Add exact DTOs, controller, and module registration**
+- [ ] **Step 3: Add exact DTO interfaces and test**
 
 ```ts
-@Controller('veyra/transactions')
-export class WebTransactionsController {
-  constructor(private readonly service: WebTransactionsService) {}
-
-  @Post('query') query(@Body() body: WebTransactionsQueryRequestDto) {
-    return this.service.queryTransactions(body);
-  }
-
-  @Patch(':id') update(@Param('id') transactionId: string, @Body() body: WebTransactionUpdateRequestDto) {
-    return this.service.updateTransaction({ transactionId, request: body });
-  }
+export interface WebTransactionUpdateRequestDto {
+  telegramUserId: string | number;
+  amount?: number | null;
+  merchant?: string | null;
+  category?: string | null;
+  expectedUpdatedAt: string;
 }
 ```
 
-Register this controller plus future service/repository providers in `VeyraModule`; do not add it to `DashboardModule` and do not alter existing `VeyraController` routes.
+Define all Shared Interfaces exactly, including `WebTransactionUpdateResult` kinds `not_found`, `conflict`, `invalid`, `no_change`, and `updated`. Do not create controller/module references before Task 3 produces `WebTransactionsService`.
 
-- [ ] **Step 4: Run controller test and TypeScript compile**
+- [ ] **Step 4: Run DTO test and TypeScript compile**
 
-Run: `npm test -- --test-name-pattern="web transactions controller" && npx tsc -p tsconfig.test.json --noEmit`
+Run: `npm test -- --test-name-pattern="web transaction DTOs" && npx tsc -p tsconfig.test.json --noEmit`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit public boundary**
+- [ ] **Step 5: Commit DTO contract**
 
 ```bash
-git add src/veyra/transactions/dto/web-transactions.dto.ts src/veyra/transactions/web-transactions.controller.ts src/veyra/transactions/web-transactions.controller.spec.ts src/veyra/veyra.module.ts
-git commit -m "feat(transactions): add web API controller contract"
+git add src/veyra/transactions/dto/web-transactions.dto.ts src/veyra/transactions/dto/web-transactions.dto.spec.ts
+git commit -m "feat(transactions): add web transaction contract"
 ```
 
 ### Task 3: Implement user-scoped query repository and service
@@ -274,6 +265,8 @@ git commit -m "feat(transactions): add web API controller contract"
 - Create: `src/veyra/transactions/web-transactions.repository.spec.ts`
 - Create: `src/veyra/transactions/web-transactions.service.ts`
 - Create: `src/veyra/transactions/web-transactions.service.spec.ts`
+- Create: `src/veyra/transactions/web-transactions.controller.ts`
+- Create: `src/veyra/transactions/web-transactions.controller.spec.ts`
 - Modify: `src/veyra/veyra.module.ts:24-31`
 
 **Interfaces:**
@@ -334,7 +327,7 @@ WHERE user_id = $1
   AND transaction_date < ($resolvedEndDate::date AT TIME ZONE $timezone)
 ```
 
-Select `id, amount, merchant, category, transaction_type, source, transaction_date, updated_at`, plus boolean `source = 'email' AND lower(trim(COALESCE(raw_payload -> 'parsed' ->> 'paymentType', ''))) = 'credit card' AND transaction_type IN ('expense', 'reversal') AS credit_card`. Never select or return `raw_payload`, `user_id`, or `merchant_normalized`. Fetch `limit + 1`, set page cursors from first/last displayed rows, and reverse previous-direction SQL results before mapping.
+Select `id, amount, merchant, category, transaction_type, source`, `to_char(transaction_date AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS transaction_date`, and the same microsecond UTC `to_char` expression as `updated_at`, plus boolean `source = 'email' AND lower(trim(COALESCE(raw_payload -> 'parsed' ->> 'paymentType', ''))) = 'credit card' AND transaction_type = 'expense' AS credit_card`. Never select or return `raw_payload`, `user_id`, or `merchant_normalized`. Fetch `limit + 1`; `previousCursor` exists only if request had a cursor and page has displayed rows; `nextCursor` exists only if the extra row proves older rows. Encode cursor timestamp text exactly as selected, and reverse previous-direction SQL results before mapping.
 
 - [ ] **Step 4: Write failing service tests for validation, cursor codec, response, and isolation**
 
@@ -363,25 +356,38 @@ test('resolves current and previous financial cycles after user lookup', async (
 
 test('encodes opaque previous and next cursors and maps only public fields', async () => {
   const result = await service.queryTransactions({ telegramUserId: '976684739' });
-  assert.deepEqual(JSON.parse(Buffer.from(result.nextCursor ?? '', 'base64url').toString('utf8')), { transactionDate: '2026-08-13T03:00:00.000Z', id: '123' });
+  assert.deepEqual(JSON.parse(Buffer.from(result.nextCursor ?? '', 'base64url').toString('utf8')), { transactionDate: '2026-08-13T03:00:00.123456Z', id: '123' });
   assert.deepEqual(Object.keys(result.items[0] ?? {}).sort(), ['amount', 'category', 'creditCard', 'id', 'merchant', 'source', 'transactionDate', 'type', 'updatedAt']);
 });
 ```
 
 - [ ] **Step 5: Implement service normalization and query composition**
 
-Accept only positive integer Telegram IDs, `direction` `next|previous`, `limit` `1..50` default `50`, `type` `income|expense`, optional `cycle` `current|previous`, valid `asOfDate` calendar date (`YYYY-MM-DD`, default current date in validated timezone), valid IANA timezone default `Asia/Jakarta`, trimmed category `1..200`, and merchant search `1..200` when supplied. Do not accept browser-provided `startDate` or `endDate`. After resolving active user, calculate current cycle start/end from `asOfDate`, the user's clamped `cycleStartDay` (`1..31`), and timezone using the same month-boundary rule as `DashboardOverviewService`; for `previous`, use current start as exclusive end and calculate the preceding cycle start. Pass these internal bounds to both row and category queries. Cursor uses base64url JSON exactly `{ "transactionDate": ISO string, "id": positive integer string }`; decode must reject extra/missing keys, invalid date, or invalid ID. Resolve active user once, query rows and category options in parallel using internal user ID, then map numeric amounts to safe whole IDR integers and timestamps to ISO strings. Do not accept `status`, `source`, arbitrary sort fields, or date boundaries.
+Accept only positive integer Telegram IDs, `direction` `next|previous`, `limit` `1..50` default `50`, `type` `income|expense`, optional `cycle` `current|previous`, valid `asOfDate` calendar date (`YYYY-MM-DD`, default current date in validated timezone), valid IANA timezone default `Asia/Jakarta`, trimmed category and merchant search `1..200` when supplied, and cursor length `1..512`. Do not accept browser-provided `startDate` or `endDate`. After resolving active user, calculate current cycle start/end from `asOfDate`, the user's clamped `cycleStartDay` (`1..31`), and timezone using the same month-boundary rule as `DashboardOverviewService`; for `previous`, use current start as exclusive end and calculate the preceding cycle start. Pass these internal bounds to both row and category queries. Cursor uses base64url JSON exactly `{ "transactionDate": microsecond UTC text, "id": positive integer string }`; decode must reject extra/missing keys, timestamp text outside `YYYY-MM-DDTHH:mm:ss.ffffffZ`, invalid date, or invalid ID. Preserve the timestamp string exactly: do not convert cursor, `transactionDate`, or `updatedAt` through JavaScript `Date`. Resolve active user once, query rows and category options in parallel using internal user ID, then map numeric amounts to safe whole IDR integers. Do not accept `status`, `source`, arbitrary sort fields, or date boundaries.
 
-- [ ] **Step 6: Run focused query suite**
+- [ ] **Step 6: Add controller only after service exists**
+
+```ts
+@Controller('veyra/transactions')
+export class WebTransactionsController {
+  constructor(private readonly service: WebTransactionsService) {}
+  @Post('query') query(@Body() body: WebTransactionsQueryRequestDto) { return this.service.queryTransactions(body); }
+  @Patch(':id') update(@Param('id') transactionId: string, @Body() body: WebTransactionUpdateRequestDto) { return this.service.updateTransaction({ transactionId, request: body }); }
+}
+```
+
+Write controller delegation tests for both calls, then register `WebTransactionsController`, `WebTransactionsService`, and `WebTransactionsRepository` in `VeyraModule`. Do not add this controller to `DashboardModule` or alter existing `VeyraController` routes.
+
+- [ ] **Step 7: Run focused query and controller suite**
 
 Run: `npm test -- --test-name-pattern="web transactions (repository|service|controller)"`
 
 Expected: PASS, including duplicate-timestamp next/previous ordering and finalized-only scope.
 
-- [ ] **Step 7: Commit query vertical slice**
+- [ ] **Step 8: Commit query vertical slice**
 
 ```bash
-git add src/veyra/transactions/web-transactions.repository.ts src/veyra/transactions/web-transactions.repository.spec.ts src/veyra/transactions/web-transactions.service.ts src/veyra/transactions/web-transactions.service.spec.ts src/veyra/veyra.module.ts
+git add src/veyra/transactions/web-transactions.repository.ts src/veyra/transactions/web-transactions.repository.spec.ts src/veyra/transactions/web-transactions.service.ts src/veyra/transactions/web-transactions.service.spec.ts src/veyra/transactions/web-transactions.controller.ts src/veyra/transactions/web-transactions.controller.spec.ts src/veyra/veyra.module.ts
 git commit -m "feat(transactions): query finalized web transactions"
 ```
 
@@ -422,6 +428,13 @@ test('maps missing or foreign row to the same NotFoundException and stale row to
   repository.updateResult = { kind: 'conflict' };
   await assert.rejects(() => service.updateTransaction(updateRequest), ConflictException);
 });
+
+test('maps locked final-state invalid and no-change results to BadRequestException', async () => {
+  repository.updateResult = { kind: 'invalid', message: 'expense merchant and category are required' };
+  await assert.rejects(() => service.updateTransaction(updateRequest), BadRequestException);
+  repository.updateResult = { kind: 'no_change' };
+  await assert.rejects(() => service.updateTransaction(updateRequest), BadRequestException);
+});
 ```
 
 - [ ] **Step 2: Write failing repository transaction tests**
@@ -445,9 +458,9 @@ test('uses negative delta for eligible expense decrease and does not write summa
   assert.equal(summaryCalls.length, 1);
 });
 
-test('reversal amount increase applies negative delta and failed summary query rejects whole DatabaseService transaction', async () => {
-  await assert.rejects(() => repository.updateTransaction(eligibleReversalAmountChange({ amount: 30000 })), /summary write failed/);
-  assert.deepEqual(summaryCalls[0]?.values, ['1', transactionDate, 0, -5000]);
+test('failed eligible expense summary query rejects the whole DatabaseService transaction', async () => {
+  await assert.rejects(() => repository.updateTransaction(eligibleExpenseAmountChange({ amount: 30000 })), /summary write failed/);
+  assert.deepEqual(summaryCalls[0]?.values, ['1', transactionDate, 5000, 5000]);
   assert.equal(transactionLifecycle.committed, false);
   assert.equal(transactionLifecycle.rolledBack, true);
 });
@@ -461,7 +474,7 @@ Expected: FAIL because PATCH service/repository logic is absent.
 
 - [ ] **Step 4: Implement service-level patch normalization**
 
-Require positive bigint path ID and positive integer Telegram ID. Use own-property checks, so `{ merchant: null }` differs from omission. Reject non-safe/non-whole/`<= 0` amount; trim non-null merchant/category to `1..200`; require valid ISO `expectedUpdatedAt`; reject empty changes. Resolve active Telegram user first. Let repository return locked current row; repository must detect no-op by comparing normalized changes to current values and return `not_found` only for resource visibility, while service rejects a same-value patch with `BadRequestException('changes must modify the transaction')`. Validate final expense merchant/category after composing current row + supplied changes.
+Require positive bigint path ID and positive integer Telegram ID. Use own-property checks, so `{ merchant: null }` differs from omission. Reject non-safe/non-whole/`<= 0` amount; trim non-null merchant/category to `1..200`; require `expectedUpdatedAt` in exact microsecond UTC form `YYYY-MM-DDTHH:mm:ss.ffffffZ`; reject empty changes. Resolve active Telegram user first, pass normalized supplied changes and untouched version text to repository, and map `invalid` / `no_change` results to `BadRequestException`. Do not fetch or compose a transaction outside the repository lock.
 
 - [ ] **Step 5: Implement repository transaction exactly once**
 
@@ -469,7 +482,10 @@ Within `database.withTransaction`:
 
 ```sql
 SELECT id, user_id, transaction_type, amount, merchant, category,
-       transaction_date, source, status, updated_at, raw_payload
+       transaction_date, source, status,
+       to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at,
+       updated_at = $3::timestamptz AS version_matches,
+       raw_payload
 FROM transactions
 WHERE id = $1 AND user_id = $2
   AND status = 'confirmed'
@@ -477,7 +493,7 @@ WHERE id = $1 AND user_id = $2
 FOR UPDATE
 ```
 
-Return `{ kind: 'not_found' }` when absent. Compare locked `updated_at` instant with request `expectedUpdatedAt`; return `{ kind: 'conflict' }` if unequal. Update only supplied columns plus `updated_at = now()` with bound values and `RETURNING` public columns. Determine eligibility only from locked immutable values: `source === 'email'`, raw `parsed.paymentType` normalizes to `credit card`, and type is `expense|reversal`. If `amount` changed and eligible, calculate `expense: new-old`, `reversal: old-new`; call `applyCreditCardCycleUsageDelta` using same transaction client. A thrown summary query rolls back both writes through existing `DatabaseService.withTransaction`. Do not alter `credit_limit` or `statement_balance`.
+Bind `$3` to the unmodified `expectedUpdatedAt` string. Return `{ kind: 'not_found' }` when absent and `{ kind: 'conflict' }` when locked row `version_matches` is false; this compares `updated_at` exactly to `$expectedUpdatedAt::timestamptz` inside PostgreSQL, never after a JavaScript timestamp round trip. While lock is held, compose existing values plus supplied changes; return `{ kind: 'invalid', message: 'expense merchant and category are required' }` if final expense merchant/category is null/empty and `{ kind: 'no_change' }` if no supplied normalized value differs. Update only supplied columns plus `updated_at = now()` with bound values and `RETURNING` public columns formatted as microsecond UTC text. Determine eligibility only from locked immutable values: `source === 'email'`, raw `parsed.paymentType` normalizes to `credit card`, and type is exactly `expense`. If amount changed and eligible, calculate `newAmount - oldAmount`; call `applyCreditCardCycleUsageDelta` using same transaction client. A thrown summary query rolls back both writes through existing `DatabaseService.withTransaction`. Do not alter `credit_limit` or `statement_balance`.
 
 - [ ] **Step 6: Run focused update suite**
 
@@ -540,9 +556,9 @@ git commit -m "docs(transactions): document web API boundary"
 
 ## Plan Self-Review
 
-- Spec coverage: Tasks 2-3 cover exact endpoints, user scope, finalized income/expense scope, URL-supporting filters, category options, opaque two-way keyset pagination, stable order, and public-data boundary. Task 4 covers editable-only fields, field rules, no-op rejection, foreign/missing indistinguishability, version conflicts, and atomic signed credit-card delta. Task 5 covers API-key/server ownership and full verification. No creation, deletion, schema migration, raw-payload exposure, date/type/source/status edits, or per-card modeling is introduced.
+- Spec coverage: Task 2 supplies contract types before services; Task 3 then supplies service/controller/module registration and exact endpoints. Tasks 3-4 cover active-user scope, Core-owned cycle boundaries, finalized income/expense scope, URL-supporting filters, categories, opaque two-way keyset pagination, precise timestamp/version text, editable-only fields, locked final-state validation/no-op rejection, foreign/missing indistinguishability, conflicts, and eligible expense-card signed delta. Task 5 covers API-key/server ownership and full verification. No creation, deletion, schema migration, raw-payload exposure, date/type/source/status edits, web reversal edits, or per-card modeling is introduced.
 - Placeholder scan: Plan contains no `TODO`, `TBD`, “implement later”, or unspecified error-handling steps. Each task includes failing test, command, implementation detail, passing command, and commit.
-- Type consistency: Controller consumes `queryTransactions` and `updateTransaction`; both are produced by Task 3/4 service. Repository names and result union are declared in Shared Interfaces. Shared helper signature is used by Task 1 extraction and Task 4 repository. Public response uses only `WebTransactionDto` fields.
+- Type consistency: Task 2 declares DTOs before Task 3 controller imports them; Task 3 creates service before registering controller/module. Controller consumes `queryTransactions` and `updateTransaction`; both are produced by Task 3/4 service. Repository result union includes all service-mapped `not_found`, `conflict`, `invalid`, `no_change`, and `updated` kinds. Shared helper signature is used by Task 1 extraction and Task 4 repository. Public response uses only `WebTransactionDto` fields and timestamp strings retain microseconds.
 
 ## Execution Handoff
 
