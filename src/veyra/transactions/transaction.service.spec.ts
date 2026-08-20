@@ -8053,6 +8053,92 @@ test("watchdog preserves n8n fixture order for all notifications", async (t) => 
   assert.equal(result.notifications[0].review_id, 55);
 });
 
+test("risk review keeps an assigned top-level pocket without a matching child", async (t) => {
+  t.mock.timers.enable({
+    apis: ["Date"],
+    now: new Date("2026-08-30T12:00:00.000Z"),
+  });
+  const assignedTransaction = {
+    ...transaction,
+    id: "101",
+    user_id: "1",
+    amount: "750000",
+    merchant: "Uniqlo",
+    merchant_normalized: "Uniqlo",
+    category: "Toys",
+    transaction_type: "expense",
+    transaction_date: "2026-08-30T12:00:00.000Z",
+    status: "confirmed",
+    pocket_id: "42",
+  };
+  const parentOnlyFacts = {
+    category_budget_id: null,
+    category_budget_category: null,
+    category_budget_amount: null,
+    category_spend_before: null,
+    parent_budget_id: "42",
+    parent_budget_category: "Monthly Transactions",
+    parent_budget_amount: "1000000",
+    parent_spend_before: "100000",
+    total_budget_amount: "1000000",
+    total_spend_before: "100000",
+  };
+  const riskReviews = createRiskReviewRepository({
+    ...riskReview,
+    id: "55",
+    transactionId: "101",
+  });
+  const { calls, service } = createService(
+    [
+      [assignedTransaction],
+      [{ cycle_start_day: 1 }],
+      [parentOnlyFacts],
+      [{ cycle_start_day: 1 }],
+      [parentOnlyFacts],
+      [],
+      [{ count: "0" }],
+    ],
+    defaultBudgetService(),
+    riskReviews.repository,
+  );
+
+  const result = await service.evaluateTransactionWatchdog("101");
+  const budgetQueries = calls.filter(({ text }) =>
+    /WITH category_budget AS/.test(text),
+  );
+  const saved = riskReviews.calls.find(
+    ({ method }) => method === "saveLargeTransactionEvaluation",
+  )?.args[0] as {
+    riskMetrics: Record<string, unknown>;
+    status: string;
+  };
+
+  assert.equal(budgetQueries.length, 2);
+  for (const query of budgetQueries) {
+    assert.equal(query.values[5], "42");
+    assert.match(query.text, /p\.id::text = \$6/);
+    assert.match(
+      query.text,
+      /t\.pocket_id::text = \$6 OR \(t\.pocket_id IS NULL AND lower\(t\.category\) IN/,
+    );
+    assert.doesNotMatch(
+      query.text,
+      /t\.pocket_id IS NOT NULL[\s\S]*lower\(t\.category\)/,
+    );
+  }
+  assert.equal(saved.riskMetrics.parentBudgetId, "42");
+  assert.equal(saved.riskMetrics.categoryBudgetId, null);
+  assert.equal(
+    saved.riskMetrics.evaluationFingerprint,
+    "large_transaction_v1|101|750000|Toys|Uniqlo|2026-08-30T12:00:00.000Z|confirmed|expense",
+  );
+  assert.equal(saved.status, "pending");
+  assert.deepEqual(
+    result.notifications.map(({ type, priority }) => ({ type, priority })),
+    [{ type: "risk_review", priority: 1 }],
+  );
+});
+
 test("watchdog failure does not fail transaction save", async () => {
   const budgetService = {
     evaluateTransaction: async () => {

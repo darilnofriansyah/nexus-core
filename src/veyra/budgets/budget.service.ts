@@ -13,7 +13,11 @@ import {
   CategoryListRequestDto,
   CategoryListResponseDto,
 } from '../categories/dto/category.dto';
-import { BudgetRepository } from './budget.repository';
+import {
+  BudgetRepository,
+  PocketOverviewRow,
+  PocketStatusRow,
+} from './budget.repository';
 import {
   ExpenseAssignment,
   PocketDefaultRequestDto,
@@ -51,15 +55,6 @@ import {
   OverspendingRecordResponseDto,
 } from './dto/overspending-check.dto';
 
-interface BudgetStatusRow extends QueryResultRow {
-  budget_id: string | number;
-  category: string;
-  parent_budget_id: string | number | null;
-  budget_amount: string | number;
-  spent_amount: string | number | null;
-  child_breakdown?: unknown;
-}
-
 interface CycleStartRow extends QueryResultRow {
   cycle_start_day: number | string;
 }
@@ -79,16 +74,6 @@ interface BudgetUpsertRow extends QueryResultRow {
   parent_category: string | null;
   period_type: BudgetPeriodType;
   inserted: boolean;
-}
-
-interface BudgetOverviewRow extends QueryResultRow {
-  budget_id: string | number;
-  category: string;
-  parent_budget_id: string | number | null;
-  parent_category: string | null;
-  amount: string | number | null;
-  spent_amount: string | number | null;
-  child_count: string | number;
 }
 
 interface BudgetCategoryRow extends QueryResultRow {
@@ -328,107 +313,12 @@ export class BudgetService {
       cycleStartDay,
     );
 
-    const result = await this.database.query<BudgetStatusRow>(
-      `
-        WITH matched_user AS (
-          SELECT id
-          FROM telegram_users
-          WHERE id::text = $1 OR telegram_id::text = $1
-          LIMIT 1
-        ),
-        pocket AS (
-          SELECT b.id, b.category, b.parent_budget_id, b.amount AS budget_amount
-          FROM budgets b
-          JOIN matched_user u ON u.id = b.user_id
-          WHERE (b.id::text = $2 OR lower(b.category) = lower($2))
-            AND b.parent_budget_id IS NULL
-            AND COALESCE(b.is_active, true) = true
-          LIMIT 1
-        ),
-        legacy_pocket_categories AS (
-          SELECT category FROM pocket
-          UNION
-          SELECT child.category
-          FROM budgets child
-          JOIN pocket ON child.parent_budget_id = pocket.id
-          WHERE COALESCE(child.is_active, true) = true
-        ),
-        child_spending AS (
-          SELECT
-            child.id AS budget_id,
-            child.category,
-            child.amount AS budget_amount,
-            COALESCE(SUM(t.amount), 0) AS spent_amount
-          FROM budgets child
-          JOIN pocket parent ON child.parent_budget_id = parent.id
-          LEFT JOIN matched_user u ON true
-          LEFT JOIN transactions t ON t.user_id = u.id
-            AND t.status = 'confirmed'
-            AND t.transaction_type = 'expense'
-            AND t.transaction_date >= $3::date
-            AND t.transaction_date < $4::date
-            AND (
-              t.pocket_id = child.parent_budget_id
-              OR (t.pocket_id IS NULL AND lower(t.category) = lower(child.category))
-            )
-            AND lower(t.category) = lower(child.category)
-          WHERE COALESCE(child.is_active, true) = true
-          GROUP BY child.id, child.category, child.amount
-        ),
-        pocket_spending AS (
-          SELECT COALESCE(SUM(t.amount), 0) AS spent_amount
-          FROM transactions t
-          JOIN matched_user u ON u.id = t.user_id
-          JOIN pocket ON true
-          WHERE t.status = 'confirmed'
-            AND t.transaction_type = 'expense'
-            AND t.transaction_date >= $3::date
-            AND t.transaction_date < $4::date
-            AND (
-              t.pocket_id = pocket.id
-              OR (t.pocket_id IS NULL AND lower(t.category) IN (SELECT lower(category) FROM legacy_pocket_categories))
-            )
-        ),
-        totals AS (
-          SELECT
-            CASE
-              WHEN (SELECT budget_amount FROM pocket) IS NOT NULL
-              THEN (SELECT budget_amount FROM pocket)
-              ELSE COALESCE(SUM(child_spending.budget_amount), 0)
-            END AS budget_amount,
-            (SELECT spent_amount FROM pocket_spending) AS spent_amount
-          FROM child_spending
-        ),
-        child_breakdown AS (
-          SELECT COALESCE(
-            json_agg(
-              json_build_object(
-                'budget_id', budget_id::text,
-                'category', category,
-                'budget_amount', budget_amount,
-                'spent_amount', spent_amount
-              )
-              ORDER BY category
-            ),
-            '[]'::json
-          ) AS child_breakdown
-          FROM child_spending
-        )
-        SELECT
-          sb.id AS budget_id,
-          sb.category,
-          sb.parent_budget_id,
-          totals.budget_amount,
-          totals.spent_amount,
-          child_breakdown.child_breakdown
-        FROM pocket sb
-        CROSS JOIN totals
-        CROSS JOIN child_breakdown
-      `,
-      [userId, lookup, cycle.cycle_start, cycle.cycle_end],
-    );
-
-    const row = result.rows[0];
+    const row = await this.repository.findPocketStatus({
+      userId,
+      lookup,
+      cycleStart: cycle.cycle_start,
+      cycleEnd: cycle.cycle_end,
+    });
 
     if (!row) {
       throw new NotFoundException('Budget not found for user and category');
@@ -1069,7 +959,7 @@ export class BudgetService {
   }
 
   mapBudgetStatusRow(
-    row: BudgetStatusRow,
+    row: PocketStatusRow,
     cycle: BudgetCycle,
   ): BudgetStatusResponseDto {
     const budgetAmount = this.toNumber(row.budget_amount);
@@ -1295,7 +1185,7 @@ export class BudgetService {
   ): Promise<BudgetStatusResponseDto> {
     const cycleStartDay = await this.getCycleStartDay(userId);
     const cycle = this.calculateCurrentCycle(referenceDate, cycleStartDay);
-    const result = await this.database.query<BudgetStatusRow>(
+    const result = await this.database.query<PocketStatusRow>(
       `
         WITH matched_user AS (
           SELECT id
@@ -1317,17 +1207,11 @@ export class BudgetService {
           JOIN matched_user u ON u.id = t.user_id
           JOIN selected_budget b ON t.pocket_id IS NULL
             AND (
-              (b.parent_budget_id IS NULL AND (
-                t.pocket_id = b.id
-                OR (t.pocket_id IS NULL AND lower(t.category) IN (
-                  SELECT lower(legacy.category) FROM budgets legacy
-                  WHERE legacy.id = b.id OR (legacy.parent_budget_id = b.id AND legacy.is_active = true)
-                ))
+              (b.parent_budget_id IS NULL AND lower(t.category) IN (
+                SELECT lower(legacy.category) FROM budgets legacy
+                WHERE legacy.id = b.id OR (legacy.parent_budget_id = b.id AND legacy.is_active = true)
               ))
-              OR (b.parent_budget_id IS NOT NULL AND (
-                (t.pocket_id = b.parent_budget_id AND lower(t.category) = lower(b.category))
-                OR (t.pocket_id IS NULL AND lower(t.category) = lower(b.category))
-              ))
+              OR (b.parent_budget_id IS NOT NULL AND lower(t.category) = lower(b.category))
             )
           WHERE t.status = 'confirmed'
             AND t.transaction_type = 'expense'
@@ -1571,67 +1455,12 @@ export class BudgetService {
 
     const cycleStartDay = await this.getCycleStartDay(userId);
     const cycle = this.calculateCurrentCycle(new Date(), cycleStartDay);
-    const result = await this.database.query<BudgetOverviewRow>(
-      `
-        WITH matched_user AS (
-          SELECT id
-          FROM telegram_users
-          WHERE id::text = $1 OR telegram_id::text = $1
-          LIMIT 1
-        ),
-        active_budgets AS (
-          SELECT
-            b.id,
-            b.category,
-            b.parent_budget_id,
-            COALESCE(b.amount, SUM(child.amount)) AS amount,
-            parent.category AS parent_category,
-            COUNT(child.id) AS child_count
-          FROM budgets b
-          JOIN matched_user u ON u.id = b.user_id
-          LEFT JOIN budgets parent ON parent.id = b.parent_budget_id
-          LEFT JOIN budgets child
-            ON child.parent_budget_id = b.id
-            AND child.is_active = true
-          WHERE b.is_active = true
-          GROUP BY b.id, b.category, b.parent_budget_id, b.amount, parent.category
-        ),
-        spending AS (
-          SELECT
-            b.id AS budget_id,
-            COALESCE(SUM(t.amount), 0) AS spent_amount
-          FROM active_budgets b
-          CROSS JOIN matched_user u
-          LEFT JOIN transactions t ON t.user_id = u.id
-            AND t.status = 'confirmed'
-            AND t.transaction_type = 'expense'
-            AND t.transaction_date >= $2::date
-            AND t.transaction_date < $3::date
-            AND (
-              (b.parent_budget_id IS NULL AND (t.pocket_id = b.id OR (t.pocket_id IS NULL AND lower(t.category) IN (SELECT lower(legacy.category) FROM budgets legacy WHERE legacy.id = b.id OR (legacy.parent_budget_id = b.id AND legacy.is_active = true)))))
-              OR (b.parent_budget_id IS NOT NULL AND ((t.pocket_id = b.parent_budget_id AND lower(t.category) = lower(b.category)) OR (t.pocket_id IS NULL AND lower(t.category) = lower(b.category))))
-            )
-          GROUP BY b.id
-        )
-        SELECT
-          b.id AS budget_id,
-          b.category,
-          b.parent_budget_id,
-          b.parent_category,
-          b.amount,
-          spending.spent_amount,
-          b.child_count
-        FROM active_budgets b
-        JOIN spending ON spending.budget_id = b.id
-        ORDER BY
-          CASE WHEN b.parent_budget_id IS NULL THEN 0 ELSE 1 END,
-          lower(COALESCE(b.parent_category, b.category)),
-          lower(b.category)
-      `,
-      [userId, cycle.cycle_start, cycle.cycle_end],
-    );
-
-    const budgets = result.rows.map((row) => this.mapBudgetOverviewRow(row));
+    const rows = await this.repository.listPocketOverview({
+      userId,
+      cycleStart: cycle.cycle_start,
+      cycleEnd: cycle.cycle_end,
+    });
+    const budgets = rows.map((row) => this.mapBudgetOverviewRow(row));
 
     if (budgets.length === 0) {
       return ['No active budgets yet. Set one when you are ready.'];
@@ -1642,7 +1471,7 @@ export class BudgetService {
     );
   }
 
-  private mapBudgetOverviewRow(row: BudgetOverviewRow): BudgetOverviewItem {
+  private mapBudgetOverviewRow(row: PocketOverviewRow): BudgetOverviewItem {
     const amount = this.toNumber(row.amount);
     const spentAmount = this.toNumber(row.spent_amount);
 

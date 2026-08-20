@@ -43,6 +43,32 @@ function createService(input: unknown[][] | ServiceOptions = []) {
     listPockets: async () => [],
     renamePocket: async () => null,
     setDefaultPocket: async () => null,
+    findPocketStatus: async (request: {
+      userId: string;
+      lookup: string;
+      cycleStart: string;
+      cycleEnd: string;
+    }) => {
+      const result = await database.query('findPocketStatus', [
+        request.userId,
+        request.lookup,
+        request.cycleStart,
+        request.cycleEnd,
+      ]);
+      return result.rows[0] ?? null;
+    },
+    listPocketOverview: async (request: {
+      userId: string;
+      cycleStart: string;
+      cycleEnd: string;
+    }) => {
+      const result = await database.query('listPocketOverview', [
+        request.userId,
+        request.cycleStart,
+        request.cycleEnd,
+      ]);
+      return result.rows;
+    },
     ...repository,
   } as unknown as BudgetRepository;
 
@@ -259,7 +285,7 @@ test('maps budget status amounts and percentage', () => {
   });
 });
 
-test('looks up user cycle then maps budget status from confirmed spending query', async () => {
+test('looks up user cycle then maps repository pocket status', async () => {
   const { calls, service } = createService([
     [{ cycle_start_day: 15 }],
     [
@@ -287,20 +313,7 @@ test('looks up user cycle then maps budget status from confirmed spending query'
     '2026-06-15',
     '2026-07-15',
   ]);
-  assert.match(calls[1].text, /t\.status = 'confirmed'/);
-  assert.match(calls[1].text, /t\.transaction_date >= \$3::date/);
-  assert.match(calls[1].text, /t\.transaction_date < \$4::date/);
-  assert.match(calls[1].text, /b\.amount AS budget_amount/);
-  assert.match(calls[1].text, /COALESCE\(b\.is_active, true\) = true/);
-  assert.match(calls[1].text, /COALESCE\(child\.is_active, true\) = true/);
-  assert.match(calls[1].text, /SUM\(child_spending\.budget_amount\)/);
-  assert.match(calls[1].text, /pocket_spending/);
-  assert.match(calls[1].text, /child_breakdown\.child_breakdown/);
-  assert.doesNotMatch(calls[1].text, /budget_scope/);
-  assert.doesNotMatch(
-    calls[1].text,
-    /budgets\.budget_amount|\sb\.budget_amount/,
-  );
+  assert.equal(calls[1].text, 'findPocketStatus');
   assert.deepEqual(status, {
     budget_id: 'budget-1',
     category: 'Food',
@@ -324,33 +337,7 @@ test('parent pocket counts assigned confirmed expenses regardless of category', 
   const result = await service.getBudgetStatus({ userId: '1', pocketId: '42', category: 'Monthly Transactions' } as never);
 
   assert.equal(result.spent_amount, 500000);
-  assert.match(calls[1].text, /t\.pocket_id = pocket\.id/);
-  assert.match(calls[1].text, /t\.status = 'confirmed'/);
-  assert.match(calls[1].text, /t\.transaction_type = 'expense'/);
-});
-
-test('assigned rows never category-match another pocket', async () => {
-  const { calls, service } = createService([
-    [{ cycle_start_day: 1 }],
-    [{ budget_id: '42', category: 'Monthly Transactions', parent_budget_id: null, budget_amount: '1000000', spent_amount: '0', child_breakdown: [] }],
-  ]);
-
-  await service.getBudgetStatus({ userId: '1', pocketId: '42', category: 'Monthly Transactions' } as never);
-
-  assert.match(calls[1].text, /t\.pocket_id = pocket\.id/);
-  assert.doesNotMatch(calls[1].text, /t\.pocket_id IS NOT NULL[\s\S]*lower\(t\.category\) = lower\(pocket\.category\)/);
-});
-
-test('child cap requires its parent pocket and matching category', async () => {
-  const { calls, service } = createService([
-    [{ cycle_start_day: 1 }],
-    [{ budget_id: '42', category: 'Monthly Transactions', parent_budget_id: null, budget_amount: '1000000', spent_amount: '250000', child_breakdown: [] }],
-  ]);
-
-  await service.getBudgetStatus({ userId: '1', pocketId: '42', category: 'Monthly Transactions' } as never);
-
-  assert.match(calls[1].text, /t\.pocket_id = child\.parent_budget_id/);
-  assert.match(calls[1].text, /lower\(t\.category\) = lower\(child\.category\)/);
+  assert.equal(calls[1].text, 'findPocketStatus');
 });
 
 test('returns direct category status without child breakdown', async () => {
@@ -983,10 +970,7 @@ test('budget overview returns all active budgets with parent child grouping', as
   assert.equal(calls[1].values[0], '1');
   assert.match(String(calls[1].values[1]), /^\d{4}-\d{2}-\d{2}$/);
   assert.match(String(calls[1].values[2]), /^\d{4}-\d{2}-\d{2}$/);
-  assert.match(calls[1].text, /WHERE b\.is_active = true/);
-  assert.match(calls[1].text, /t\.pocket_id = b\.id/);
-  assert.match(calls[1].text, /t\.pocket_id IS NULL/);
-  assert.match(calls[1].text, /ORDER BY/);
+  assert.equal(calls[1].text, 'listPocketOverview');
   assert.equal(state.calls[0].method, 'resetState');
   assert.equal(result.state.nextState, 'idle');
   assert.deepEqual(result.state.payload, {});
@@ -1405,6 +1389,7 @@ test('alerts at 80 percent spending', async () => {
     calls[1].text,
     /JOIN selected_budget b ON t\.pocket_id IS NULL/,
   );
+  assert.doesNotMatch(calls[1].text, /t\.pocket_id = b\.(?:id|parent_budget_id)/);
   assert.deepEqual(calls[2].values, [
     'user-1',
     'budget-1',
@@ -1433,8 +1418,7 @@ test('overspending accepts pocketId and uses pocket-first status', async () => {
 
   assert.equal(result.budgetId, '42');
   assert.deepEqual(calls[1].values.slice(0, 2), ['1', '42']);
-  assert.match(calls[1].text, /t\.pocket_id = pocket\.id/);
-  assert.match(calls[1].text, /t\.pocket_id IS NULL/);
+  assert.equal(calls[1].text, 'findPocketStatus');
 });
 
 test('alerts at 100 percent spending', async () => {
@@ -1806,6 +1790,144 @@ test('watchdog skips zero amount budgets', async () => {
   assert.equal(result.hasAlert, false);
   assert.deepEqual(result.alerts, []);
   assert.equal(result.message, null);
+});
+
+function pocketWatchdogRows(input: {
+  category: string;
+  child?: boolean;
+  parentAlertExists?: boolean;
+}) {
+  const childBreakdown = input.child
+    ? [
+        {
+          budget_id: '84',
+          category: 'Dining',
+          budget_amount: '1000000',
+          spent_amount: '750000',
+        },
+      ]
+    : [];
+  const rows: unknown[][] = [
+    [
+      {
+        id: 123,
+        user_id: 1,
+        transaction_type: 'expense',
+        category: input.category,
+        status: 'confirmed',
+        transaction_date: '2026-08-30T12:00:00.000Z',
+        pocket_id: '42',
+      },
+    ],
+    [{ cycle_start_day: 1 }],
+    [
+      {
+        budget_id: '42',
+        category: 'Monthly Transactions',
+        parent_budget_id: null,
+        budget_amount: '1000000',
+        spent_amount: '750000',
+        child_breakdown: childBreakdown,
+      },
+    ],
+    [{ exists: input.parentAlertExists ?? false }],
+  ];
+
+  if (!input.parentAlertExists) {
+    rows.push([
+      {
+        budget_id: '42',
+        alert_type: 'budget_75',
+        threshold_percent: 75,
+        period_key: '2026-08-01',
+      },
+    ]);
+  }
+  if (input.child) {
+    rows.push([{ exists: false }]);
+    rows.push([
+      {
+        budget_id: '84',
+        alert_type: 'budget_75',
+        threshold_percent: 75,
+        period_key: '2026-08-01',
+      },
+    ]);
+  }
+
+  return rows;
+}
+
+test('watchdog evaluates Toys against its assigned parent pocket only', async (t) => {
+  t.mock.timers.enable({
+    apis: ['Date'],
+    now: new Date('2026-08-30T12:00:00.000Z'),
+  });
+  const { service } = createService(
+    pocketWatchdogRows({ category: 'Toys' }),
+  );
+
+  const result = await service.evaluateTransaction({
+    userId: 1,
+    transactionId: 123,
+  });
+
+  assert.deepEqual(result.alerts.map(({ budgetId }) => budgetId), ['42']);
+});
+
+test('watchdog evaluates Dining against parent then matching child', async (t) => {
+  t.mock.timers.enable({
+    apis: ['Date'],
+    now: new Date('2026-08-30T12:00:00.000Z'),
+  });
+  const { service } = createService(
+    pocketWatchdogRows({ category: 'Dining', child: true }),
+  );
+
+  const result = await service.evaluateTransaction({
+    userId: 1,
+    transactionId: 123,
+  });
+
+  assert.deepEqual(result.alerts.map(({ budgetId }) => budgetId), ['42', '84']);
+});
+
+test('watchdog evaluates Uncategorized against its assigned parent only', async (t) => {
+  t.mock.timers.enable({
+    apis: ['Date'],
+    now: new Date('2026-08-30T12:00:00.000Z'),
+  });
+  const { service } = createService(
+    pocketWatchdogRows({ category: 'Uncategorized' }),
+  );
+
+  const result = await service.evaluateTransaction({
+    userId: 1,
+    transactionId: 123,
+  });
+
+  assert.deepEqual(result.alerts.map(({ budgetId }) => budgetId), ['42']);
+});
+
+test('watchdog reclassification skips existing parent alert and emits child only', async (t) => {
+  t.mock.timers.enable({
+    apis: ['Date'],
+    now: new Date('2026-08-30T12:00:00.000Z'),
+  });
+  const { service } = createService(
+    pocketWatchdogRows({
+      category: 'Dining',
+      child: true,
+      parentAlertExists: true,
+    }),
+  );
+
+  const result = await service.evaluateTransaction({
+    userId: 1,
+    transactionId: 123,
+  });
+
+  assert.deepEqual(result.alerts.map(({ budgetId }) => budgetId), ['84']);
 });
 
 test('overspending handle skips pending transaction alerts', async () => {

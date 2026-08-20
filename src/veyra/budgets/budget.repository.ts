@@ -10,6 +10,38 @@ interface PocketRow extends QueryResultRow {
   is_default: boolean;
 }
 
+export interface PocketStatusQuery {
+  userId: string;
+  lookup: string;
+  cycleStart: string;
+  cycleEnd: string;
+}
+
+export interface PocketStatusRow extends QueryResultRow {
+  budget_id: string | number;
+  category: string;
+  parent_budget_id: string | number | null;
+  budget_amount: string | number;
+  spent_amount: string | number | null;
+  child_breakdown?: unknown;
+}
+
+export interface PocketOverviewQuery {
+  userId: string;
+  cycleStart: string;
+  cycleEnd: string;
+}
+
+export interface PocketOverviewRow extends QueryResultRow {
+  budget_id: string | number;
+  category: string;
+  parent_budget_id: string | number | null;
+  parent_category: string | null;
+  amount: string | number | null;
+  spent_amount: string | number | null;
+  child_count: string | number;
+}
+
 @Injectable()
 export class BudgetRepository {
   constructor(private readonly database: DatabaseService) {}
@@ -126,6 +158,178 @@ export class BudgetRepository {
       );
       return result.rows[0] ? this.toDto(result.rows[0]) : null;
     });
+  }
+
+  async findPocketStatus(
+    query: PocketStatusQuery,
+  ): Promise<PocketStatusRow | null> {
+    const result = await this.database.query<PocketStatusRow>(
+      `
+        WITH matched_user AS (
+          SELECT id
+          FROM telegram_users
+          WHERE id::text = $1 OR telegram_id::text = $1
+          LIMIT 1
+        ),
+        pocket AS (
+          SELECT b.id, b.category, b.parent_budget_id, b.amount AS budget_amount
+          FROM budgets b
+          JOIN matched_user u ON u.id = b.user_id
+          WHERE (b.id::text = $2 OR lower(b.category) = lower($2))
+            AND b.parent_budget_id IS NULL
+            AND COALESCE(b.is_active, true) = true
+          LIMIT 1
+        ),
+        legacy_pocket_categories AS (
+          SELECT category FROM pocket
+          UNION
+          SELECT child.category
+          FROM budgets child
+          JOIN pocket ON child.parent_budget_id = pocket.id
+          WHERE COALESCE(child.is_active, true) = true
+        ),
+        child_spending AS (
+          SELECT
+            child.id AS budget_id,
+            child.category,
+            child.amount AS budget_amount,
+            COALESCE(SUM(t.amount), 0) AS spent_amount
+          FROM budgets child
+          JOIN pocket parent ON child.parent_budget_id = parent.id
+          LEFT JOIN matched_user u ON true
+          LEFT JOIN transactions t ON t.user_id = u.id
+            AND t.status = 'confirmed'
+            AND t.transaction_type = 'expense'
+            AND t.transaction_date >= $3::date
+            AND t.transaction_date < $4::date
+            AND (
+              t.pocket_id = child.parent_budget_id
+              OR (t.pocket_id IS NULL AND lower(t.category) = lower(child.category))
+            )
+            AND lower(t.category) = lower(child.category)
+          WHERE COALESCE(child.is_active, true) = true
+          GROUP BY child.id, child.category, child.amount
+        ),
+        pocket_spending AS (
+          SELECT COALESCE(SUM(t.amount), 0) AS spent_amount
+          FROM transactions t
+          JOIN matched_user u ON u.id = t.user_id
+          JOIN pocket ON true
+          WHERE t.status = 'confirmed'
+            AND t.transaction_type = 'expense'
+            AND t.transaction_date >= $3::date
+            AND t.transaction_date < $4::date
+            AND (
+              t.pocket_id = pocket.id
+              OR (t.pocket_id IS NULL AND lower(t.category) IN (SELECT lower(category) FROM legacy_pocket_categories))
+            )
+        ),
+        totals AS (
+          SELECT
+            CASE
+              WHEN (SELECT budget_amount FROM pocket) IS NOT NULL
+              THEN (SELECT budget_amount FROM pocket)
+              ELSE COALESCE(SUM(child_spending.budget_amount), 0)
+            END AS budget_amount,
+            (SELECT spent_amount FROM pocket_spending) AS spent_amount
+          FROM child_spending
+        ),
+        child_breakdown AS (
+          SELECT COALESCE(
+            json_agg(
+              json_build_object(
+                'budget_id', budget_id::text,
+                'category', category,
+                'budget_amount', budget_amount,
+                'spent_amount', spent_amount
+              )
+              ORDER BY category
+            ),
+            '[]'::json
+          ) AS child_breakdown
+          FROM child_spending
+        )
+        SELECT
+          pocket.id AS budget_id,
+          pocket.category,
+          pocket.parent_budget_id,
+          totals.budget_amount,
+          totals.spent_amount,
+          child_breakdown.child_breakdown
+        FROM pocket
+        CROSS JOIN totals
+        CROSS JOIN child_breakdown
+      `,
+      [query.userId, query.lookup, query.cycleStart, query.cycleEnd],
+    );
+
+    return result.rows[0] ?? null;
+  }
+
+  async listPocketOverview(
+    query: PocketOverviewQuery,
+  ): Promise<PocketOverviewRow[]> {
+    const result = await this.database.query<PocketOverviewRow>(
+      `
+        WITH matched_user AS (
+          SELECT id
+          FROM telegram_users
+          WHERE id::text = $1 OR telegram_id::text = $1
+          LIMIT 1
+        ),
+        active_budgets AS (
+          SELECT
+            b.id,
+            b.category,
+            b.parent_budget_id,
+            COALESCE(b.amount, SUM(child.amount)) AS amount,
+            parent.category AS parent_category,
+            COUNT(child.id) AS child_count
+          FROM budgets b
+          JOIN matched_user u ON u.id = b.user_id
+          LEFT JOIN budgets parent ON parent.id = b.parent_budget_id
+          LEFT JOIN budgets child
+            ON child.parent_budget_id = b.id
+            AND child.is_active = true
+          WHERE b.is_active = true
+          GROUP BY b.id, b.category, b.parent_budget_id, b.amount, parent.category
+        ),
+        spending AS (
+          SELECT
+            b.id AS budget_id,
+            COALESCE(SUM(t.amount), 0) AS spent_amount
+          FROM active_budgets b
+          CROSS JOIN matched_user u
+          LEFT JOIN transactions t ON t.user_id = u.id
+            AND t.status = 'confirmed'
+            AND t.transaction_type = 'expense'
+            AND t.transaction_date >= $2::date
+            AND t.transaction_date < $3::date
+            AND (
+              (b.parent_budget_id IS NULL AND (t.pocket_id = b.id OR (t.pocket_id IS NULL AND lower(t.category) IN (SELECT lower(legacy.category) FROM budgets legacy WHERE legacy.id = b.id OR (legacy.parent_budget_id = b.id AND legacy.is_active = true)))))
+              OR (b.parent_budget_id IS NOT NULL AND ((t.pocket_id = b.parent_budget_id AND lower(t.category) = lower(b.category)) OR (t.pocket_id IS NULL AND lower(t.category) = lower(b.category))))
+            )
+          GROUP BY b.id
+        )
+        SELECT
+          b.id AS budget_id,
+          b.category,
+          b.parent_budget_id,
+          b.parent_category,
+          b.amount,
+          spending.spent_amount,
+          b.child_count
+        FROM active_budgets b
+        JOIN spending ON spending.budget_id = b.id
+        ORDER BY
+          CASE WHEN b.parent_budget_id IS NULL THEN 0 ELSE 1 END,
+          lower(COALESCE(b.parent_category, b.category)),
+          lower(b.category)
+      `,
+      [query.userId, query.cycleStart, query.cycleEnd],
+    );
+
+    return result.rows;
   }
 
   private pocketSelect(condition: string): string {
