@@ -5767,7 +5767,7 @@ test("email review AI result skips watchdog until confirmed", async () => {
     [{ id: "tx-review" }],
     [{ id: "import-1" }],
   ]);
-  const watchdogCalls = spyOnWatchdog(service);
+  spyOnWatchdog(service);
 
   const result = await service.resolveEmailTransactionReview({
     telegramUserId: "976684739",
@@ -7840,9 +7840,39 @@ test("catid callback updates confirmed expense category without changing status"
   assert.match(update?.text ?? "", /SET category = \$1/);
   assert.match(update?.text ?? "", /WHERE id::text = \$2/);
   assert.match(update?.text ?? "", /user_id::text = \$3/);
+  assert.doesNotMatch(update?.text ?? "", /pocket_id/);
   assert.doesNotMatch(update?.text ?? "", /status = 'confirmed'/);
   assert.doesNotMatch(update?.text ?? "", /status = 'pending'/);
+  assert.deepEqual(watchdogCalls, ["101"]);
 });
+
+for (const [status, text] of [
+  ["not_found", "Transaction was not found."],
+  ["already_resolved", "This transaction was already handled."],
+  ["unauthorized_category", "Selected category was not found."],
+  ["awaiting_pocket", "Select a pocket before confirming this expense."],
+] as const) {
+  test(`catid callback renders ${status} safely`, async () => {
+    const { service } = createService();
+    service.setPendingTransactionCategory = async () => ({
+      status,
+      pendingTransactionId: null,
+      transactionId: "123",
+      confirmationPayload: null,
+      summary: null,
+      editMessage: null,
+    });
+
+    const result = await service.handleTransactionCallback({
+      telegramUserId: "976684739", userId: 1, callbackData: "catid:10:123",
+    });
+
+    assert.equal(result.status, "error");
+    assert.equal(result.action, "catid");
+    assert.equal(result.telegram.text, text);
+    assert.equal(result.telegram.reply_markup, null);
+  });
+}
 
 test("cross-user or archived category callback is rejected", async () => {
   const dependencies = createCategoryServiceWithCategories([]);
