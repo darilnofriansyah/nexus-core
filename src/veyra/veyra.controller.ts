@@ -24,6 +24,19 @@ import {
   BudgetCategoriesResponseDto,
 } from './budgets/dto/budget-categories.dto';
 import {
+  CategoryArchiveRequestDto,
+  CategoryCreateRequestDto,
+  CategoryDto,
+  CategoryListRequestDto,
+  CategoryListResponseDto,
+} from './categories/dto/category.dto';
+import {
+  PocketDefaultRequestDto,
+  PocketDto,
+  PocketListRequestDto,
+  PocketRenameRequestDto,
+} from './budgets/dto/pocket.dto';
+import {
   OverspendingCheckRequestDto,
   OverspendingCheckResponseDto,
   OverspendingHandleRequestDto,
@@ -145,6 +158,42 @@ export class VeyraController {
     @Body() body: BudgetCategoriesRequestDto,
   ): Promise<BudgetCategoriesResponseDto> {
     return this.budgetService.getBudgetCategories(body);
+  }
+
+  @Post('categories/list')
+  listCategories(
+    @Body() body: CategoryListRequestDto,
+  ): Promise<CategoryListResponseDto> {
+    return this.budgetService.listUserCategories(body);
+  }
+
+  @Post('categories/create')
+  createCategory(@Body() body: CategoryCreateRequestDto): Promise<CategoryDto> {
+    return this.budgetService.createUserCategory(body);
+  }
+
+  @Post('categories/archive')
+  archiveCategory(
+    @Body() body: CategoryArchiveRequestDto,
+  ): Promise<{ status: 'archived' }> {
+    return this.budgetService.archiveUserCategory(body);
+  }
+
+  @Post('budgets/pockets/list')
+  listPockets(
+    @Body() body: PocketListRequestDto,
+  ): Promise<{ status: 'ok'; pockets: PocketDto[] }> {
+    return this.budgetService.listPockets(body);
+  }
+
+  @Post('budgets/pockets/rename')
+  renamePocket(@Body() body: PocketRenameRequestDto): Promise<PocketDto> {
+    return this.budgetService.renamePocket(body);
+  }
+
+  @Post('budgets/pockets/default')
+  setDefaultPocket(@Body() body: PocketDefaultRequestDto): Promise<PocketDto> {
+    return this.budgetService.setDefaultPocket(body);
   }
 
   @Post('budgets/handle')
@@ -329,7 +378,9 @@ export class VeyraController {
     );
   }
 
-  private readCallbackData(body: TransactionCallbackDispatchRequestDto): string {
+  private readCallbackData(
+    body: TransactionCallbackDispatchRequestDto,
+  ): string {
     return this.readString(
       body.callbackData ??
         body.data ??

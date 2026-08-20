@@ -2,9 +2,22 @@ import * as assert from 'node:assert/strict';
 import { mock, test } from 'node:test';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { DatabaseService } from '../../database/database.service';
+import { CategoryService } from '../categories/category.service';
+import { BudgetRepository } from './budget.repository';
 import { BudgetService } from './budget.service';
 
-function createService(rowsByCall: unknown[][] = []) {
+interface ServiceOptions {
+  rowsByCall?: unknown[][];
+  categoryService?: Partial<CategoryService>;
+  repository?: Partial<BudgetRepository>;
+}
+
+function createService(input: unknown[][] | ServiceOptions = []) {
+  const {
+    rowsByCall = [],
+    categoryService,
+    repository,
+  } = Array.isArray(input) ? { rowsByCall: input } : input;
   const calls: Array<{ text: string; values: unknown[] }> = [];
   const database = {
     query: async (text: string, values: unknown[] = []) => {
@@ -12,12 +25,125 @@ function createService(rowsByCall: unknown[][] = []) {
       return { rows: rowsByCall.shift() ?? [] };
     },
   } as unknown as DatabaseService;
+  const categories = {
+    ensureDefaults: async () => {},
+    resolveForSave: async () => ({
+      category: 'Uncategorized',
+      needsReview: true,
+    }),
+    listActive: async () => [],
+    create: async () => ({ id: '1', name: 'Category' }),
+    archive: async () => false,
+    ...categoryService,
+  } as unknown as CategoryService;
+  const budgets = {
+    ensureDefaultPocket: async () => {},
+    findPocket: async () => null,
+    findDefaultPocket: async () => null,
+    listPockets: async () => [],
+    renamePocket: async () => null,
+    setDefaultPocket: async () => null,
+    ...repository,
+  } as unknown as BudgetRepository;
 
   return {
     calls,
-    service: new BudgetService(database),
+    service: new BudgetService(database, categories, budgets),
   };
 }
+
+test('setup ensures categories before default pocket', async () => {
+  const events: string[] = [];
+  const { service } = createService({
+    categoryService: {
+      ensureDefaults: async () => {
+        events.push('categories');
+      },
+    },
+    repository: {
+      ensureDefaultPocket: async () => {
+        events.push('pocket');
+      },
+    },
+  });
+  await service.ensureFinancialSetup('1');
+  assert.deepEqual(events, ['categories', 'pocket']);
+});
+
+test('explicit cross-user pocket throws NotFoundException', async () => {
+  const { service } = createService({
+    repository: { findPocket: async () => null },
+  });
+  await assert.rejects(
+    () =>
+      service.resolveExpenseAssignment({
+        userId: '1',
+        pocketId: '99',
+        category: 'Food',
+      }),
+    NotFoundException,
+  );
+});
+
+test('explicit child pocket throws NotFoundException', async () => {
+  const { service } = createService({
+    repository: { findPocket: async () => null },
+  });
+  await assert.rejects(
+    () =>
+      service.resolveExpenseAssignment({
+        userId: '1',
+        pocketId: 'child-9',
+        category: 'Food',
+      }),
+    NotFoundException,
+  );
+});
+
+test('missing default returns awaiting_pocket with active choices', async () => {
+  const pockets = [{ id: '10', name: 'Main', amount: null, isDefault: false }];
+  const { service } = createService({
+    categoryService: {
+      resolveForSave: async () => ({ category: 'Food', needsReview: false }),
+    },
+    repository: {
+      findDefaultPocket: async () => null,
+      listPockets: async () => pockets,
+    },
+  });
+  const result = await service.resolveExpenseAssignment({
+    userId: '1',
+    category: 'Food',
+  });
+  assert.deepEqual(result, {
+    status: 'awaiting_pocket',
+    category: 'Food',
+    needsCategoryReview: false,
+    pockets,
+  });
+});
+
+test('known category and default pocket resolve independently', async () => {
+  const { service } = createService({
+    categoryService: {
+      resolveForSave: async () => ({ category: 'Food', needsReview: false }),
+    },
+    repository: {
+      findDefaultPocket: async () => ({
+        id: '10',
+        name: 'Main Pocket',
+        amount: null,
+        isDefault: true,
+      }),
+    },
+  });
+  const result = await service.resolveExpenseAssignment({
+    userId: '1',
+    category: 'Food',
+  });
+  assert.equal(result.status, 'resolved');
+  if (result.status === 'resolved') assert.equal(result.pocketId, '10');
+});
 
 function createStateStore() {
   const calls: Array<{ method: string; request: unknown }> = [];
@@ -138,7 +264,10 @@ test('looks up user cycle then maps budget status from confirmed spending query'
   assert.match(calls[1].text, /SUM\(child_spending\.spent_amount\)/);
   assert.match(calls[1].text, /child_breakdown\.child_breakdown/);
   assert.doesNotMatch(calls[1].text, /budget_scope/);
-  assert.doesNotMatch(calls[1].text, /budgets\.budget_amount|\sb\.budget_amount/);
+  assert.doesNotMatch(
+    calls[1].text,
+    /budgets\.budget_amount|\sb\.budget_amount/,
+  );
   assert.deepEqual(status, {
     budget_id: 'budget-1',
     category: 'Food',
@@ -417,7 +546,10 @@ test('creates a budget without parent', async () => {
   ]);
   assert.doesNotMatch(calls[0].text, /ON CONFLICT/);
   assert.match(calls[0].text, /WITH existing_budget AS/);
-  assert.match(calls[0].text, /SELECT \$1::bigint, \$2, \$3, \$4::bigint, \$5, true/);
+  assert.match(
+    calls[0].text,
+    /SELECT \$1::bigint, \$2, \$3, \$4::bigint, \$5, true/,
+  );
   assert.match(calls[0].text, /\bamount,\s+parent_budget_id,/);
   assert.match(calls[0].text, /changed_budget\.amount/);
   assert.doesNotMatch(calls[0].text, /budget_amount/);
@@ -458,11 +590,7 @@ test('creates a child budget with parent', async () => {
   });
 
   assert.equal(calls.length, 2);
-  assert.deepEqual(calls[0].values, [
-    'user-1',
-    'Monthly Allowance',
-    'monthly',
-  ]);
+  assert.deepEqual(calls[0].values, ['user-1', 'Monthly Allowance', 'monthly']);
   assert.match(calls[0].text, /AND category = \$2/);
   assert.match(
     calls[0].text,
@@ -508,11 +636,7 @@ test('creates a missing parent budget before child budget upsert', async () => {
   });
 
   assert.equal(calls.length, 2);
-  assert.deepEqual(calls[0].values, [
-    'user-1',
-    'Monthly Allowance',
-    'monthly',
-  ]);
+  assert.deepEqual(calls[0].values, ['user-1', 'Monthly Allowance', 'monthly']);
   assert.match(calls[0].text, /INSERT INTO budgets/);
   assert.match(calls[0].text, /SELECT \$1::bigint, \$2, NULL, NULL, \$3, true/);
   assert.deepEqual(calls[1].values, [
@@ -797,9 +921,15 @@ test('budget overview returns all active budgets with parent child grouping', as
   assert.deepEqual(result.data.messages, [result.message.text]);
   assert.equal(result.data.message, result.message.text);
   assert.match(result.message.text, /📊 Budget Overview/);
-  assert.match(result.message.text, /Monthly Allowance - Rp2\.000\.000 \/ Rp4\.000\.000/);
+  assert.match(
+    result.message.text,
+    /Monthly Allowance - Rp2\.000\.000 \/ Rp4\.000\.000/,
+  );
   assert.match(result.message.text, /├ Food — Rp1\.000\.000 \/ Rp2\.000\.000/);
-  assert.match(result.message.text, /└ Transport — Rp1\.000\.000 \/ Rp2\.000\.000/);
+  assert.match(
+    result.message.text,
+    /└ Transport — Rp1\.000\.000 \/ Rp2\.000\.000/,
+  );
   assert.match(result.message.text, /Subscription - Rp37\.200 \/ Rp37\.200/);
   assert.match(result.message.text, /└ Netflix — Rp37\.200 \/ Rp37\.200/);
   assert.match(result.message.text, /Health - Rp125\.000 \/ Rp500\.000/);
@@ -820,7 +950,10 @@ test('budget overview returns empty-state message when no active budgets exist',
     state.store,
   );
 
-  assert.equal(result.message.text, 'No active budgets yet. Set one when you are ready.');
+  assert.equal(
+    result.message.text,
+    'No active budgets yet. Set one when you are ready.',
+  );
   assert.deepEqual(result.data, {
     intent: 'budget_overview',
     messages: ['No active budgets yet. Set one when you are ready.'],
@@ -972,7 +1105,10 @@ test('budget handle set sub budget without parent asks parent question', async (
   );
 
   assert.equal(result.state.nextState, 'budget_conversation_state');
-  assert.equal(result.message.text, 'Under which parent budget should Transport sit?');
+  assert.equal(
+    result.message.text,
+    'Under which parent budget should Transport sit?',
+  );
   assert.deepEqual(result.data, {
     intent: 'set_sub_budget',
     category: 'Transport',
@@ -1104,7 +1240,10 @@ test('budget handle unknown intent resets state with short clarification', async
   assert.equal(result.state.nextState, 'idle');
   assert.deepEqual(result.state.payload, {});
   assert.equal(state.calls[0].method, 'resetState');
-  assert.equal(result.message.text, 'What do you want to do: show or set a budget?');
+  assert.equal(
+    result.message.text,
+    'What do you want to do: show or set a budget?',
+  );
   assert.deepEqual(result.data, { intent: 'unknown' });
 });
 
@@ -1135,7 +1274,10 @@ test('does not alert below 80 percent spending', async () => {
   assert.equal(result.telegramHtml, null);
   assert.equal(result.alertRecord, null);
   assert.equal(result.spentPercent, 79);
-  assert.equal(result.periodKey, service.periodKeyFromCycleStart(cycle.cycle_start));
+  assert.equal(
+    result.periodKey,
+    service.periodKeyFromCycleStart(cycle.cycle_start),
+  );
 });
 
 test('does not alert at 79.9 percent spending', async () => {
@@ -1186,7 +1328,10 @@ test('alerts at 80 percent spending', async () => {
 
   assert.equal(calls.length, 3);
   assert.doesNotMatch(calls[1].text, /budget_scope/);
-  assert.match(calls[1].text, /JOIN selected_budget b ON lower\(t\.category\) = lower\(b\.category\)/);
+  assert.match(
+    calls[1].text,
+    /JOIN selected_budget b ON lower\(t\.category\) = lower\(b\.category\)/,
+  );
   assert.deepEqual(calls[2].values, [
     'user-1',
     'budget-1',
@@ -1357,12 +1502,7 @@ test('overspending handle returns no_alert without checking alert records below 
   });
 
   assert.equal(calls.length, 2);
-  assert.deepEqual(calls[1].values, [
-    '1',
-    'Food',
-    '2026-06-25',
-    '2026-07-25',
-  ]);
+  assert.deepEqual(calls[1].values, ['1', 'Food', '2026-06-25', '2026-07-25']);
   assert.deepEqual(result, {
     ok: true,
     status: 'no_alert',

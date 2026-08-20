@@ -5,6 +5,23 @@ import {
 } from '@nestjs/common';
 import { QueryResultRow } from 'pg';
 import { DatabaseService } from '../../database/database.service';
+import { CategoryService } from '../categories/category.service';
+import {
+  CategoryArchiveRequestDto,
+  CategoryCreateRequestDto,
+  CategoryDto,
+  CategoryListRequestDto,
+  CategoryListResponseDto,
+} from '../categories/dto/category.dto';
+import { BudgetRepository } from './budget.repository';
+import {
+  ExpenseAssignment,
+  PocketDefaultRequestDto,
+  PocketDto,
+  PocketListRequestDto,
+  PocketRenameRequestDto,
+  ResolveExpenseAssignmentRequest,
+} from './dto/pocket.dto';
 import {
   BudgetPeriodType,
   BudgetUpsertRequestDto,
@@ -171,12 +188,119 @@ export interface BudgetHandleResponseDto {
 export class BudgetService {
   private readonly budgetOverviewMaxMessageLength = 3500;
 
-  constructor(private readonly database: DatabaseService) {}
+  constructor(
+    private readonly database: DatabaseService,
+    private readonly categoryService: CategoryService,
+    private readonly repository: BudgetRepository,
+  ) {}
+
+  async ensureFinancialSetup(userId: string | number): Promise<void> {
+    const normalizedUserId = this.requireUserId(userId);
+    await this.categoryService.ensureDefaults(normalizedUserId);
+    await this.repository.ensureDefaultPocket(normalizedUserId);
+  }
+
+  async resolveExpenseAssignment(
+    request: ResolveExpenseAssignmentRequest,
+  ): Promise<ExpenseAssignment> {
+    const userId = this.requireUserId(request.userId);
+    const category = await this.categoryService.resolveForSave(
+      userId,
+      request.category,
+    );
+    const pocketId = this.cleanString(request.pocketId ?? undefined);
+    const pocket = pocketId
+      ? await this.repository.findPocket(userId, pocketId)
+      : await this.repository.findDefaultPocket(userId);
+
+    if (pocketId && !pocket) {
+      throw new NotFoundException('Pocket not found');
+    }
+    if (!pocket) {
+      return {
+        status: 'awaiting_pocket',
+        category: category.category,
+        needsCategoryReview: category.needsReview,
+        pockets: await this.repository.listPockets(userId),
+      };
+    }
+    return {
+      status: 'resolved',
+      category: category.category,
+      needsCategoryReview: category.needsReview,
+      pocketId: pocket.id,
+      pocketName: pocket.name,
+    };
+  }
+
+  async listUserCategories(
+    request: CategoryListRequestDto,
+  ): Promise<CategoryListResponseDto> {
+    const userId = this.requireUserId(request.userId);
+    await this.ensureFinancialSetup(userId);
+    return {
+      status: 'ok',
+      categories: await this.categoryService.listActive(userId),
+    };
+  }
+
+  async createUserCategory(
+    request: CategoryCreateRequestDto,
+  ): Promise<CategoryDto> {
+    const userId = this.requireUserId(request.userId);
+    await this.ensureFinancialSetup(userId);
+    return this.categoryService.create({ ...request, userId });
+  }
+
+  async archiveUserCategory(
+    request: CategoryArchiveRequestDto,
+  ): Promise<{ status: 'archived' }> {
+    const userId = this.requireUserId(request.userId);
+    await this.ensureFinancialSetup(userId);
+    if (!(await this.categoryService.archive({ ...request, userId }))) {
+      throw new NotFoundException('Category not found');
+    }
+    return { status: 'archived' };
+  }
+
+  async listPockets(
+    request: PocketListRequestDto,
+  ): Promise<{ status: 'ok'; pockets: PocketDto[] }> {
+    const userId = this.requireUserId(request.userId);
+    await this.ensureFinancialSetup(userId);
+    return { status: 'ok', pockets: await this.repository.listPockets(userId) };
+  }
+
+  async renamePocket(request: PocketRenameRequestDto): Promise<PocketDto> {
+    const userId = this.requireUserId(request.userId);
+    const name = this.cleanString(request.name);
+    if (!name) throw new BadRequestException('name is required');
+    await this.ensureFinancialSetup(userId);
+    const pocket = await this.repository.renamePocket(
+      userId,
+      request.pocketId,
+      name,
+    );
+    if (!pocket) throw new NotFoundException('Pocket not found');
+    return pocket;
+  }
+
+  async setDefaultPocket(request: PocketDefaultRequestDto): Promise<PocketDto> {
+    const userId = this.requireUserId(request.userId);
+    await this.ensureFinancialSetup(userId);
+    const pocket = await this.repository.setDefaultPocket(
+      userId,
+      request.pocketId,
+    );
+    if (!pocket) throw new NotFoundException('Pocket not found');
+    return pocket;
+  }
 
   placeholderStatus() {
     return {
       implemented: false,
-      nextStep: 'Move budget intent parsing and validation here before database writes.',
+      nextStep:
+        'Move budget intent parsing and validation here before database writes.',
     };
   }
 
@@ -676,7 +800,10 @@ export class BudgetService {
       throw new BadRequestException('transactionId is required');
     }
 
-    const transaction = await this.findWatchdogTransaction(userId, transactionId);
+    const transaction = await this.findWatchdogTransaction(
+      userId,
+      transactionId,
+    );
 
     if (!transaction) {
       return this.skippedWatchdog('transaction_not_found');
@@ -1020,8 +1147,7 @@ export class BudgetService {
       transaction_type:
         this.cleanString(row.transaction_type ?? undefined)?.toLowerCase() ??
         null,
-      status:
-        this.cleanString(row.status ?? undefined)?.toLowerCase() ?? null,
+      status: this.cleanString(row.status ?? undefined)?.toLowerCase() ?? null,
       category: this.cleanString(row.category ?? undefined) ?? null,
     };
   }
@@ -1106,7 +1232,10 @@ export class BudgetService {
   private safeDailySpend(status: BudgetStatusResponseDto): number {
     const daysRemaining = Math.max(
       1,
-      this.daysBetween(new Date(), new Date(`${status.cycle_end}T00:00:00.000Z`)),
+      this.daysBetween(
+        new Date(),
+        new Date(`${status.cycle_end}T00:00:00.000Z`),
+      ),
     );
 
     return Math.max(0, Math.floor(status.remaining_amount / daysRemaining));
@@ -1125,7 +1254,9 @@ export class BudgetService {
     return Math.ceil((end.getTime() - start.getTime()) / 86_400_000);
   }
 
-  private toReferenceDateString(value: string | Date | null): string | undefined {
+  private toReferenceDateString(
+    value: string | Date | null,
+  ): string | undefined {
     if (!value) {
       return undefined;
     }
@@ -1339,7 +1470,9 @@ export class BudgetService {
   }
 
   private hasBudgetHandleProgress(payload: BudgetHandlePayload): boolean {
-    return Boolean(payload.category || payload.parent_category || payload.amount);
+    return Boolean(
+      payload.category || payload.parent_category || payload.amount,
+    );
   }
 
   private hasParentRelationshipText(value: string | undefined): boolean {
@@ -1349,8 +1482,12 @@ export class BudgetService {
     );
   }
 
-  private normalizeBudgetHandleIntent(value: unknown): BudgetHandleIntent | undefined {
-    const intent = this.cleanStringValue(value) as BudgetHandleIntent | undefined;
+  private normalizeBudgetHandleIntent(
+    value: unknown,
+  ): BudgetHandleIntent | undefined {
+    const intent = this.cleanStringValue(value) as
+      | BudgetHandleIntent
+      | undefined;
     const supported: BudgetHandleIntent[] = [
       'budget_status',
       'budget_overview',
@@ -1545,10 +1682,7 @@ export class BudgetService {
   }
 
   private formatBudgetOverviewLine(
-    budget: Pick<
-      BudgetOverviewItem,
-      'category' | 'amount' | 'spent_amount'
-    >,
+    budget: Pick<BudgetOverviewItem, 'category' | 'amount' | 'spent_amount'>,
     separator = '-',
   ): string {
     return `${this.escapeTelegramHtml(budget.category)} ${separator} ${this.formatTelegramCurrency(
@@ -1571,12 +1705,18 @@ export class BudgetService {
 
       messages.push(current);
 
-      if (group.length + header.length + 2 <= this.budgetOverviewMaxMessageLength) {
+      if (
+        group.length + header.length + 2 <=
+        this.budgetOverviewMaxMessageLength
+      ) {
         current = `${header}\n\n${group}`;
         continue;
       }
 
-      const splitGroupMessages = this.chunkLongBudgetOverviewGroup(header, group);
+      const splitGroupMessages = this.chunkLongBudgetOverviewGroup(
+        header,
+        group,
+      );
       messages.push(...splitGroupMessages.slice(0, -1));
       current = splitGroupMessages[splitGroupMessages.length - 1] ?? header;
     }
@@ -1586,7 +1726,10 @@ export class BudgetService {
     return messages;
   }
 
-  private chunkLongBudgetOverviewGroup(header: string, group: string): string[] {
+  private chunkLongBudgetOverviewGroup(
+    header: string,
+    group: string,
+  ): string[] {
     const messages: string[] = [];
     let current = header;
 
@@ -1705,7 +1848,8 @@ export class BudgetService {
   private isResetText(value: string | undefined): boolean {
     const text = value?.trim().toLowerCase();
     return Boolean(
-      text && ['reset', 'cancel', 'exit', 'stop', 'batal', 'keluar'].includes(text),
+      text &&
+      ['reset', 'cancel', 'exit', 'stop', 'batal', 'keluar'].includes(text),
     );
   }
 
@@ -1785,7 +1929,8 @@ export class BudgetService {
       budgetId,
       alertType,
       thresholdPercent:
-        request.thresholdPercent === null || request.thresholdPercent === undefined
+        request.thresholdPercent === null ||
+        request.thresholdPercent === undefined
           ? this.thresholdPercentForAlertType(alertType)
           : this.toNumber(request.thresholdPercent),
       periodKey,
@@ -1848,7 +1993,9 @@ export class BudgetService {
     );
   }
 
-  private thresholdPercentForAlertType(alertType: OverspendingAlertType): number {
+  private thresholdPercentForAlertType(
+    alertType: OverspendingAlertType,
+  ): number {
     return {
       budget_75: 75,
       budget_90: 90,
@@ -1939,7 +2086,9 @@ export class BudgetService {
     return this.normalizeCycleStartDay(cycleStartDay);
   }
 
-  private normalizeCycleStartDay(value: number | string | null | undefined): number {
+  private normalizeCycleStartDay(
+    value: number | string | null | undefined,
+  ): number {
     const day = Number(value ?? 1);
 
     if (!Number.isFinite(day)) {
@@ -1965,7 +2114,11 @@ export class BudgetService {
     return date;
   }
 
-  private utcCycleDate(year: number, month: number, cycleStartDay: number): Date {
+  private utcCycleDate(
+    year: number,
+    month: number,
+    cycleStartDay: number,
+  ): Date {
     const daysInMonth = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
     const day = Math.min(cycleStartDay, daysInMonth);
 
@@ -1985,7 +2138,10 @@ export class BudgetService {
     return Number.isFinite(numberValue) ? numberValue : 0;
   }
 
-  private calculateSpentPercent(spentAmount: number, budgetAmount: number): number {
+  private calculateSpentPercent(
+    spentAmount: number,
+    budgetAmount: number,
+  ): number {
     return budgetAmount > 0
       ? Math.round((spentAmount / budgetAmount) * 10000) / 100
       : 0;
@@ -2028,6 +2184,12 @@ export class BudgetService {
 
   private isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
+  }
+
+  private requireUserId(value: string | number): string {
+    const userId = this.cleanString(String(value ?? ''));
+    if (!userId) throw new BadRequestException('userId is required');
+    return userId;
   }
 
   private cleanString(value: string | undefined): string | undefined {

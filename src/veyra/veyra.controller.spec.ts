@@ -55,13 +55,45 @@ function createController() {
     },
     placeholderStatus: () => ({}),
   };
+  const budgetService = {
+    placeholderStatus: () => ({
+      implemented: false,
+      nextStep: '',
+    }),
+    listUserCategories: async (request: unknown) => {
+      calls.push({ method: 'listUserCategories', request });
+      return { status: 'ok' as const, categories: [] };
+    },
+    createUserCategory: async (request: unknown) => {
+      calls.push({ method: 'createUserCategory', request });
+      return { id: '1', name: 'Toys' };
+    },
+    archiveUserCategory: async (request: unknown) => {
+      calls.push({ method: 'archiveUserCategory', request });
+      return { status: 'archived' as const };
+    },
+    listPockets: async (request: unknown) => {
+      calls.push({ method: 'listPockets', request });
+      return { status: 'ok' as const, pockets: [] };
+    },
+    renamePocket: async (request: unknown) => {
+      calls.push({ method: 'renamePocket', request });
+      return {
+        id: '42',
+        name: 'Monthly Transactions',
+        amount: null,
+        isDefault: true,
+      };
+    },
+    setDefaultPocket: async (request: unknown) => {
+      calls.push({ method: 'setDefaultPocket', request });
+      return { id: '42', name: 'Main Pocket', amount: null, isDefault: true };
+    },
+  };
   const controller = new VeyraController(
-    {
-      placeholderStatus: () => ({
-        implemented: false,
-        nextStep: '',
-      }),
-    } as unknown as ConstructorParameters<typeof VeyraController>[0],
+    budgetService as unknown as ConstructorParameters<
+      typeof VeyraController
+    >[0],
     {} as unknown as ConstructorParameters<typeof VeyraController>[1],
     {
       detectIntent: () => ({ intent: 'unknown' }),
@@ -77,6 +109,48 @@ function createController() {
 
   return { calls, controller, manageResponse, callbackResponse };
 }
+
+test('category and pocket routes forward their typed bodies', async () => {
+  const { calls, controller } = createController();
+  const requests = [
+    [
+      controller.listCategories({ userId: 1 }),
+      'listUserCategories',
+      { userId: 1 },
+    ],
+    [
+      controller.createCategory({ userId: 1, name: 'Toys' }),
+      'createUserCategory',
+      { userId: 1, name: 'Toys' },
+    ],
+    [
+      controller.archiveCategory({ userId: 1, categoryId: '17' }),
+      'archiveUserCategory',
+      { userId: 1, categoryId: '17' },
+    ],
+    [controller.listPockets({ userId: 1 }), 'listPockets', { userId: 1 }],
+    [
+      controller.renamePocket({
+        userId: 1,
+        pocketId: '42',
+        name: 'Monthly Transactions',
+      }),
+      'renamePocket',
+      { userId: 1, pocketId: '42', name: 'Monthly Transactions' },
+    ],
+    [
+      controller.setDefaultPocket({ userId: 1, pocketId: '42' }),
+      'setDefaultPocket',
+      { userId: 1, pocketId: '42' },
+    ],
+  ] as const;
+
+  await Promise.all(requests.map(([result]) => result));
+  assert.deepEqual(
+    calls,
+    requests.map(([, method, request]) => ({ method, request })),
+  );
+});
 
 test('/transactions/email/source-reference delegates lookup', async () => {
   const { calls, controller } = createController();

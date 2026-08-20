@@ -734,6 +734,46 @@ Example response:
 
 This replaces only the active budget category lookup and parent-category join in n8n. Keep Telegram triggers, callback routing, Telegram sending, credentials, retries, and workflow orchestration in n8n.
 
+### Category and pocket management
+
+n8n HTTP Request nodes can use these bodies. NestJS manages the data; n8n keeps trigger, orchestration, and Telegram-send nodes.
+
+`POST /api/veyra/categories/list`
+
+```json
+{ "userId": 1 }
+```
+
+`POST /api/veyra/categories/create`
+
+```json
+{ "userId": 1, "name": "Toys" }
+```
+
+`POST /api/veyra/categories/archive`
+
+```json
+{ "userId": 1, "categoryId": "17" }
+```
+
+`POST /api/veyra/budgets/pockets/list`
+
+```json
+{ "userId": 1 }
+```
+
+`POST /api/veyra/budgets/pockets/rename`
+
+```json
+{ "userId": 1, "pocketId": "42", "name": "Monthly Transactions" }
+```
+
+`POST /api/veyra/budgets/pockets/default`
+
+```json
+{ "userId": 1, "pocketId": "42" }
+```
+
 ### `POST /api/veyra/budgets/upsert`
 
 Creates or updates one budget using exact-case category matching for the same user. Child budgets are matched by `parent_budget_id` and `category`, matching the production `budgets_parent_budget_category_unique` constraint. Top-level budgets are matched in code by user and category because PostgreSQL unique constraints allow multiple `NULL` parent values. `periodType` defaults to `monthly`; other period types are rejected until the database behavior is reviewed.
