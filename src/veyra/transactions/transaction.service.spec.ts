@@ -4259,6 +4259,8 @@ test("reuses the import-linked pending transaction on an initial AI retry", asyn
     merchant: "Kopi Tuku",
     merchant_normalized: "Kopi Tuku",
     category: "Food",
+    pocket_id: "77",
+    pocket_name: "Cash",
     transaction_date: "2026-07-27T02:30:00.000Z",
     status: "pending",
     confidence: 98,
@@ -4292,6 +4294,8 @@ test("reuses the import-linked pending transaction on an initial AI retry", asyn
 
   assert.equal(first.transaction?.id, "123");
   assert.equal(retry.transaction?.id, "123");
+  assert.equal(retry.transaction?.pocket_id, "77");
+  assert.equal(retry.transaction?.pocket_name, "Cash");
   assert.equal(
     calls.filter((call) => /INSERT INTO transactions/.test(call.text)).length,
     1,

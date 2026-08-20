@@ -207,6 +207,7 @@ interface EmailReviewTransactionRow extends QueryResultRow {
   merchant_normalized: string;
   category: string;
   pocket_id: string | number | null;
+  pocket_name: string | null;
   transaction_date: string | Date;
   status: "pending";
   confidence: string | number;
@@ -2442,22 +2443,28 @@ export class TransactionService {
         if (emailImport.transaction_id !== null) {
           const existing = await client.query<EmailReviewTransactionRow>(
             `
-              SELECT id,
-                     user_id,
-                     transaction_type,
-                     amount,
-                     merchant,
-                     merchant_normalized,
-                     category,
-                     pocket_id,
-                     transaction_date,
-                     status,
-                     confidence
-              FROM transactions
-              WHERE id = $1
-                AND user_id = $2
-                AND source = 'email'
-                AND status = 'pending'
+              SELECT transaction.id,
+                     transaction.user_id,
+                     transaction.transaction_type,
+                     transaction.amount,
+                     transaction.merchant,
+                     transaction.merchant_normalized,
+                     transaction.category,
+                     transaction.pocket_id,
+                     pocket.category AS pocket_name,
+                     transaction.transaction_date,
+                     transaction.status,
+                     transaction.confidence
+              FROM transactions AS transaction
+              LEFT JOIN budgets AS pocket
+                ON pocket.id = transaction.pocket_id
+               AND pocket.user_id = transaction.user_id
+               AND pocket.parent_budget_id IS NULL
+               AND COALESCE(pocket.is_active, true) = true
+              WHERE transaction.id = $1
+                AND transaction.user_id = $2
+                AND transaction.source = 'email'
+                AND transaction.status = 'pending'
               LIMIT 1
             `,
             [String(emailImport.transaction_id), input.userId],
@@ -2690,7 +2697,7 @@ export class TransactionService {
       merchantNormalized: row.merchant_normalized,
       category: row.category,
       pocket_id: row.pocket_id ? String(row.pocket_id) : null,
-      pocket_name: null,
+      pocket_name: row.pocket_name,
       transactionDate:
         row.transaction_date instanceof Date
           ? row.transaction_date.toISOString()
