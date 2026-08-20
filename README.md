@@ -6,6 +6,24 @@ This app is intentionally small. It is a service layer pilot, not a replacement 
 
 `/veyra/budgets/status` accepts `{ "userId": "1", "pocketId": "42" }`. Category lookup remains compatible for rows with `pocket_id IS NULL`; n8n still triggers watchdogs and sends Telegram messages.
 
+Pocket-aware n8n HTTP bodies (n8n still owns Telegram triggers, callbacks, and sending):
+
+```json
+POST /api/veyra/budgets/status
+{ "userId": "1", "pocketId": "42" }
+// { "budget_id":"42", "spent_amount":500000, "child_breakdown":[] }
+
+POST /api/veyra/budgets/overspending/handle
+{ "userId":"1", "pocketId":"42" }
+// { "status":"alert_required", "message": { "text":"...", "parse_mode":"HTML" } }
+
+POST /api/veyra/budgets/overspending/handle
+{ "userId":"1", "transactionId":"99" }
+// { "status":"alert_required", "data": { "budgetId":"42" } }
+```
+
+Budget overview remains the existing budget-handle request (`{ "userId":"1", "llmResult": { "intent":"budget_overview" } }`) and returns ordered Telegram-ready `messages`; n8n sends those messages unchanged.
+
 ## Project Structure
 
 ```txt
