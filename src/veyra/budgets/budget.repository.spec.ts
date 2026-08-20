@@ -49,7 +49,7 @@ test('sets the default after locking the active pocket set and clearing the prio
   assert.match(calls[2].text, /is_default = true/);
 });
 
-test('pocket status SQL keeps assigned, child, and legacy spending boundaries', async () => {
+test('pocket status SQL gives explicit ID precedence over a colliding category', async () => {
   const { calls, repository } = createRepository([
     [
       {
@@ -65,7 +65,8 @@ test('pocket status SQL keeps assigned, child, and legacy spending boundaries', 
 
   const row = await repository.findPocketStatus({
     userId: '1',
-    lookup: '42',
+    pocketId: '42',
+    category: '42',
     cycleStart: '2026-08-01',
     cycleEnd: '2026-09-01',
   });
@@ -76,7 +77,17 @@ test('pocket status SQL keeps assigned, child, and legacy spending boundaries', 
     '42',
     '2026-08-01',
     '2026-09-01',
+    '42',
   ]);
+  assert.match(calls[0].text, /WHEN \$2::text IS NOT NULL THEN b\.id::text = \$2/);
+  assert.match(
+    calls[0].text,
+    /ELSE lower\(b\.category\) = lower\(\$5\)/,
+  );
+  assert.doesNotMatch(
+    calls[0].text,
+    /b\.id::text = \$2 OR lower\(b\.category\)/,
+  );
   assert.match(calls[0].text, /t\.pocket_id = pocket\.id/);
   assert.doesNotMatch(
     calls[0].text,
@@ -101,6 +112,30 @@ test('pocket status SQL keeps assigned, child, and legacy spending boundaries', 
   );
   assert.match(calls[0].text, /SUM\(child_spending\.budget_amount\)/);
   assert.match(calls[0].text, /COALESCE\(child\.is_active, true\) = true/);
+});
+
+test('pocket status SQL uses category compatibility only when ID is omitted', async () => {
+  const { calls, repository } = createRepository();
+
+  await repository.findPocketStatus({
+    userId: '1',
+    category: 'Food',
+    cycleStart: '2026-08-01',
+    cycleEnd: '2026-09-01',
+  });
+
+  assert.deepEqual(calls[0].values, [
+    '1',
+    null,
+    '2026-08-01',
+    '2026-09-01',
+    'Food',
+  ]);
+  assert.match(calls[0].text, /WHEN \$2::text IS NOT NULL THEN b\.id::text = \$2/);
+  assert.match(
+    calls[0].text,
+    /ELSE lower\(b\.category\) = lower\(\$5\)/,
+  );
 });
 
 test('pocket overview SQL keeps assigned and null-pocket compatibility isolated', async () => {

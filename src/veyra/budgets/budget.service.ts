@@ -315,7 +315,8 @@ export class BudgetService {
 
     const row = await this.repository.findPocketStatus({
       userId,
-      lookup,
+      pocketId,
+      category,
       cycleStart: cycle.cycle_start,
       cycleEnd: cycle.cycle_end,
     });

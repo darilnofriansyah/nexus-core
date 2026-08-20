@@ -45,15 +45,17 @@ function createService(input: unknown[][] | ServiceOptions = []) {
     setDefaultPocket: async () => null,
     findPocketStatus: async (request: {
       userId: string;
-      lookup: string;
+      pocketId?: string;
+      category?: string;
       cycleStart: string;
       cycleEnd: string;
     }) => {
       const result = await database.query('findPocketStatus', [
         request.userId,
-        request.lookup,
+        request.pocketId ?? null,
         request.cycleStart,
         request.cycleEnd,
+        request.category ?? null,
       ]);
       return result.rows[0] ?? null;
     },
@@ -309,9 +311,10 @@ test('looks up user cycle then maps repository pocket status', async () => {
   assert.deepEqual(calls[0].values, ['telegram-123']);
   assert.deepEqual(calls[1].values, [
     'telegram-123',
-    'food',
+    null,
     '2026-06-15',
     '2026-07-15',
+    'food',
   ]);
   assert.equal(calls[1].text, 'findPocketStatus');
   assert.deepEqual(status, {
@@ -328,16 +331,28 @@ test('looks up user cycle then maps repository pocket status', async () => {
   });
 });
 
-test('parent pocket counts assigned confirmed expenses regardless of category', async () => {
+test('explicit pocket ID wins when category text collides with another pocket', async () => {
   const { calls, service } = createService([
     [{ cycle_start_day: 1 }],
-    [{ budget_id: '42', category: 'Monthly Transactions', parent_budget_id: null, budget_amount: '1000000', spent_amount: '500000', child_breakdown: [] }],
+    [{ budget_id: '42', category: '42', parent_budget_id: null, budget_amount: '1000000', spent_amount: '500000', child_breakdown: [] }],
   ]);
 
-  const result = await service.getBudgetStatus({ userId: '1', pocketId: '42', category: 'Monthly Transactions' } as never);
+  const result = await service.getBudgetStatus({
+    userId: '1',
+    pocketId: '42',
+    category: '42',
+    asOfDate: '2026-08-20',
+  });
 
   assert.equal(result.spent_amount, 500000);
   assert.equal(calls[1].text, 'findPocketStatus');
+  assert.deepEqual(calls[1].values, [
+    '1',
+    '42',
+    '2026-08-01',
+    '2026-09-01',
+    '42',
+  ]);
 });
 
 test('returns direct category status without child breakdown', async () => {
@@ -490,9 +505,10 @@ test('uses custom cycle day for budget status lookup', async () => {
 
   assert.deepEqual(calls[1].values, [
     'user-1',
-    'Food',
+    null,
     '2026-05-20',
     '2026-06-20',
+    'Food',
   ]);
   assert.equal(status.cycle_start, '2026-05-20');
   assert.equal(status.cycle_end, '2026-06-20');

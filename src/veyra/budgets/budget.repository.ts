@@ -12,7 +12,8 @@ interface PocketRow extends QueryResultRow {
 
 export interface PocketStatusQuery {
   userId: string;
-  lookup: string;
+  pocketId?: string;
+  category?: string;
   cycleStart: string;
   cycleEnd: string;
 }
@@ -175,7 +176,10 @@ export class BudgetRepository {
           SELECT b.id, b.category, b.parent_budget_id, b.amount AS budget_amount
           FROM budgets b
           JOIN matched_user u ON u.id = b.user_id
-          WHERE (b.id::text = $2 OR lower(b.category) = lower($2))
+          WHERE CASE
+              WHEN $2::text IS NOT NULL THEN b.id::text = $2
+              ELSE lower(b.category) = lower($5)
+            END
             AND b.parent_budget_id IS NULL
             AND COALESCE(b.is_active, true) = true
           LIMIT 1
@@ -260,7 +264,13 @@ export class BudgetRepository {
         CROSS JOIN totals
         CROSS JOIN child_breakdown
       `,
-      [query.userId, query.lookup, query.cycleStart, query.cycleEnd],
+      [
+        query.userId,
+        query.pocketId ?? null,
+        query.cycleStart,
+        query.cycleEnd,
+        query.category ?? null,
+      ],
     );
 
     return result.rows[0] ?? null;
