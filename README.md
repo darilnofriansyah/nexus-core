@@ -1418,6 +1418,11 @@ The handler derives the internal `userId` from `telegramUserId`; an included `us
 
 The `needs_ai` detector evaluates subject and body together, but admits only known providers with aligned sender authentication. This allows a trusted notification whose body contains only an amount to use a transactional subject as the missing signal, while marketing messages and arbitrary authenticated senders remain outside AI fallback. Parse outcomes are logged to `email_parse_attempts` with structured diagnostics and a trimmed `body_sample`, not the full email body. The table definitions are in `docs/migration/2026-06-23-email-transaction-imports.sql` and should be applied separately.
 
+The deterministic BCA parser accepts both transaction and cancellation
+notification titles. Indonesian cancellation markers such as `PEMBATALAN` and
+`dibatalkan` produce `transactionType = "reversal"`; the n8n HTTP Request
+payload does not change.
+
 Confirmed saves insert into `transactions` with `source = "email"` and `status = "confirmed"` only when the parser returns a valid transaction, amount is positive, merchant is known or an allowed fallback, and category resolves from `category_rules` or an allowed existing fallback budget category. A valid deterministic parse that still needs sender-authentication, merchant, alias, or category review creates one pending transaction and returns the normal confirmation actions. Expense reviews with an unresolved merchant or category must be corrected before Save; income retains its existing optional merchant/category behavior. Redelivery, including the loser of a concurrent import race, resumes the same pending transaction instead of escalating it to AI.
 
 Initial Gmail HTTP Request body:

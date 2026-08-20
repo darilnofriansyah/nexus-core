@@ -257,7 +257,8 @@ export function detectEmailProviderAndTemplate(input: {
 
   if (
     provider === 'BCA' &&
-    (/Notifikasi Transaksi/i.test(text) ||
+    (/Notifikasi (?:Pembatalan )?Transaksi/i.test(text) ||
+      /Notifikasi Pembatalan Transaksi/i.test(subject) ||
       /Credit Card Transaction Notification/i.test(subject)) &&
     /Merchant\s*\/?\s*ATM/i.test(text) &&
     /Jenis Transaksi/i.test(text) &&
@@ -428,7 +429,9 @@ export class BcaCreditCardTransactionParser implements EmailTransactionParser {
       extractMerchantAfterLabels(text, ['Merchant / ATM', 'Merchant/ATM']) ??
       textBetween(text, /Merchant\s*\/?\s*ATM/i, /Jenis Transaksi/i);
     const amount = amountAfter(text, /Sejumlah\s*:?\s*(?:Rp\.?\s*)?([\d.,]+)/i);
-    const type = /\b(reversal|void)\b/i.test(text) ? 'reversal' : 'expense';
+    const type = /\b(reversal|void|pembatalan|dibatalkan)\b/i.test(text)
+      ? 'reversal'
+      : 'expense';
 
     return baseParsed(input, this, {
       merchant,

@@ -139,6 +139,34 @@ test('parses BCA credit card notification when html-to-text drops the title', ()
   assert.equal(parser.parse(parserInput).amount, 51999);
 });
 
+test('parses BCA credit card reversal notification as reversal', () => {
+  const parser = new BcaCreditCardTransactionParser();
+  const parserInput = input(
+    'Notifikasi Pembatalan Transaksi Kartu Kredit BCA Merchant / ATM : SHOPEE.CO.ID Jenis Transaksi : PEMBATALAN Pada Tanggal : 25-06-2026 00:05:42 WIB Sejumlah : Rp243.000,00',
+    {
+      from: 'card@bca.co.id',
+      subject: 'Notifikasi Pembatalan Transaksi Kartu Kredit',
+    },
+  );
+
+  assert.equal(parser.canParse(parserInput), true);
+  assert.equal(parser.parse(parserInput).type, 'reversal');
+});
+
+test('detects BCA credit card reversal from subject when body title is missing', () => {
+  const parser = new BcaCreditCardTransactionParser();
+  const parserInput = input(
+    'Kartu Kredit BCA Merchant / ATM : SHOPEE.CO.ID Jenis Transaksi : PEMBATALAN Pada Tanggal : 25-06-2026 00:05:42 WIB Sejumlah : Rp243.000,00',
+    {
+      from: 'card@bca.co.id',
+      subject: 'Notifikasi Pembatalan Transaksi Kartu Kredit',
+    },
+  );
+
+  assert.equal(parser.canParse(parserInput), true);
+  assert.equal(parser.parse(parserInput).type, 'reversal');
+});
+
 test('parses Mandiri e-money top-up only', () => {
   const parser = new MandiriEmoneyTopupParser();
   const parserInput = input(
