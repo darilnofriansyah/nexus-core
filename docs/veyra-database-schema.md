@@ -19,7 +19,9 @@ Rules for Codex:
 CREATE TABLE public.categories (
   id bigserial NOT NULL,
   "name" text NOT NULL,
-  CONSTRAINT categories_name_key UNIQUE (name),
+  user_id bigint NULL,
+  is_active boolean NOT NULL DEFAULT true,
+  CONSTRAINT categories_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.telegram_users(id) ON DELETE CASCADE,
   CONSTRAINT categories_pkey PRIMARY KEY (id)
 );
 ```
@@ -28,6 +30,25 @@ Columns:
 
 * `id`
 * `name`
+* `user_id`
+* `is_active`
+
+Indexes:
+
+```sql
+CREATE UNIQUE INDEX categories_unique_template_name_ci
+ON public.categories USING btree (lower(name))
+WHERE (user_id IS NULL);
+
+CREATE UNIQUE INDEX categories_unique_user_name_ci
+ON public.categories USING btree (user_id, lower(name))
+WHERE (user_id IS NOT NULL);
+```
+
+Important:
+
+* `categories.user_id IS NULL` identifies a default template.
+* User category uniqueness is case-insensitive per user.
 
 ---
 
@@ -79,11 +100,13 @@ CREATE TABLE public.transactions (
   status varchar(20) DEFAULT 'confirmed'::character varying NOT NULL,
   confidence int4 NULL,
   raw_payload jsonb NULL,
+  pocket_id bigint NULL,
   CONSTRAINT transactions_pkey PRIMARY KEY (id),
   CONSTRAINT transactions_source_check CHECK (((source)::text = ANY ((ARRAY['telegram'::character varying, 'email'::character varying, 'manual'::character varying, 'import'::character varying])::text[]))),
   CONSTRAINT transactions_status_check CHECK (((status)::text = ANY ((ARRAY['pending'::character varying, 'confirmed'::character varying, 'rejected'::character varying])::text[]))),
   CONSTRAINT transactions_transaction_type_check CHECK (((transaction_type)::text = ANY ((ARRAY['expense'::character varying, 'income'::character varying, 'transfer'::character varying, 'reversal'::character varying])::text[]))),
-  CONSTRAINT transactions_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.telegram_users(id) ON DELETE CASCADE
+  CONSTRAINT transactions_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.telegram_users(id) ON DELETE CASCADE,
+  CONSTRAINT transactions_pocket_id_fkey FOREIGN KEY (pocket_id) REFERENCES public.budgets(id) ON DELETE SET NULL
 );
 ```
 
@@ -94,6 +117,7 @@ CREATE INDEX idx_transactions_budget_lookup ON public.transactions USING btree (
 CREATE INDEX idx_transactions_category ON public.transactions USING btree (category);
 CREATE INDEX idx_transactions_status ON public.transactions USING btree (status);
 CREATE INDEX idx_transactions_user_date ON public.transactions USING btree (user_id, transaction_date DESC);
+CREATE INDEX idx_transactions_user_pocket_date ON public.transactions USING btree (user_id, pocket_id, transaction_date);
 ```
 
 Allowed `transaction_type`:
@@ -126,6 +150,7 @@ Important:
 * Budget spend must only count rows where `status = 'confirmed'`.
 * Pending and rejected transactions must not affect budget spend.
 * Use `transaction_date` for period and cycle filtering.
+* `transactions.pocket_id` is nullable during rollout and references a top-level budget by application rule.
 
 ---
 
@@ -167,6 +192,7 @@ CREATE TABLE public.budgets (
   amount numeric(15, 2) NULL,
   period_type varchar(20) DEFAULT 'monthly'::character varying NOT NULL,
   is_active bool DEFAULT true NOT NULL,
+  is_default boolean NOT NULL DEFAULT false,
   created_at timestamptz DEFAULT now() NULL,
   CONSTRAINT budgets_period_type_check CHECK (((period_type)::text = ANY ((ARRAY['weekly'::character varying, 'monthly'::character varying, 'yearly'::character varying])::text[]))),
   CONSTRAINT budgets_pkey PRIMARY KEY (id),
@@ -187,6 +213,10 @@ ON public.budgets USING btree (user_id, lower(category))
 WHERE (parent_budget_id IS NULL);
 
 CREATE INDEX idx_budgets_user ON public.budgets USING btree (user_id);
+
+CREATE UNIQUE INDEX budgets_unique_default_active_top_level_per_user
+ON public.budgets USING btree (user_id)
+WHERE (is_default AND is_active AND (parent_budget_id IS NULL));
 ```
 
 Allowed `period_type`:
@@ -202,6 +232,7 @@ Important:
 * Child/sub-budget: `parent_budget_id IS NOT NULL`.
 * Top-level category uniqueness is scoped by `(user_id, lower(category))`.
 * Child category uniqueness is scoped by `(user_id, parent_budget_id, lower(category))`.
+* `budgets.is_default` is valid only for one active top-level budget per user.
 * There is no `updated_at`, `start_date`, or `end_date` column in this current schema.
 
 ---
