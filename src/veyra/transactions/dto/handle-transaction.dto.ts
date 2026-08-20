@@ -5,6 +5,7 @@ import {
 import { TelegramReplyMarkupDto } from "./confirmation-payload.dto";
 import { BudgetWatchdogResponseDto } from "../../budgets/dto/overspending-check.dto";
 import { TransactionWatchdogNotificationDto } from "./transaction-watchdog.dto";
+import { PocketDto } from "../../budgets/dto/pocket.dto";
 
 export type TransactionSource = "telegram" | "email" | "manual" | "import";
 export type TransactionStatus = "pending" | "confirmed" | "rejected";
@@ -31,6 +32,7 @@ export interface TransactionHandleRequestDto {
   userId: string | number;
   source: TransactionSource | string;
   text?: string;
+  pocketId?: string;
   llmResult?: ManualTransactionLlmResultDto;
 }
 
@@ -43,6 +45,7 @@ export interface TransactionHandleResponseDto {
   status:
     | TransactionStatus
     | "awaiting_missing_field"
+    | "awaiting_pocket"
     | "regret_note_added"
     | "cancelled"
     | "unsupported_source";
@@ -56,10 +59,13 @@ export interface TransactionHandleResponseDto {
     nextState: TransactionHandleStateName;
     payload: ManualTransactionLlmResultDto | Record<string, never>;
   };
+  pockets?: PocketDto[];
 }
 
 export interface SaveTransactionInputDto {
   normalized: NormalizeTransactionResponseDto;
+  pocketId: string | null;
+  pocketName: string | null;
   status: TransactionStatus;
   confidence: number;
   rawPayload: unknown;
@@ -73,6 +79,8 @@ export interface SavedTransactionDto {
   merchant: string | null;
   merchantNormalized: string | null;
   category: string | null;
+  pocketId: string | null;
+  pocketName: string | null;
   transactionDate: string;
   source: string;
   notes: string | null;

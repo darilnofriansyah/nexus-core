@@ -14,6 +14,9 @@ export interface TransactionConfirmationPayloadRequestDto {
   merchant?: string | null;
   merchantNormalized?: string | null;
   category?: string | null;
+  pocketId?: string | null;
+  pocketName?: string | null;
+  needsCategoryReview?: boolean;
   wallet?: string;
   notes?: string | null;
   transactionDate: string;
@@ -35,6 +38,8 @@ export interface TransactionConfirmationSummaryDto {
   amount: number;
   merchant: string | null;
   category: string | null;
+  pocketId: string | null;
+  pocketName: string | null;
   wallet: string;
   notes: string;
 }

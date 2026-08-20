@@ -12,6 +12,7 @@ import { QueryResultRow } from "pg";
 import { VeyraAiService } from "../../ai/veyra-ai.service";
 import { DatabaseService } from "../../database/database.service";
 import { BudgetService } from "../budgets/budget.service";
+import { PocketDto } from "../budgets/dto/pocket.dto";
 import { BudgetWatchdogResponseDto } from "../budgets/dto/overspending-check.dto";
 import {
   NormalizeTransactionRequestDto,
@@ -54,6 +55,7 @@ import {
 import {
   SavedTransactionDto,
   SaveTransactionInputDto,
+  ManualTransactionLlmResultDto,
   TransactionHandleRequestDto,
   TransactionHandleResponseDto,
   TransactionHandleStateName,
@@ -221,6 +223,8 @@ interface TransactionRow extends QueryResultRow {
   merchant: string | null;
   merchant_normalized: string | null;
   category: string | null;
+  pocket_id?: string | number | null;
+  pocket_name?: string | null;
   transaction_date?: string | Date | null;
   notes?: string | null;
   status: string | null;
@@ -629,13 +633,28 @@ export class TransactionService {
       throw new BadRequestException("category is required");
     }
 
+    const assignment =
+      normalized.transactionType === "expense"
+        ? await this.requireBudgetService().resolveExpenseAssignment({
+            userId: normalized.userId,
+            pocketId: request.pocketId,
+            category: normalized.category,
+          })
+        : null;
+
+    if (assignment?.status === "awaiting_pocket") {
+      return this.awaitingPocketResponse(llmResult, assignment.pockets);
+    }
+
     const status = this.statusFromConfidence(confidence);
     const savedTransaction = await this.saveTransaction({
       normalized: {
         ...normalized,
         confidence,
-        category: normalized.category,
+        category: assignment?.category ?? normalized.category,
       },
+      pocketId: assignment?.pocketId ?? null,
+      pocketName: assignment?.pocketName ?? null,
       status,
       confidence,
       rawPayload: {
@@ -651,7 +670,11 @@ export class TransactionService {
       savedTransaction.id,
     );
 
-    return this.buildHandleResponse(savedTransaction, watchdog);
+    return this.buildHandleResponse(
+      savedTransaction,
+      watchdog,
+      assignment?.needsCategoryReview,
+    );
   }
 
   async handleManagedTransaction(
@@ -4269,6 +4292,8 @@ export class TransactionService {
       (income ? null : "Unknown");
     const category =
       this.cleanString(request.category) ?? (income ? null : "Uncategorized");
+    const pocketId = this.cleanString(request.pocketId) ?? null;
+    const pocketName = this.cleanString(request.pocketName) ?? null;
     const wallet = this.cleanString(request.wallet) ?? EMPTY_CONFIRMATION_FIELD;
     const notes =
       this.cleanString(request.notes ?? undefined) ?? EMPTY_CONFIRMATION_FIELD;
@@ -4295,6 +4320,7 @@ export class TransactionService {
       category,
       merchant,
       notes,
+      pocketName,
       transactionType,
       wallet,
       warningLines,
@@ -4310,11 +4336,14 @@ export class TransactionService {
       replyMarkup: this.buildConfirmationReplyMarkup(
         callbackTransactionId,
         callbackMode,
+        request.needsCategoryReview,
       ),
       summary: {
         amount,
         merchant,
         category,
+        pocketId,
+        pocketName,
         wallet,
         notes,
       },
@@ -5007,6 +5036,29 @@ export class TransactionService {
     }
   }
 
+  private requireBudgetService(): BudgetService {
+    if (!this.budgetService) {
+      throw new ServiceUnavailableException("Budget service is unavailable");
+    }
+    return this.budgetService;
+  }
+
+  private awaitingPocketResponse(
+    llmResult: ManualTransactionLlmResultDto,
+    pockets: PocketDto[],
+  ): TransactionHandleResponseDto {
+    return {
+      status: "awaiting_pocket",
+      transactionId: null,
+      message: "Choose a pocket for this expense.",
+      state: {
+        nextState: "record_transaction_state",
+        payload: llmResult,
+      },
+      pockets,
+    };
+  }
+
   private statusFromConfidence(confidence: number): TransactionStatus {
     return confidence >= 90 ? "confirmed" : "pending";
   }
@@ -5030,6 +5082,7 @@ export class TransactionService {
           merchant,
           merchant_normalized,
           category,
+          pocket_id,
           transaction_date,
           source,
           notes,
@@ -5037,7 +5090,7 @@ export class TransactionService {
           confidence,
           raw_payload
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, 'manual', $8, $9, $10, $11)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'manual', $9, $10, $11, $12)
         RETURNING id
       `,
       [
@@ -5047,6 +5100,7 @@ export class TransactionService {
         input.normalized.merchant,
         input.normalized.merchantNormalized,
         input.normalized.category,
+        input.pocketId,
         input.normalized.transactionDate,
         input.normalized.notes,
         input.status,
@@ -5069,6 +5123,8 @@ export class TransactionService {
       merchant: input.normalized.merchant,
       merchantNormalized: input.normalized.merchantNormalized,
       category: input.normalized.category,
+      pocketId: input.pocketId,
+      pocketName: input.pocketName,
       transactionDate: input.normalized.transactionDate,
       source: "manual",
       notes: input.normalized.notes,
@@ -5080,6 +5136,7 @@ export class TransactionService {
   private buildHandleResponse(
     transaction: SavedTransactionDto,
     watchdog?: TransactionWatchdogResponseDto,
+    needsCategoryReview = false,
   ): TransactionHandleResponseDto {
     if (transaction.status === "confirmed") {
       const message =
@@ -5115,6 +5172,9 @@ export class TransactionService {
       merchant: transaction.merchant,
       merchantNormalized: transaction.merchantNormalized,
       category: transaction.category,
+      pocketId: transaction.pocketId,
+      pocketName: transaction.pocketName,
+      needsCategoryReview,
       notes: transaction.notes,
       transactionDate: transaction.transactionDate,
       source: transaction.source,
@@ -5991,6 +6051,8 @@ export class TransactionService {
     amount: number;
     merchant: string;
     category: string | null;
+    pocketId: string | null;
+    pocketName: string | null;
   } {
     return {
       amount: this.normalizeAmount(pendingTransaction.amount),
@@ -5999,6 +6061,8 @@ export class TransactionService {
         pendingTransaction.merchant ??
         "Unknown",
       category: pendingTransaction.category,
+      pocketId: null,
+      pocketName: null,
     };
   }
 
@@ -6010,6 +6074,8 @@ export class TransactionService {
       merchant:
         transaction.merchant_normalized ?? transaction.merchant ?? "Unknown",
       category: transaction.category,
+      pocketId: transaction.pocket_id ? String(transaction.pocket_id) : null,
+      pocketName: transaction.pocket_name ?? null,
     };
   }
 
@@ -6689,6 +6755,8 @@ export class TransactionService {
           merchant,
           merchant_normalized,
           category,
+          pocket_id,
+          (SELECT category FROM budgets WHERE id = transactions.pocket_id) AS pocket_name,
           transaction_type,
           transaction_date,
           status,
@@ -6718,6 +6786,8 @@ export class TransactionService {
                merchant,
                merchant_normalized,
                category,
+               pocket_id,
+               (SELECT category FROM budgets WHERE id = transactions.pocket_id) AS pocket_name,
                transaction_date,
                notes,
                status,
@@ -6738,6 +6808,7 @@ export class TransactionService {
   private buildConfirmationReplyMarkup(
     transactionId: string | undefined,
     callbackMode: TransactionCallbackMode,
+    needsCategoryReview = false,
   ): TelegramReplyMarkupDto {
     if (!transactionId) {
       return { inline_keyboard: [] };
@@ -6774,7 +6845,7 @@ export class TransactionService {
             callback_data: this.saveTransactionCallbackData(transactionId),
           },
           {
-            text: "Change Category",
+            text: needsCategoryReview ? "Review Category" : "Change Category",
             callback_data: this.changeCategoriesCallbackData(transactionId),
           },
         ],
@@ -6793,6 +6864,7 @@ export class TransactionService {
     amount: number;
     merchant: string | null;
     category: string | null;
+    pocketName: string | null;
     wallet: string;
     notes: string;
     warningLines: string[];
@@ -6804,6 +6876,7 @@ export class TransactionService {
       `Amount: ${this.formatCurrency(input.amount)}`,
       ...(input.merchant ? [`Merchant: ${input.merchant}`] : []),
       ...(input.category ? [`Category: ${input.category}`] : []),
+      ...(input.pocketName ? [`Pocket: ${input.pocketName}`] : []),
       `Wallet: ${input.wallet}`,
       `Notes: ${input.notes}`,
       ...input.warningLines,

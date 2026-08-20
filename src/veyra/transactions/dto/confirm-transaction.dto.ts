@@ -17,6 +17,8 @@ export interface ConfirmTransactionSummaryDto {
   amount: number;
   merchant: string;
   category: string | null;
+  pocketId: string | null;
+  pocketName: string | null;
 }
 
 export interface ConfirmTransactionEditMessageDto {

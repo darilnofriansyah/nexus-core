@@ -114,18 +114,132 @@ function createService(
     },
   } as unknown as DatabaseService;
 
+  const resolvedBudgetService = budgetService ?? defaultBudgetService();
+  if (!("resolveExpenseAssignment" in resolvedBudgetService)) {
+    Object.assign(resolvedBudgetService, {
+      resolveExpenseAssignment: async (request: { category: string }) => ({
+        status: "resolved" as const,
+        category: request.category,
+        needsCategoryReview: false,
+        pocketId: "42",
+        pocketName: "Monthly Transactions",
+      }),
+    });
+  }
+
   return {
     calls,
     transactionCalls,
     transactionEvents,
     service: new TransactionService(
       database,
-      budgetService,
+      resolvedBudgetService,
       riskReviewRepository,
       emailParserTemplateRepository,
       veyraAiService,
     ),
   };
+}
+
+function defaultBudgetService() {
+  return {
+    getBudgetCategories: async () => ({ status: "ok", categories: [] }),
+    resolveExpenseAssignment: async (request: { category: string }) => ({
+      status: "resolved" as const,
+      category: request.category,
+      needsCategoryReview: false,
+      pocketId: "42",
+      pocketName: "Monthly Transactions",
+    }),
+    evaluateTransaction: async () => ({ checked: false, notifications: [] }),
+  } as unknown as BudgetService;
+}
+
+function manualExpense(overrides: Record<string, unknown> = {}) {
+  return {
+    userId: 1,
+    source: "manual",
+    llmResult: {
+      transaction_type: "expense",
+      amount: 500_000,
+      merchant: "Toy Store",
+      category: "Toys",
+      confidence: 80,
+      missing_fields: [],
+    },
+    ...overrides,
+  };
+}
+
+function manualIncome(overrides: Record<string, unknown> = {}) {
+  return {
+    userId: 1,
+    source: "manual",
+    llmResult: {
+      transaction_type: "income",
+      amount: 500_000,
+      confidence: 80,
+      missing_fields: [],
+    },
+    ...overrides,
+  };
+}
+
+function createBudgetService(
+  assignment: {
+    status: "resolved";
+    category: string;
+    needsCategoryReview: boolean;
+    pocketId: string;
+    pocketName: string;
+  } = {
+    status: "resolved",
+    category: "Uncategorized",
+    needsCategoryReview: true,
+    pocketId: "42",
+    pocketName: "Monthly Transactions",
+  },
+) {
+  return {
+    resolveExpenseAssignment: async () => assignment,
+  } as unknown as BudgetService;
+}
+
+function createBudgetServiceWithCalls() {
+  const calls: Array<{ userId: string; pocketId?: string; category: string }> = [];
+  return {
+    calls,
+    service: {
+      resolveExpenseAssignment: async (request: {
+        userId: string;
+        pocketId?: string;
+        category: string;
+      }) => {
+        calls.push(request);
+        return {
+          status: "resolved" as const,
+          category: "Uncategorized",
+          needsCategoryReview: true,
+          pocketId: "42",
+          pocketName: "Monthly Transactions",
+        };
+      },
+    } as unknown as BudgetService,
+  };
+}
+
+function createAwaitingPocketBudgetService() {
+  return {
+    resolveExpenseAssignment: async () => ({
+      status: "awaiting_pocket" as const,
+      category: "Uncategorized",
+      needsCategoryReview: true,
+      pockets: [
+        { id: "42", name: "Monthly Transactions", amount: null, isDefault: false },
+        { id: "43", name: "Cash", amount: null, isDefault: false },
+      ],
+    }),
+  } as unknown as BudgetService;
 }
 
 function createTemplateRepository(
@@ -888,14 +1002,15 @@ test("handles manual transaction with decimal confidence as confirmed", async ()
     /Recorded: Rp25\.000 at Kopi Tuku under Coffee\./,
   );
   assert.match(calls[1].text, /INSERT INTO transactions/);
-  assert.deepEqual(calls[1].values.slice(0, 11), [
+  assert.deepEqual(calls[1].values.slice(0, 12), [
     "1",
     "expense",
     25000,
     "kopi tuku",
     "kopi tuku",
     "Coffee",
-    calls[1].values[6],
+    "42",
+    calls[1].values[7],
     null,
     "confirmed",
     94,
@@ -915,6 +1030,56 @@ test("handles manual transaction with decimal confidence as confirmed", async ()
       },
     },
   ]);
+});
+
+test("saves Toys under default Monthly Transactions without Toys budget", async () => {
+  const { calls, service } = createService(
+    [[], [{ id: "101" }]],
+    createBudgetService(),
+  );
+
+  const result = await service.handleManualTransaction(manualExpense());
+
+  assert.equal(result.status, "pending");
+  const insert = calls.find(({ text }) => /INSERT INTO transactions/.test(text));
+  assert.match(insert?.text ?? "", /category,\s*pocket_id/);
+  assert.ok(insert?.values.includes("42"));
+  assert.match(
+    result.confirmationPayload?.reply_markup.inline_keyboard
+      .flat()
+      .find((button) => button.callback_data.startsWith("change_categories:"))
+      ?.text ?? "",
+    /Review Category/,
+  );
+});
+
+test("explicit pocket overrides default", async () => {
+  const { calls: assignmentCalls, service: budgetService } =
+    createBudgetServiceWithCalls();
+  const { service } = createService([[], [{ id: "101" }]], budgetService);
+
+  await service.handleManualTransaction({ ...manualExpense(), pocketId: "77" });
+
+  assert.equal(assignmentCalls[0].pocketId, "77");
+});
+
+test("multiple pockets without default returns awaiting_pocket without INSERT", async () => {
+  const { calls, service } = createService([], createAwaitingPocketBudgetService());
+
+  const result = await service.handleManualTransaction(manualExpense());
+
+  assert.equal(result.status, "awaiting_pocket");
+  assert.equal(calls.some(({ text }) => /INSERT INTO transactions/.test(text)), false);
+});
+
+test("income keeps null category and null pocket", async () => {
+  const { calls, service } = createService([[{ id: "101" }]]);
+
+  const result = await service.handleManualTransaction(manualIncome());
+
+  assert.equal(result.status, "pending");
+  assert.equal(result.confirmationPayload?.text.includes("Pocket:"), false);
+  assert.equal(calls[0].values.includes("42"), false);
 });
 
 test("extracts from text when llmResult is absent and reuses the existing save path", async () => {
@@ -946,7 +1111,7 @@ test("extracts from text when llmResult is absent and reuses the existing save p
     },
   } as unknown as VeyraAiService;
   const { calls, service } = createService(
-    [[], [{ id: "10123" }]],
+    Array.from({ length: 8 }, () => [{ id: "10123" }]),
     budgetService,
     undefined,
     undefined,
@@ -972,9 +1137,10 @@ test("extracts from text when llmResult is absent and reuses the existing save p
     "✅ Recorded: Rp25.000 at Kopi Tuku under Coffee.",
   );
   assert.deepEqual(result.notifications, []);
-  assert.match(calls[1].text, /INSERT INTO transactions/);
-  assert.equal(calls[1].values[8], "confirmed");
-  assert.equal(calls[1].values[9], 94);
+  const insert = calls.find(({ text }) => /INSERT INTO transactions/.test(text));
+  assert.match(insert?.text ?? "", /INSERT INTO transactions/);
+  assert.equal(insert?.values[9], "confirmed");
+  assert.equal(insert?.values[10], 94);
 });
 
 test("uses caller llmResult without calling OpenAI", async () => {
@@ -1308,8 +1474,8 @@ test("handles manual transaction with integer confidence as confirmed", async ()
   });
 
   assert.equal(result.status, "confirmed");
-  assert.equal(calls[1].values[9], 94);
-  assert.equal(calls[1].values[8], "confirmed");
+  assert.equal(calls[1].values[10], 94);
+  assert.equal(calls[1].values[9], "confirmed");
 });
 
 test("handles manual transaction with low confidence as pending confirmation", async () => {
@@ -1328,8 +1494,8 @@ test("handles manual transaction with low confidence as pending confirmation", a
   });
 
   assert.equal(result.status, "pending");
-  assert.equal(calls[1].values[8], "pending");
-  assert.equal(calls[1].values[9], 75);
+  assert.equal(calls[1].values[9], "pending");
+  assert.equal(calls[1].values[10], 75);
   assert.equal(result.message, "Please confirm this transaction.");
   assert.match(result.confirmationPayload?.text ?? "", /Confirm transaction/);
   assert.deepEqual(result.confirmationPayload?.reply_markup.inline_keyboard, [
@@ -1689,6 +1855,8 @@ test("builds confirmation payload for normal pending transaction", () => {
     amount: 50000,
     merchant: "GoPay",
     category: "Transport",
+    pocketId: null,
+    pocketName: null,
     wallet: "BCA",
     notes: "QRIS payment",
   });
@@ -1911,6 +2079,8 @@ test("confirms a pending transaction row", async () => {
       amount: 50000,
       merchant: "GoPay",
       category: "Transport",
+      pocketId: null,
+      pocketName: null,
     },
     editMessage: {
       text: "Transaction 101 confirmed: GoPay • Rp50.000",
@@ -2249,6 +2419,8 @@ test("cancels a pending transaction row", async () => {
     amount: 50000,
     merchant: "GoPay",
     category: "Transport",
+    pocketId: null,
+    pocketName: null,
   });
   assert.deepEqual(result.editMessage, {
     text: "Transaction 101 cancelled.",

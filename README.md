@@ -1136,6 +1136,8 @@ The MVP supports `source: "manual"` only. `source: "email"` and other sources in
 
 Core API normalizes transaction type, amount, transaction date, merchant, merchant alias, category, and confidence, then inserts directly into the production `transactions` table. It does not write to `pending_transactions`, does not create merchant aliases or category rules, and does not send Telegram messages. Expenses require merchant and category; if `llmResult.category` is missing, Core API tries the existing `category_rules` lookup and rejects the request when no category resolves. Income may omit merchant and category, which are persisted as `NULL`.
 
+Manual expenses resolve category and pocket independently before insert. Send optional `pocketId` to select an active top-level pocket; otherwise Core uses the user's default pocket. An unknown AI category saves as `Uncategorized` with a `Review Category` callback, rather than creating a budget. If no default exists and more than one pocket is available, Core returns `status: "awaiting_pocket"` with `pockets` and writes nothing; n8n keeps pocket selection and the follow-up HTTP Request orchestration.
+
 Apply `docs/migration/2026-07-24-income-nullable-category.sql` before deploying this compatible API version.
 
 Confidence may be sent as a decimal (`0.94`) or integer (`94`). Core API saves it as an integer from `0` to `100`; values `>= 90` are saved as `confirmed`, and lower values are saved as `pending`.
@@ -1171,6 +1173,27 @@ Rollback request body with caller-provided `llmResult`:
     "confidence": 0.94,
     "transaction_date": null,
     "notes": null,
+    "missing_fields": []
+  }
+}
+```
+
+Explicit-pocket n8n HTTP Request body:
+
+```json
+{
+  "userId": 1,
+  "telegramUserId": "976684739",
+  "source": "manual",
+  "text": "Bought a toy for 500000",
+  "pocketId": "42",
+  "llmResult": {
+    "intent": "record_transaction",
+    "transaction_type": "expense",
+    "amount": 500000,
+    "merchant": "Toy Store",
+    "category": "Toys",
+    "confidence": 95,
     "missing_fields": []
   }
 }
