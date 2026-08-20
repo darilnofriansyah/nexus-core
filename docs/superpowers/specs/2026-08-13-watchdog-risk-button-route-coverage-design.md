@@ -22,8 +22,8 @@ that confirms or materially edits a transaction.
 - Keep risk-action callbacks unchanged; they intentionally clear keyboards.
 - Keep direct manual, email, confirm, and set-category response contracts:
   ordered `notifications[]` remain the delivery source.
-- Update local manual and email n8n exports to deliver the base message followed
-  by each notification with its original `reply_markup`.
+- Update local manual and email n8n exports to keep their existing combined
+  message and attach the first `risk_review.reply_markup`.
 - Do not add Watchdog side effects to the web-only `PATCH /transactions/:id`;
   that route has no Telegram delivery boundary and needs a separate product
   decision.

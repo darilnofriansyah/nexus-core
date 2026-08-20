@@ -2701,6 +2701,41 @@ test("handles catid callback by setting category and confirming transaction", as
   assert.deepEqual(calls[2].values, ["Food", "123", "1"]);
 });
 
+test("handles catid callback with risk-review keyboard", async () => {
+  const { service } = createService([
+    [{ ...transaction, id: "123", user_id: "1" }],
+    [{ id: "10", category: "Food", parent_category: null }],
+    [],
+  ]);
+  const riskReplyMarkup = watchdogN8nFixture.notifications.riskReplyMarkup;
+
+  spyOnWatchdog(service, {
+    notifications: [
+      {
+        type: "risk_review",
+        priority: 1,
+        severity: "high",
+        review_id: 55,
+        message: watchdogN8nFixture.notifications.messages[0],
+        reply_markup: riskReplyMarkup,
+      },
+    ],
+  });
+
+  const result = await service.handleTransactionCallback({
+    telegramUserId: "976684739",
+    userId: 1,
+    callbackData: "catid:10:123",
+    chatId: "chat-1",
+    messageId: 42,
+  });
+
+  assert.equal(result.status, "ok");
+  assert.equal(result.action, "catid");
+  assert.match(result.telegram.text, /Large transaction detected/);
+  assert.deepEqual(result.telegram.reply_markup, riskReplyMarkup);
+});
+
 test("handles immediate risk callbacks from the n8n fixture", async () => {
   const riskReviews = createRiskReviewRepository();
   const { service } = createService([], undefined, riskReviews.repository);
@@ -5328,7 +5363,19 @@ test("manage edit confirm triggers watchdog", async () => {
     [manageTransaction],
     [],
   ]);
-  const watchdogCalls = spyOnWatchdog(service);
+  const riskReplyMarkup = watchdogN8nFixture.notifications.riskReplyMarkup;
+  const watchdogCalls = spyOnWatchdog(service, {
+    notifications: [
+      {
+        type: "risk_review",
+        priority: 1,
+        severity: "high",
+        review_id: 55,
+        message: watchdogN8nFixture.notifications.messages[0],
+        reply_markup: riskReplyMarkup,
+      },
+    ],
+  });
 
   const result = await service.handleManagedTransaction(
     {
@@ -5340,6 +5387,7 @@ test("manage edit confirm triggers watchdog", async () => {
   );
 
   assert.equal(result.status, "completed");
+  assert.deepEqual(result.reply_markup, riskReplyMarkup);
   assert.deepEqual(watchdogCalls, ["101"]);
 });
 

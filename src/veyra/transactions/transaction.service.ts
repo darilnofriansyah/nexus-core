@@ -1361,6 +1361,7 @@ export class TransactionService {
           `Updated.\n\n${this.manageTransactionLine(updated)}`,
           watchdog,
         ),
+        replyMarkup: this.riskReviewReplyMarkup(watchdog.notifications),
         data: { transaction: updated, notifications: watchdog.notifications },
       });
     }
@@ -4432,12 +4433,6 @@ export class TransactionService {
         result.status === "confirmed" ||
         result.status === "already_confirmed"
       ) {
-        const riskReplyMarkup =
-          result.notifications?.find(
-            (notification) =>
-              notification.type === "risk_review" && notification.reply_markup,
-          )?.reply_markup ?? null;
-
         return this.transactionCallbackOk({
           action: parsed.action,
           text:
@@ -4445,7 +4440,7 @@ export class TransactionService {
             "This transaction was already confirmed.",
           request,
           transactionId: parsed.transactionId,
-          replyMarkup: riskReplyMarkup,
+          replyMarkup: this.riskReviewReplyMarkup(result.notifications),
         });
       }
 
@@ -4534,7 +4529,7 @@ export class TransactionService {
             "Transaction category updated and confirmed.",
           request,
           transactionId: parsed.transactionId,
-          replyMarkup: null,
+          replyMarkup: this.riskReviewReplyMarkup(result.notifications),
         });
       }
 
@@ -5951,6 +5946,17 @@ export class TransactionService {
         ],
       ],
     };
+  }
+
+  private riskReviewReplyMarkup(
+    notifications: TransactionWatchdogNotificationDto[] | undefined,
+  ): TelegramReplyMarkupDto | null {
+    return (
+      notifications?.find(
+        (notification) =>
+          notification.type === "risk_review" && notification.reply_markup,
+      )?.reply_markup ?? null
+    );
   }
 
   private appendWatchdogMessage(
