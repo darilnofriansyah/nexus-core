@@ -3012,6 +3012,38 @@ test("handles catid callback by setting category and confirming transaction", as
   assert.deepEqual(calls[2].values, ["Food", "123", "1"]);
 });
 
+test("catid confirmation keeps the selected email review pocket", async () => {
+  const pending = {
+    ...pendingCreditCardExpense,
+    id: "123",
+    pocket_id: "77",
+    raw_payload: { parsed: { paymentType: "QRIS" } },
+  };
+  const { calls: assignmentCalls, service: budgetService } =
+    createBudgetServiceWithCalls();
+  const { transactionCalls, service } = createService(
+    [
+      [pending],
+      [{ id: "10", category: "Food", parent_category: null }],
+      [{ ...pending, category: "Food", status: "confirmed" }],
+      [{ id: "import-1" }],
+      [],
+    ],
+    budgetService,
+  );
+
+  const result = await service.handleTransactionCallback({
+    telegramUserId: "976684739",
+    userId: 1,
+    callbackData: "catid:10:123",
+  });
+
+  assert.equal(result.status, "ok");
+  assert.equal(assignmentCalls[0].pocketId, "77");
+  const update = transactionCalls.find(({ text }) => /UPDATE transactions/.test(text));
+  assert.ok(update?.values.includes("77"));
+});
+
 test("handles catid callback with risk-review keyboard", async () => {
   const { service } = createService([
     [{ ...transaction, id: "123", user_id: "1" }],

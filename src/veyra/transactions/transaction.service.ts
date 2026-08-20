@@ -7573,6 +7573,9 @@ export class TransactionService {
         "expense"
           ? await this.requireBudgetService().resolveExpenseAssignment({
               userId: input.userId,
+              pocketId: transaction.pocket_id
+                ? String(transaction.pocket_id)
+                : null,
               category: budgetCategory.category,
             })
           : null;
