@@ -402,11 +402,28 @@ test('web transactions service trims legacy public text and deduplicates categor
   assert.deepEqual(result.categories, ['Dining', 'Transport']);
 });
 
-test('web transactions service rejects stored text that cannot satisfy the public contract', async () => {
-  const invalidRows = [
-    row({ merchant: ' ' }),
-    row({ category: 'x'.repeat(201) }),
+test('web transactions service exposes incomplete legacy expense metadata as null', async () => {
+  const { repository, service } = createService();
+  repository.rows = [
+    row({ merchant: null }),
+    row({ id: '122', merchant: ' ', category: null }),
   ];
+
+  const result = await service.queryTransactions({
+    telegramUserId: '976684739',
+  });
+
+  assert.deepEqual(
+    result.items.map(({ merchant, category }) => ({ merchant, category })),
+    [
+      { merchant: null, category: 'Dining' },
+      { merchant: null, category: null },
+    ],
+  );
+});
+
+test('web transactions service rejects stored text that cannot satisfy the public contract', async () => {
+  const invalidRows = [row({ category: 'x'.repeat(201) })];
 
   for (const invalidRow of invalidRows) {
     const { repository, service } = createService();

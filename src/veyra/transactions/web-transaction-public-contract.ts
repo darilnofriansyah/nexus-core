@@ -15,9 +15,6 @@ export function toPublicWebTransaction(
   const type = publicTransactionType(row.transactionType);
   const merchant = publicNullableText(row.merchant);
   const category = publicNullableText(row.category);
-  if (type === 'expense' && (merchant === null || category === null)) {
-    invalidPublicData();
-  }
 
   return {
     id: publicIdentifier(row.id),
