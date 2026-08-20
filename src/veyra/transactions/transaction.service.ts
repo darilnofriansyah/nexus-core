@@ -5608,9 +5608,15 @@ export class TransactionService {
         ),
         parent_budget AS (
           SELECT p.id, p.category, COALESCE(p.amount, SUM(c.amount)) AS amount
-          FROM category_budget cb
-          JOIN budgets p ON p.id = COALESCE(cb.parent_budget_id, cb.id)
+          FROM budgets p
           LEFT JOIN budgets c ON c.parent_budget_id = p.id AND COALESCE(c.is_active, true) = true
+          WHERE p.user_id::text = $1
+            AND p.parent_budget_id IS NULL
+            AND COALESCE(p.is_active, true) = true
+            AND (
+              ($6::text IS NOT NULL AND p.id::text = $6)
+              OR ($6::text IS NULL AND p.id = COALESCE((SELECT parent_budget_id FROM category_budget), (SELECT id FROM category_budget)))
+            )
           GROUP BY p.id, p.category, p.amount
         ),
         category_spend AS (

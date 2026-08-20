@@ -89,7 +89,8 @@ test('active budgets aggregate child budget amounts and categories', async () =>
   const budgets = await repository.activeBudgets('1', null);
 
   assert.match(calls[0].text, /LEFT JOIN budgets child/);
-  assert.match(calls[0].text, /SUM\(child\.amount\)/);
+  assert.match(calls[0].text, /COALESCE\(b\.amount, SUM\(child\.amount\)\)/);
+  assert.match(calls[0].text, /b\.parent_budget_id IS NULL/);
   assert.match(calls[0].text, /ARRAY_AGG\(child\.category/);
   assert.deepEqual(calls[0].values, ['1', null]);
   assert.deepEqual(budgets, [

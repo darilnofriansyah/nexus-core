@@ -599,16 +599,19 @@ export class BudgetService {
   ): Promise<OverspendingCheckResponseDto> {
     const userId = this.cleanString(String(request.userId ?? ''));
     const category = this.cleanString(request.category);
+    const pocketId = this.cleanString(request.pocketId);
 
     if (!userId) {
       throw new BadRequestException('userId is required');
     }
 
-    if (!category) {
-      throw new BadRequestException('category is required');
+    if (!category && !pocketId) {
+      throw new BadRequestException('pocketId or category is required');
     }
 
-    const status = await this.getDirectBudgetStatus(userId, category);
+    const status = pocketId
+      ? await this.getBudgetStatus({ userId, pocketId })
+      : await this.getDirectBudgetStatus(userId, category as string);
     const alertType = this.resolveOverspendingAlertType(status.spent_percent);
     const periodKey = this.periodKeyFromCycleStart(status.cycle_start);
     const alreadyAlerted = alertType
@@ -660,6 +663,7 @@ export class BudgetService {
   ): Promise<OverspendingHandleResponseDto> {
     const userId = this.cleanString(String(request.userId ?? ''));
     const category = this.cleanString(request.category ?? undefined);
+    const pocketId = this.cleanString(request.pocketId ?? undefined);
 
     if (!userId) {
       throw new BadRequestException('userId is required');
@@ -695,15 +699,13 @@ export class BudgetService {
       };
     }
 
-    if (!category) {
-      throw new BadRequestException('category is required');
+    if (!category && !pocketId) {
+      throw new BadRequestException('pocketId or category is required');
     }
 
-    const status = await this.getDirectBudgetStatus(
-      userId,
-      category,
-      this.parseReferenceDate(request.asOfDate ?? undefined),
-    );
+    const status = pocketId
+      ? await this.getBudgetStatus({ userId, pocketId, asOfDate: request.asOfDate ?? undefined })
+      : await this.getDirectBudgetStatus(userId, category as string, this.parseReferenceDate(request.asOfDate ?? undefined));
     const alertType = this.resolveOverspendingAlertType(status.spent_percent);
     const baseData = this.buildOverspendingBaseData(
       status,
@@ -1314,7 +1316,19 @@ export class BudgetService {
           FROM transactions t
           JOIN matched_user u ON u.id = t.user_id
           JOIN selected_budget b ON t.pocket_id IS NULL
-            AND lower(t.category) = lower(b.category)
+            AND (
+              (b.parent_budget_id IS NULL AND (
+                t.pocket_id = b.id
+                OR (t.pocket_id IS NULL AND lower(t.category) IN (
+                  SELECT lower(legacy.category) FROM budgets legacy
+                  WHERE legacy.id = b.id OR (legacy.parent_budget_id = b.id AND legacy.is_active = true)
+                ))
+              ))
+              OR (b.parent_budget_id IS NOT NULL AND (
+                (t.pocket_id = b.parent_budget_id AND lower(t.category) = lower(b.category))
+                OR (t.pocket_id IS NULL AND lower(t.category) = lower(b.category))
+              ))
+            )
           WHERE t.status = 'confirmed'
             AND t.transaction_type = 'expense'
             AND t.transaction_date >= $3::date
@@ -1570,7 +1584,7 @@ export class BudgetService {
             b.id,
             b.category,
             b.parent_budget_id,
-            b.amount,
+            COALESCE(b.amount, SUM(child.amount)) AS amount,
             parent.category AS parent_category,
             COUNT(child.id) AS child_count
           FROM budgets b

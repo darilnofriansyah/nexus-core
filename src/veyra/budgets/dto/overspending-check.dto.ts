@@ -30,7 +30,8 @@ export interface OverspendingAlertRecordDto {
 
 export interface OverspendingCheckRequestDto {
   userId: string;
-  category: string;
+  pocketId?: string;
+  category?: string;
 }
 
 export interface OverspendingCheckResponseDto {
@@ -57,6 +58,7 @@ export interface OverspendingCheckResponseDto {
 
 export interface OverspendingHandleRequestDto {
   userId: string | number;
+  pocketId?: string | null;
   category?: string | null;
   transactionId?: string | number | null;
   asOfDate?: string | null;

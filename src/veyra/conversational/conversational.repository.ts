@@ -411,10 +411,7 @@ export class ConversationalRepository {
         SELECT
           b.id,
           b.category,
-          CASE
-            WHEN COUNT(child.id) > 0 THEN COALESCE(SUM(child.amount), 0)
-            ELSE b.amount
-          END AS amount,
+          COALESCE(b.amount, SUM(child.amount)) AS amount,
           CASE
             WHEN COUNT(child.id) > 0 THEN ARRAY_AGG(child.category ORDER BY child.category)
             ELSE ARRAY[b.category]
@@ -426,9 +423,10 @@ export class ConversationalRepository {
           AND child.amount IS NOT NULL
         WHERE b.user_id::text = $1
           AND b.is_active = true
-          AND (($2::text IS NULL AND b.parent_budget_id IS NULL) OR lower(b.category) = lower($2))
+          AND b.parent_budget_id IS NULL
+          AND ($2::text IS NULL OR lower(b.category) = lower($2))
         GROUP BY b.id, b.category, b.amount
-        HAVING b.amount IS NOT NULL OR COUNT(child.id) > 0
+        HAVING COALESCE(b.amount, SUM(child.amount)) IS NOT NULL
         ORDER BY b.category
       `,
       [userId, category],

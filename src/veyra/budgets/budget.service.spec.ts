@@ -1421,6 +1421,20 @@ test('alerts at 80 percent spending', async () => {
   assert.match(result.telegramHtml ?? '', /Category: <b>Food<\/b>/);
 });
 
+test('overspending accepts pocketId and uses pocket-first status', async () => {
+  const { calls, service } = createService([
+    [{ cycle_start_day: 1 }],
+    [{ budget_id: '42', category: 'Monthly Transactions', parent_budget_id: null, budget_amount: '1000000', spent_amount: '100000', child_breakdown: [] }],
+  ]);
+
+  const result = await service.checkOverspending({ userId: '1', pocketId: '42' });
+
+  assert.equal(result.budgetId, '42');
+  assert.deepEqual(calls[1].values.slice(0, 2), ['1', '42']);
+  assert.match(calls[1].text, /t\.pocket_id = pocket\.id/);
+  assert.match(calls[1].text, /t\.pocket_id IS NULL/);
+});
+
 test('alerts at 100 percent spending', async () => {
   const { service } = createService([
     [{ cycle_start_day: 15 }],
