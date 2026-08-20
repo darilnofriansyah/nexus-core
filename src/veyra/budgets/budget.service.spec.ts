@@ -70,6 +70,39 @@ test('setup ensures categories before default pocket', async () => {
   assert.deepEqual(events, ['categories', 'pocket']);
 });
 
+test('expense assignment runs first-use setup before resolving choices', async () => {
+  const events: string[] = [];
+  const { service } = createService({
+    categoryService: {
+      ensureDefaults: async () => {
+        events.push('categories');
+      },
+      resolveForSave: async () => {
+        events.push('resolve-category');
+        return { category: 'Food', needsReview: false };
+      },
+    },
+    repository: {
+      ensureDefaultPocket: async () => {
+        events.push('pocket');
+      },
+      findDefaultPocket: async () => {
+        events.push('resolve-pocket');
+        return { id: '10', name: 'Main Pocket', amount: null, isDefault: true };
+      },
+    },
+  });
+
+  await service.resolveExpenseAssignment({ userId: '1', category: 'Food' });
+
+  assert.deepEqual(events, [
+    'categories',
+    'pocket',
+    'resolve-category',
+    'resolve-pocket',
+  ]);
+});
+
 test('explicit cross-user pocket throws NotFoundException', async () => {
   const { service } = createService({
     repository: { findPocket: async () => null },

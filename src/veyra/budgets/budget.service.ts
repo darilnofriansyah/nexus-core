@@ -204,6 +204,7 @@ export class BudgetService {
     request: ResolveExpenseAssignmentRequest,
   ): Promise<ExpenseAssignment> {
     const userId = this.requireUserId(request.userId);
+    await this.ensureFinancialSetup(userId);
     const category = await this.categoryService.resolveForSave(
       userId,
       request.category,

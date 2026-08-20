@@ -35,7 +35,7 @@ test('explicit pocket lookup requires active top-level ownership', async () => {
   assert.match(calls[0].text, /is_active = true/);
 });
 
-test('sets the default after locking target and clearing the prior default', async () => {
+test('sets the default after locking the active pocket set and clearing the prior default', async () => {
   const { calls, repository } = createRepository([
     [{ id: '20', category: 'Main', amount: null, is_default: false }],
     [],
@@ -43,6 +43,8 @@ test('sets the default after locking target and clearing the prior default', asy
   ]);
   await repository.setDefaultPocket('1', '20');
   assert.match(calls[0].text, /FOR UPDATE/);
+  assert.match(calls[0].text, /parent_budget_id IS NULL/);
+  assert.doesNotMatch(calls[0].text, /id::text = \$2/);
   assert.match(calls[1].text, /is_default = false/);
   assert.match(calls[2].text, /is_default = true/);
 });

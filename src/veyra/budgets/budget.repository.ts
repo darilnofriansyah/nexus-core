@@ -103,17 +103,25 @@ export class BudgetRepository {
     pocketId: string,
   ): Promise<PocketDto | null> {
     return this.database.withTransaction(async (client) => {
-      const target = await client.query<PocketRow>(
-        `${this.pocketSelect('id::text = $2')} FOR UPDATE`,
-        [userId, pocketId],
+      const pockets = await client.query<PocketRow>(
+        `
+          SELECT id, category, amount, is_default
+          FROM budgets
+          WHERE user_id = $1::bigint
+            AND parent_budget_id IS NULL AND is_active = true
+          FOR UPDATE
+        `,
+        [userId],
       );
-      if (!target.rows[0]) return null;
+      if (!pockets.rows.some((pocket) => String(pocket.id) === pocketId)) {
+        return null;
+      }
       await client.query(
         `UPDATE budgets SET is_default = false WHERE user_id = $1::bigint AND parent_budget_id IS NULL AND is_active = true AND is_default = true`,
         [userId],
       );
       const result = await client.query<PocketRow>(
-        `UPDATE budgets SET is_default = true WHERE user_id = $1::bigint AND id::text = $2 RETURNING id, category, amount, is_default`,
+        `UPDATE budgets SET is_default = true WHERE user_id = $1::bigint AND id::text = $2 AND parent_budget_id IS NULL AND is_active = true RETURNING id, category, amount, is_default`,
         [userId, pocketId],
       );
       return result.rows[0] ? this.toDto(result.rows[0]) : null;
