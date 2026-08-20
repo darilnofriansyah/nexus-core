@@ -8,6 +8,7 @@ import {
   TransactionCallbackMode,
   TransactionConfirmationPayloadResponseDto,
 } from "./confirmation-payload.dto";
+import { PocketDto } from "../../budgets/dto/pocket.dto";
 
 export type TransactionCategoryOptionStatus =
   | "ok"
@@ -18,7 +19,8 @@ export type TransactionSetCategoryStatus =
   | "updated"
   | "not_found"
   | "already_resolved"
-  | "unauthorized_budget";
+  | "unauthorized_budget"
+  | "awaiting_pocket";
 
 export interface TransactionCategoryOptionsRequestDto {
   pendingTransactionId?: string;
@@ -50,4 +52,5 @@ export interface TransactionSetCategoryResponseDto {
   summary: ConfirmTransactionSummaryDto | null;
   editMessage: ConfirmTransactionEditMessageDto | null;
   notifications?: TransactionWatchdogNotificationDto[];
+  pockets?: PocketDto[];
 }

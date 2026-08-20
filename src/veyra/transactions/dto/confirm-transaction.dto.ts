@@ -1,4 +1,5 @@
 import { BudgetWatchdogResponseDto } from "../../budgets/dto/overspending-check.dto";
+import { PocketDto } from "../../budgets/dto/pocket.dto";
 import { TransactionWatchdogNotificationDto } from "./transaction-watchdog.dto";
 
 export type ConfirmTransactionStatus =
@@ -6,11 +7,13 @@ export type ConfirmTransactionStatus =
   | "rejected"
   | "not_found"
   | "already_confirmed"
-  | "already_rejected";
+  | "already_rejected"
+  | "awaiting_pocket";
 
 export interface ConfirmTransactionRequestDto {
   transactionId: string;
   userId: string;
+  pocketId?: string;
 }
 
 export interface ConfirmTransactionSummaryDto {
@@ -34,4 +37,5 @@ export interface ConfirmTransactionResponseDto {
   editMessage: ConfirmTransactionEditMessageDto | null;
   notifications?: TransactionWatchdogNotificationDto[];
   watchdog?: BudgetWatchdogResponseDto;
+  pockets?: PocketDto[];
 }

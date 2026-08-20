@@ -206,6 +206,7 @@ interface EmailReviewTransactionRow extends QueryResultRow {
   merchant: string;
   merchant_normalized: string;
   category: string;
+  pocket_id: string | number | null;
   transaction_date: string | Date;
   status: "pending";
   confidence: string | number;
@@ -1036,12 +1037,36 @@ export class TransactionService {
     const transactionDate = this.normalizeTransactionDate(
       parsed.transactionDate ?? validated.email.date,
     );
+    const assignment =
+      parsed.type === "expense"
+        ? await this.requireBudgetService().resolveExpenseAssignment({
+            userId: validated.userId,
+            category,
+          })
+        : null;
+
+    if (assignment?.status === "awaiting_pocket") {
+      return this.recordDeterministicEmailReview({
+        request: validated,
+        provider: parsed.provider,
+        templateKey: parsed.templateKey,
+        reason: "pocket must be selected before confirmation",
+        parsed,
+        detection,
+        merchant,
+        merchantNormalized,
+        category: assignment.category,
+      });
+    }
+
     const transaction = await this.saveConfirmedEmailTransaction({
       request: validated,
       parsed,
       merchant,
       merchantNormalized,
-      category,
+      category: assignment?.category ?? category,
+      pocketId: assignment?.pocketId ?? null,
+      pocketName: assignment?.pocketName ?? null,
       transactionDate,
       rawPayload,
     });
@@ -1156,7 +1181,15 @@ export class TransactionService {
       validated.userId,
       validated.resolution.category,
     );
-    const category = budgetCategory ?? validated.resolution.category;
+    let category = budgetCategory ?? validated.resolution.category;
+    if (validated.candidate.transactionType === "expense") {
+      const assignment = await this.requireBudgetService().resolveExpenseAssignment({
+        userId: validated.userId,
+        pocketId: request.pocketId,
+        category,
+      });
+      category = assignment.category;
+    }
     const transaction =
       validated.kind === "legacy_candidate"
         ? await this.saveLegacyEmailReviewTransaction({
@@ -1464,6 +1497,7 @@ export class TransactionService {
           merchant,
           merchant_normalized,
           category,
+          pocket_id,
           transaction_date,
           notes,
           status,
@@ -2299,6 +2333,7 @@ export class TransactionService {
           merchant,
           merchant_normalized,
           category,
+          pocket_id,
           transaction_date,
           source,
           notes,
@@ -2306,7 +2341,7 @@ export class TransactionService {
           confidence,
           raw_payload
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, 'email', $8, 'pending', $9, $10)
+        VALUES ($1, $2, $3, $4, $5, $6, NULL, $7, 'email', $8, 'pending', $9, $10)
         RETURNING id
       `,
       [
@@ -2401,6 +2436,7 @@ export class TransactionService {
                      merchant,
                      merchant_normalized,
                      category,
+                     pocket_id,
                      transaction_date,
                      status,
                      confidence
@@ -2444,6 +2480,7 @@ export class TransactionService {
               merchant,
               merchant_normalized,
               category,
+              pocket_id,
               transaction_date,
               source,
               notes,
@@ -2451,7 +2488,7 @@ export class TransactionService {
               confidence,
               raw_payload
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, 'email', $8, $9, $10, $11)
+            VALUES ($1, $2, $3, $4, $5, $6, NULL, $7, 'email', $8, $9, $10, $11)
             RETURNING id
           `,
           insertValues,
@@ -2559,6 +2596,7 @@ export class TransactionService {
               merchant = $3,
               merchant_normalized = $4,
               category = $5,
+              pocket_id = NULL,
               transaction_date = $6,
               notes = $7,
               confidence = $8,
@@ -2615,6 +2653,8 @@ export class TransactionService {
       merchant: input.candidate.merchant,
       merchantNormalized: input.candidate.merchantNormalized,
       category: input.candidate.category,
+      pocket_id: null,
+      pocket_name: null,
       transactionDate: input.candidate.transactionDate,
       source: "email",
       status: "pending",
@@ -2633,6 +2673,8 @@ export class TransactionService {
       merchant: row.merchant,
       merchantNormalized: row.merchant_normalized,
       category: row.category,
+      pocket_id: row.pocket_id ? String(row.pocket_id) : null,
+      pocket_name: null,
       transactionDate:
         row.transaction_date instanceof Date
           ? row.transaction_date.toISOString()
@@ -3463,6 +3505,7 @@ export class TransactionService {
             merchant,
             merchant_normalized,
             category,
+            pocket_id,
             transaction_date,
             source,
             notes,
@@ -3470,7 +3513,7 @@ export class TransactionService {
             confidence,
             raw_payload
           )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, 'email', NULL, 'pending', $8, $9)
+          VALUES ($1, $2, $3, $4, $5, $6, NULL, $7, 'email', NULL, 'pending', $8, $9)
           RETURNING id
         `,
         [
@@ -3528,6 +3571,8 @@ export class TransactionService {
         merchant: input.merchant,
         merchantNormalized: input.merchantNormalized,
         category: input.category,
+        pocket_id: null,
+        pocket_name: null,
         transactionDate,
         source: "email" as const,
         status: "pending" as const,
@@ -3665,6 +3710,8 @@ export class TransactionService {
       merchantNormalized:
         transaction.merchant_normalized ?? transaction.merchant ?? "Unknown",
       category: transaction.category ?? "Uncategorized",
+      pocket_id: transaction.pocket_id ? String(transaction.pocket_id) : null,
+      pocket_name: transaction.pocket_name ?? null,
       transactionDate: this.normalizeTransactionDate(
         this.formatNullableTimestamp(transaction.transaction_date) ?? undefined,
       ),
@@ -4030,6 +4077,8 @@ export class TransactionService {
     merchant: string;
     merchantNormalized: string;
     category: string;
+    pocketId: string | null;
+    pocketName: string | null;
     transactionDate: string;
     rawPayload: Record<string, unknown>;
   }): Promise<EmailTransactionHandleResponseDto["transaction"] | null> {
@@ -4064,13 +4113,14 @@ export class TransactionService {
             merchant,
             merchant_normalized,
             category,
+            pocket_id,
             transaction_date,
             source,
             status,
             confidence,
             raw_payload
           )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, 'email', 'confirmed', $8, $9)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'email', 'confirmed', $9, $10)
           RETURNING id
         `,
         [
@@ -4080,6 +4130,7 @@ export class TransactionService {
           input.merchant,
           input.merchantNormalized,
           input.category,
+          input.pocketId,
           input.transactionDate,
           input.parsed.confidence,
           input.rawPayload,
@@ -4100,6 +4151,7 @@ export class TransactionService {
           merchant: input.merchant,
           merchant_normalized: input.merchantNormalized,
           category: input.category,
+          pocket_id: input.pocketId,
           transaction_date: input.transactionDate,
           source: "email",
           status: "confirmed",
@@ -4179,6 +4231,8 @@ export class TransactionService {
         merchant: input.merchant,
         merchantNormalized: input.merchantNormalized,
         category: input.category,
+        pocket_id: input.pocketId,
+        pocket_name: input.pocketName,
         transactionDate: input.transactionDate,
         source: "email",
         status: "confirmed",
@@ -6466,6 +6520,7 @@ export class TransactionService {
     transaction: TransactionRow;
     status: "confirmed" | "rejected";
     category?: string;
+    pocketId?: string;
   }): Promise<TransactionRow | null> {
     return this.database.withTransaction(async (client) => {
       const values: unknown[] = [
@@ -6477,10 +6532,14 @@ export class TransactionService {
         input.category === undefined
           ? ""
           : `category = $${values.push(input.category)},`;
+      const pocketAssignment =
+        input.pocketId === undefined
+          ? ""
+          : `pocket_id = $${values.push(input.pocketId)},`;
       const transaction = await client.query<TransactionRow>(
         `
           UPDATE transactions
-          SET ${categoryAssignment}
+          SET ${categoryAssignment}${pocketAssignment}
               status = $1,
               updated_at = now()
           WHERE id = $2
@@ -6494,6 +6553,7 @@ export class TransactionService {
                     merchant,
                     merchant_normalized,
                     category,
+                    pocket_id,
                     transaction_date,
                     notes,
                     status,
@@ -6679,9 +6739,32 @@ export class TransactionService {
     let winningTransaction = transaction;
 
     if (transaction.source === "email") {
+      const assignment =
+        nextStatus === "confirmed" &&
+        this.cleanString(transaction.transaction_type)?.toLowerCase() ===
+          "expense"
+          ? await this.requireBudgetService().resolveExpenseAssignment({
+              userId: String(transaction.user_id),
+              pocketId: request.pocketId,
+              category: transaction.category,
+            })
+          : null;
+
+      if (assignment?.status === "awaiting_pocket") {
+        return {
+          status: "awaiting_pocket",
+          transactionId: String(transaction.id),
+          userId: String(transaction.user_id),
+          summary: this.transactionSummary(transaction),
+          editMessage: null,
+          pockets: assignment.pockets,
+        };
+      }
       const transitioned = await this.transitionPendingEmailTransaction({
         transaction,
         status: nextStatus,
+        category: assignment?.category,
+        pocketId: assignment?.pocketId,
       });
 
       if (!transitioned) {
@@ -7242,6 +7325,10 @@ export class TransactionService {
       return "Selected category was not found.";
     }
 
+    if (status === "awaiting_pocket") {
+      return "Select a pocket before confirming this expense.";
+    }
+
     return "Transaction category could not be updated.";
   }
 
@@ -7459,10 +7546,30 @@ export class TransactionService {
     let confirmedTransaction: TransactionRow;
 
     if (transaction.source === "email") {
+      const assignment =
+        this.cleanString(transaction.transaction_type)?.toLowerCase() ===
+        "expense"
+          ? await this.requireBudgetService().resolveExpenseAssignment({
+              userId: input.userId,
+              category: budgetCategory.category,
+            })
+          : null;
+      if (assignment?.status === "awaiting_pocket") {
+        return {
+          status: "awaiting_pocket",
+          pendingTransactionId: null,
+          transactionId: String(transaction.id),
+          confirmationPayload: null,
+          summary: this.transactionSummary(transaction),
+          editMessage: null,
+          pockets: assignment.pockets,
+        };
+      }
       const transitioned = await this.transitionPendingEmailTransaction({
         transaction,
         status: "confirmed",
-        category: budgetCategory.category,
+        category: assignment?.category ?? budgetCategory.category,
+        pocketId: assignment?.pocketId,
       });
 
       if (!transitioned) {

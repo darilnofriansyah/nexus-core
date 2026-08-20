@@ -242,6 +242,22 @@ function createAwaitingPocketBudgetService() {
   } as unknown as BudgetService;
 }
 
+function createResolvedBudgetService(
+  pocketId: string,
+  pocketName: string,
+  category?: string,
+) {
+  return {
+    resolveExpenseAssignment: async (request: { category?: string }) => ({
+      status: "resolved" as const,
+      category: category ?? request.category ?? "Uncategorized",
+      needsCategoryReview: category === "Uncategorized",
+      pocketId,
+      pocketName,
+    }),
+  } as unknown as BudgetService;
+}
+
 function createTemplateRepository(
   templates: LearnedEmailTemplate[] = [],
   activateError?: Error,
@@ -2115,6 +2131,79 @@ const pendingCreditCardExpense = {
   status: "pending",
   raw_payload: { parsed: { paymentType: "Credit Card" } },
 };
+
+function createPendingEmailService(budgetService: BudgetService) {
+  const pending = {
+    ...pendingCreditCardExpense,
+    raw_payload: { parsed: { paymentType: "QRIS" } },
+  };
+  return createService(
+    [
+      [pending],
+      [{ ...pending, status: "confirmed", pocket_id: "42" }],
+      [{ id: "import-1" }],
+      [],
+    ],
+    budgetService,
+  );
+}
+
+function emailReviewRequest(): EmailTransactionResolveReviewRequestDto {
+  return validAiReviewRequest();
+}
+
+test("confirming pending email fills missing pocket_id from default", async () => {
+  const { transactionCalls, service } = createPendingEmailService(
+    createResolvedBudgetService("42", "Main Pocket"),
+  );
+  const result = await service.confirmTransaction({
+    transactionId: "101",
+    userId: "1",
+  });
+
+  assert.equal(result.status, "confirmed");
+  const update = transactionCalls.find(({ text }) => /UPDATE transactions/.test(text));
+  assert.match(update?.text ?? "", /pocket_id/);
+  assert.ok(update?.values.includes("42"));
+});
+
+test("explicit review pocket overrides default", async () => {
+  const { calls: assignmentCalls, service: budgetService } =
+    createBudgetServiceWithCalls();
+  const { service } = createService(
+    [
+      [{ id: "1", telegram_id: "976684739" }],
+      [{ category: "Food" }],
+      [{ id: "import-1", transaction_id: null, status: "needs_ai" }],
+      [{ id: "123" }],
+      [{ id: "import-1" }],
+    ],
+    budgetService,
+  );
+
+  await service.resolveEmailTransactionReview({
+    ...emailReviewRequest(),
+    pocketId: "77",
+  });
+
+  assert.equal(assignmentCalls[0].pocketId, "77");
+});
+
+test("pending email remains pending when multiple pockets lack default", async () => {
+  const { transactionCalls, service } = createPendingEmailService(
+    createAwaitingPocketBudgetService(),
+  );
+  const result = await service.confirmTransaction({
+    transactionId: "101",
+    userId: "1",
+  });
+
+  assert.equal(result.status, "awaiting_pocket");
+  assert.equal(
+    transactionCalls.some(({ text }) => /status = 'confirmed'/.test(text)),
+    false,
+  );
+});
 
 test("confirmed email credit-card expense adds cycle usage", async () => {
   const { service, transactionCalls } = createService([
@@ -4905,21 +4994,102 @@ test("hard-coded parser handles confirmed Krom QRIS email without learned lookup
   assert.match(calls[2].text, /FROM category_rules/);
   assert.deepEqual(calls[2].values, ["1", "Kopi Tuku Canonical", "Kopi Tuku"]);
   assert.match(calls[4].text, /INSERT INTO transactions/);
-  assert.deepEqual(calls[4].values.slice(0, 8), [
+  assert.deepEqual(calls[4].values.slice(0, 9), [
     "1",
     "expense",
     25000,
     "Kopi Tuku",
     "Kopi Tuku Canonical",
     "Food",
+    "42",
     "2026-06-22T03:00:00.000Z",
     97,
   ]);
   assert.equal(
-    (calls[4].values[8] as Record<string, unknown>).parserSource,
+    (calls[4].values[9] as Record<string, unknown>).parserSource,
     "hardcoded",
   );
   assert.deepEqual(templates.calls, []);
+});
+
+function emailRows() {
+  return [
+    [],
+    [{ canonical_name: "Kopi Tuku Canonical" }],
+    [{ category: "Food" }],
+    [{ id: "import-1" }],
+    [{ id: "tx-email" }],
+    [{ id: "import-1" }],
+    [],
+  ];
+}
+
+function kromQrisRequest(): EmailTransactionHandleRequestDto {
+  return {
+    telegramUserId: "976684739",
+    userId: 1,
+    source: "email",
+    email: {
+      messageId: "gmail-qris",
+      threadId: "thread-qris",
+      from: "no-reply@krom.id",
+      subject: "Transaksi QRIS berhasil",
+      date: "2026-06-22T10:00:00+07:00",
+      emailText: "Transaksi QRIS berhasil. Merchant: Kopi Tuku Jumlah: Rp25.000",
+    },
+  };
+}
+
+test("confirmed email expense writes default pocket_id", async () => {
+  const { calls, service } = createService(
+    [
+      [],
+      [{ canonical_name: "Kopi Tuku Canonical" }],
+      [{ category: "Food" }],
+      [{ id: "import-1" }],
+      [{ id: "tx-email" }],
+      [{ id: "import-1" }],
+    ],
+    createResolvedBudgetService("42", "Main Pocket"),
+  );
+  const result = await service.handleEmailTransaction(kromQrisRequest());
+  const insert = calls.find(({ text }) => /INSERT INTO transactions/.test(text));
+
+  assert.ok(insert);
+  assert.match(insert.text, /category,\s*pocket_id/);
+  assert.ok(insert.values.includes("42"));
+  assert.equal(
+    (result.transaction as { pocket_id?: string } | undefined)?.pocket_id,
+    "42",
+  );
+});
+
+test("confirmed email with unknown category uses Uncategorized", async () => {
+  const { calls, service } = createService(
+    emailRows(),
+    createResolvedBudgetService("42", "Main Pocket", "Uncategorized"),
+  );
+
+  await service.handleEmailTransaction(kromQrisRequest());
+
+  const insert = calls.find(({ text }) => /INSERT INTO transactions/.test(text));
+  assert.ok(insert?.values.includes("Uncategorized"));
+});
+
+test("email expense without resolvable default stays pending for pocket review", async () => {
+  const { calls, service } = createService(
+    emailRows(),
+    createAwaitingPocketBudgetService(),
+  );
+  const result = await service.handleEmailTransaction(kromQrisRequest());
+
+  assert.equal(result.status, "needs_review");
+  assert.equal(
+    calls.some(
+      ({ text }) => /'confirmed'/.test(text) && /INSERT INTO transactions/.test(text),
+    ),
+    false,
+  );
 });
 
 test("falls back to emailHtml when emailText is not parseable", async () => {

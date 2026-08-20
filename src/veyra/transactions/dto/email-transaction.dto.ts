@@ -100,6 +100,7 @@ export interface EmailReviewResolutionDto {
 
 export interface EmailTransactionResolveReviewRequestDto {
   telegramUserId: string;
+  pocketId?: string;
   reviewToken?: string;
   transactionId?: string;
   email?: EmailTransactionMessageDto;
@@ -141,6 +142,8 @@ export interface EmailTransactionResponseTransactionDto {
   merchant: string;
   merchantNormalized: string;
   category: string;
+  pocket_id: string | null;
+  pocket_name: string | null;
   transactionDate: string;
   source: "email";
   status: "confirmed" | "pending";

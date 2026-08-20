@@ -1886,7 +1886,7 @@ If `transactionId` is missing in production mode, the response still includes re
 
 ### `POST /api/veyra/transactions/confirm`
 
-Approves one production pending transaction. Core API finds the matching `transactions` row by `transactionId` and `userId`, then updates `status` from `pending` to `confirmed` and refreshes `updated_at`.
+Approves one production pending transaction. Core API finds the matching `transactions` row by `transactionId` and `userId`, then updates `status` from `pending` to `confirmed` and refreshes `updated_at`. Email expenses resolve their category and explicit `pocketId` (or the user's default pocket) before that atomic transition.
 
 Confirming an email expense with
 `raw_payload.parsed.paymentType = "Credit Card"` atomically adds its amount to
@@ -1903,7 +1903,8 @@ Example request body:
 ```json
 {
   "transactionId": "transaction-id",
-  "userId": "example-user-id"
+  "userId": "example-user-id",
+  "pocketId": "optional-pocket-id"
 }
 ```
 
@@ -1932,7 +1933,9 @@ Example confirmed response:
 }
 ```
 
-If the transaction row is missing, `status` is `not_found`. If it is already confirmed, `status` is `already_confirmed`. If it is already rejected, `status` is `already_rejected`.
+If an email expense has no resolvable default, `status` is `awaiting_pocket` and `pockets` contains the active choices; it remains pending. Unknown categories are saved as `Uncategorized` for review independently of budgets. If the transaction row is missing, `status` is `not_found`. If it is already confirmed, `status` is `already_confirmed`. If it is already rejected, `status` is `already_rejected`.
+
+Gmail triggers, review buttons, callback routing, and Telegram delivery remain in n8n; this endpoint only receives the optional `pocketId` in its HTTP Request body.
 
 ### `POST /api/veyra/transactions/cancel`
 
