@@ -19,3 +19,14 @@ test("budget pockets migration adds only additive ownership and assignment field
   assert.match(migration, /'Uncategorized'/);
   assert.doesNotMatch(migration, /DELETE FROM|DROP TABLE|ALTER COLUMN category/);
 });
+
+test("pocket backfill assigns only unambiguous null expense rows", () => {
+  const backfill = readFileSync(
+    join(process.cwd(), "docs/migration/2026-08-20-budget-categories-pockets-backfill.sql"),
+    "utf8",
+  );
+  assert.match(backfill, /t\.pocket_id IS NULL/);
+  assert.match(backfill, /t\.transaction_type = 'expense'/);
+  assert.equal((backfill.match(/HAVING count\(\*\) = 1/g) ?? []).length, 3);
+  assert.doesNotMatch(backfill, /DELETE FROM|SET category|SET status/);
+});

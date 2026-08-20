@@ -6,6 +6,18 @@ This app is intentionally small. It is a service layer pilot, not a replacement 
 
 `/veyra/budgets/status` accepts `{ "userId": "1", "pocketId": "42" }`. Category lookup remains compatible for rows with `pocket_id IS NULL`; n8n still triggers watchdogs and sends Telegram messages.
 
+`docs/migration/2026-08-20-budget-categories-pockets-backfill.sql` remains unapplied. It assigns only unambiguous historical expense rows; ambiguous rows stay `NULL`, and removing the legacy `pocket_id IS NULL` fallback requires separate approval.
+
+Residual audit after applying the backfill:
+
+```sql
+SELECT
+  count(*) FILTER (WHERE pocket_id IS NULL) AS residual_null_expenses,
+  count(*) FILTER (WHERE pocket_id IS NOT NULL) AS assigned_expenses
+FROM public.transactions
+WHERE transaction_type = 'expense';
+```
+
 Pocket-aware n8n HTTP bodies (n8n still owns Telegram triggers, callbacks, and sending):
 
 ```json
