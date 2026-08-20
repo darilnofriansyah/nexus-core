@@ -4803,6 +4803,19 @@ export class TransactionService {
       };
     }
 
+    if (
+      transaction &&
+      this.cleanString(transaction.transaction_type)?.toLowerCase() !==
+        "expense"
+    ) {
+      return {
+        status: "not_found",
+        pendingTransactionId: pendingTransactionId ?? "",
+        text: null,
+        replyMarkup: null,
+      };
+    }
+
     if (pendingTransaction?.resolved) {
       return {
         status: "already_resolved",
@@ -5700,12 +5713,14 @@ export class TransactionService {
       row?.category_budget_amount,
     );
     const categorySpendBefore = this.nullableNumber(row?.category_spend_before);
-    const parentAmount =
-      this.nullableNumber(row?.parent_budget_amount) ??
-      this.nullableNumber(row?.total_budget_amount);
-    const parentSpendBefore =
-      this.nullableNumber(row?.parent_spend_before) ??
-      this.nullableNumber(row?.total_spend_before);
+    const hasMatchedParent =
+      row?.parent_budget_id !== null && row?.parent_budget_id !== undefined;
+    const parentAmount = hasMatchedParent
+      ? (this.nullableNumber(row?.parent_budget_amount) ?? 0)
+      : this.nullableNumber(row?.total_budget_amount);
+    const parentSpendBefore = hasMatchedParent
+      ? (this.nullableNumber(row?.parent_spend_before) ?? 0)
+      : this.nullableNumber(row?.total_spend_before);
 
     return {
       categoryBudgetId:
@@ -7504,6 +7519,21 @@ export class TransactionService {
         transactionId: input.transactionId,
         confirmationPayload: null,
         summary: null,
+        editMessage: null,
+      };
+    }
+
+    if (
+      this.cleanString(transaction.status)?.toLowerCase() === "confirmed" &&
+      this.cleanString(transaction.transaction_type)?.toLowerCase() !==
+        "expense"
+    ) {
+      return {
+        status: "already_resolved",
+        pendingTransactionId: null,
+        transactionId: String(transaction.id),
+        confirmationPayload: null,
+        summary: this.transactionSummary(transaction),
         editMessage: null,
       };
     }

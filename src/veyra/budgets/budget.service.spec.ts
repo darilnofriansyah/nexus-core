@@ -1812,6 +1812,7 @@ function pocketWatchdogRows(input: {
   category: string;
   child?: boolean;
   parentAlertExists?: boolean;
+  parentInsertWins?: boolean;
 }) {
   const childBreakdown = input.child
     ? [
@@ -1850,7 +1851,7 @@ function pocketWatchdogRows(input: {
   ];
 
   if (!input.parentAlertExists) {
-    rows.push([
+    rows.push(input.parentInsertWins === false ? [] : [
       {
         budget_id: '42',
         alert_type: 'budget_75',
@@ -1944,6 +1945,28 @@ test('watchdog reclassification skips existing parent alert and emits child only
   });
 
   assert.deepEqual(result.alerts.map(({ budgetId }) => budgetId), ['84']);
+});
+
+test('watchdog emits no alert when a concurrent insert wins dedupe', async (t) => {
+  t.mock.timers.enable({
+    apis: ['Date'],
+    now: new Date('2026-08-30T12:00:00.000Z'),
+  });
+  const { service } = createService(
+    pocketWatchdogRows({
+      category: 'Toys',
+      parentInsertWins: false,
+    }),
+  );
+
+  const result = await service.evaluateTransaction({
+    userId: 1,
+    transactionId: 123,
+  });
+
+  assert.equal(result.hasAlert, false);
+  assert.deepEqual(result.alerts, []);
+  assert.equal(result.message, null);
 });
 
 test('overspending handle skips pending transaction alerts', async () => {

@@ -689,7 +689,7 @@ export class BudgetService {
     return {
       ok: true,
       status: 'recorded',
-      data: inserted,
+      data: inserted ?? alertRecord,
     };
   }
 
@@ -765,7 +765,8 @@ export class BudgetService {
 
       if (await this.hasBudgetAlert(alertRecord)) continue;
 
-      await this.insertBudgetAlert(alertRecord);
+      const inserted = await this.insertBudgetAlert(alertRecord);
+      if (!inserted) continue;
       alerts.push(this.buildWatchdogAlert(status, alertType));
     }
 
@@ -1797,7 +1798,7 @@ export class BudgetService {
 
   private async insertBudgetAlert(
     alertRecord: OverspendingAlertRecordDto,
-  ): Promise<OverspendingAlertRecordDto> {
+  ): Promise<OverspendingAlertRecordDto | null> {
     const result = await this.database.query<AlertInsertRow>(
       `
         INSERT INTO budget_alerts (
@@ -1825,7 +1826,7 @@ export class BudgetService {
     const row = result.rows[0];
 
     if (!row) {
-      return alertRecord;
+      return null;
     }
 
     return {

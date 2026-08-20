@@ -426,6 +426,7 @@ const pendingTransaction = {
 const transaction = {
   id: "101",
   user_id: "1",
+  transaction_type: "expense",
   amount: "50000",
   merchant: "gopay",
   merchant_normalized: "GoPay",
@@ -2881,7 +2882,7 @@ test("sets transaction category and confirms on production category selection", 
     result.editMessage?.text,
     "Transaction 101 confirmed: GoPay • Rp50.000",
   );
-  assert.deepEqual(calls[1].values, ["Food", null, "101", "1"]);
+  assert.deepEqual(calls[1].values, ["Food", "42", "101", "1"]);
   assert.match(calls[1].text, /UPDATE transactions/);
   assert.match(calls[1].text, /status = 'confirmed'/);
 });
@@ -3021,7 +3022,7 @@ test("handles catid callback by setting category and confirming transaction", as
     "Transaction 123 confirmed: GoPay • Rp50.000",
   );
   assert.equal(result.telegram.reply_markup, null);
-  assert.deepEqual(calls[1].values, ["Food", null, "123", "1"]);
+  assert.deepEqual(calls[1].values, ["Food", "42", "123", "1"]);
 });
 
 test("catid confirmation keeps the selected email review pocket", async () => {
@@ -7814,6 +7815,61 @@ test("same category option is independent of pockets", async () => {
   assert.equal(result.replyMarkup?.inline_keyboard.length, 1);
 });
 
+for (const transactionType of ["income", "transfer", "reversal"] as const) {
+  test(`production category options hide confirmed ${transactionType} transactions`, async () => {
+    const dependencies = createCategoryServiceWithCategories([
+      { id: "10", name: "Food" },
+    ]);
+    const { service } = createService(
+      [[{ ...transaction, status: "confirmed", transaction_type: transactionType }]],
+      dependencies.budgetService,
+      undefined,
+      undefined,
+      "1",
+      undefined,
+      dependencies.categoryService,
+    );
+
+    const result = await service.buildCategoryOptions({
+      transactionId: "101",
+      userId: "1",
+    });
+
+    assert.deepEqual(result, {
+      status: "not_found",
+      pendingTransactionId: "",
+      text: null,
+      replyMarkup: null,
+    });
+  });
+
+  test(`catid callback cannot reclassify confirmed ${transactionType} transactions`, async () => {
+    const dependencies = createCategoryServiceWithCategories([
+      { id: "10", name: "Food" },
+    ]);
+    const { calls, service } = createService(
+      [[{ ...transaction, status: "confirmed", transaction_type: transactionType }]],
+      dependencies.budgetService,
+      undefined,
+      undefined,
+      "1",
+      undefined,
+      dependencies.categoryService,
+    );
+    const watchdogCalls = spyOnWatchdog(service);
+
+    const result = await service.setPendingTransactionCategory({
+      transactionId: "101",
+      categoryId: "10",
+      userId: "1",
+    });
+
+    assert.equal(result.status, "already_resolved");
+    assert.equal(calls.some(({ text }) => /UPDATE transactions/.test(text)), false);
+    assert.deepEqual(watchdogCalls, []);
+  });
+}
+
 test("catid callback updates confirmed expense category without changing status", async () => {
   const dependencies = createCategoryServiceWithCategories([
     { id: "10", name: "Food" },
@@ -8137,6 +8193,59 @@ test("risk review keeps an assigned top-level pocket without a matching child", 
     result.notifications.map(({ type, priority }) => ({ type, priority })),
     [{ type: "risk_review", priority: 1 }],
   );
+});
+
+test("risk review gives an assigned amount-less parent zero budget despite other pockets", async (t) => {
+  t.mock.timers.enable({
+    apis: ["Date"],
+    now: new Date("2026-08-30T12:00:00.000Z"),
+  });
+  const assignedTransaction = {
+    ...transaction,
+    id: "101",
+    user_id: "1",
+    amount: "750000",
+    category: "Toys",
+    transaction_type: "expense",
+    transaction_date: "2026-08-30T12:00:00.000Z",
+    status: "confirmed",
+    pocket_id: "42",
+  };
+  const amountLessParentFacts = {
+    category_budget_id: null,
+    category_budget_category: null,
+    category_budget_amount: null,
+    category_spend_before: null,
+    parent_budget_id: "42",
+    parent_budget_category: "Main Pocket",
+    parent_budget_amount: null,
+    parent_spend_before: "0",
+    total_budget_amount: "2000000",
+    total_spend_before: "300000",
+  };
+  const riskReviews = createRiskReviewRepository(riskReview);
+  const { service } = createService(
+    [
+      [assignedTransaction],
+      [{ cycle_start_day: 1 }],
+      [amountLessParentFacts],
+      [{ cycle_start_day: 1 }],
+      [amountLessParentFacts],
+      [],
+      [{ count: "0" }],
+    ],
+    defaultBudgetService(),
+    riskReviews.repository,
+  );
+
+  await service.evaluateTransactionWatchdog("101");
+
+  const saved = riskReviews.calls.find(
+    ({ method }) => method === "saveLargeTransactionEvaluation",
+  )?.args[0] as { riskMetrics: Record<string, unknown> };
+  assert.equal(saved.riskMetrics.parentBudgetId, "42");
+  assert.equal(saved.riskMetrics.parentBudgetAmount, 0);
+  assert.equal(saved.riskMetrics.transactionBudgetSharePercent, null);
 });
 
 test("watchdog failure does not fail transaction save", async () => {

@@ -412,15 +412,15 @@ export class ConversationalRepository {
           b.id,
           b.category,
           COALESCE(b.amount, SUM(child.amount)) AS amount,
-          CASE
-            WHEN COUNT(child.id) > 0 THEN ARRAY_AGG(child.category ORDER BY child.category)
-            ELSE ARRAY[b.category]
-          END AS categories
+          ARRAY[b.category] || COALESCE(
+            ARRAY_AGG(child.category ORDER BY child.category)
+              FILTER (WHERE child.id IS NOT NULL),
+            ARRAY[]::text[]
+          ) AS categories
         FROM budgets b
         LEFT JOIN budgets child
           ON child.parent_budget_id = b.id
           AND child.is_active = true
-          AND child.amount IS NOT NULL
         WHERE b.user_id::text = $1
           AND b.is_active = true
           AND b.parent_budget_id IS NULL

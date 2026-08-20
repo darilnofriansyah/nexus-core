@@ -1950,7 +1950,9 @@ Example confirmed response:
   "summary": {
     "amount": 50000,
     "merchant": "GoPay",
-    "category": "Transport"
+    "category": "Transport",
+    "pocketId": null,
+    "pocketName": null
   },
   "editMessage": {
     "text": "Transaction transaction-id confirmed: GoPay 50000",
@@ -2587,7 +2589,7 @@ curl -X POST "$CORE_API_URL/api/veyra/conversational/handle" \
 
 ### `POST /api/veyra/transactions/category-options`
 
-Builds Telegram-ready category selection text and inline keyboard buttons for a transaction category callback. This endpoint reads the production `transactions` row for ownership and active user categories for options; it does not update, confirm, insert, or send Telegram messages.
+Builds Telegram-ready category selection text and inline keyboard buttons for an expense transaction category callback. This endpoint reads the production `transactions` row for ownership and active user categories for options; non-expense transactions return `not_found`, and it does not update, confirm, insert, or send Telegram messages.
 
 Production-compatible category callbacks use `catid:{categoryId}:{transactionId}` for active user categories. Category IDs are ownership-validated on selection; category and pocket assignment are independent. `callbackMode: "experimental"` keeps the old `tx_set_category:{pendingTransactionId}:{categorySlug}` draft format.
 
@@ -2630,7 +2632,7 @@ If the transaction row is missing, `status` is `not_found`. If a legacy pending 
 
 ### `POST /api/veyra/transactions/set-category`
 
-Updates the selected production transaction category and returns Telegram edit-message data. The category id must belong to the same user and be active. Confirmed rows change category only; pending rows are atomically confirmed with their resolved or retained pocket.
+Updates the selected production expense category and returns Telegram edit-message data. The category id must belong to the same user and be active. Confirmed expenses change category only; confirmed income, transfer, and reversal rows return `already_resolved` unchanged. Pending rows are atomically confirmed with their resolved or retained pocket.
 
 Category confirmation runs the transaction watchdog after the category/status update succeeds because category changes can affect both budget impact and risk evaluation.
 

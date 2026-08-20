@@ -103,6 +103,29 @@ test('active budgets aggregate child budget amounts and categories', async () =>
   ]);
 });
 
+test('active budget legacy categories include pocket and active child names', async () => {
+  const { calls, repository } = createRepository([
+    [
+      {
+        id: '42',
+        category: 'Daily',
+        amount: '1200000',
+        categories: ['Daily', 'Food', 'Transport'],
+      },
+    ],
+  ]);
+
+  const budgets = await repository.activeBudgets('1', null);
+
+  assert.match(
+    calls[0].text,
+    /ARRAY\[b\.category\][\s\S]*ARRAY_AGG\(child\.category/,
+  );
+  assert.match(calls[0].text, /child\.is_active = true/);
+  assert.doesNotMatch(calls[0].text, /child\.amount IS NOT NULL/);
+  assert.deepEqual(budgets[0]?.categories, ['Daily', 'Food', 'Transport']);
+});
+
 test('pocket totals exclude assigned rows from another pocket', async () => {
   const { calls, repository } = createRepository();
   await repository.pocketTotal('1', '42', ['Food'], '2026-06-25', '2026-07-25');
