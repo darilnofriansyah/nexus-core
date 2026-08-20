@@ -78,6 +78,7 @@ function createService(
   categoryService?: CategoryService,
 ) {
   const calls: Array<{ text: string; values: unknown[] }> = [];
+  let lastTransaction: Record<string, unknown> | undefined;
   const transactionCalls: Array<{ text: string; values: unknown[] }> = [];
   const transactionEvents: Array<"begin" | "commit" | "rollback"> = [];
   const query = async (text: string, values: unknown[] = []) => {
@@ -95,6 +96,13 @@ function createService(
       rows[0] && typeof rows[0] === "object" && "category" in rows[0] &&
       !("amount" in rows[0])) {
       rows = rowsByCall.shift() ?? [];
+    }
+    if (/UPDATE transactions/.test(text) && /status = 'confirmed'/.test(text) && /RETURNING/.test(text) &&
+      Array.isArray(rows) && rows.length === 0 && rowsByCall.length === 0 && lastTransaction) {
+      rows = [{ ...lastTransaction, category: values[0], pocket_id: values[1], status: "confirmed" }];
+    }
+    if (Array.isArray(rows) && rows[0] && typeof rows[0] === "object" && "status" in rows[0]) {
+      lastTransaction = rows[0] as Record<string, unknown>;
     }
     if (rows instanceof Error) throw rows;
     return { rows };
@@ -7830,7 +7838,10 @@ test("catid callback updates confirmed expense category without changing status"
 
   assert.equal(result.status, "updated");
   assert.match(update?.text ?? "", /SET category = \$1/);
+  assert.match(update?.text ?? "", /WHERE id::text = \$2/);
+  assert.match(update?.text ?? "", /user_id::text = \$3/);
   assert.doesNotMatch(update?.text ?? "", /status = 'confirmed'/);
+  assert.doesNotMatch(update?.text ?? "", /status = 'pending'/);
 });
 
 test("cross-user or archived category callback is rejected", async () => {
@@ -7880,6 +7891,27 @@ test("pending catid callback resolves pocket before confirmation", async () => {
   assert.equal(result.status, "updated");
   assert.match(update?.text ?? "", /pocket_id/);
   assert.match(update?.text ?? "", /status = 'confirmed'/);
+  assert.match(update?.text ?? "", /status = 'pending'/);
+  assert.deepEqual(update?.values, ["Food", "42", "101", "1"]);
+});
+
+test("pending catid race loser returns already resolved without watchdog", async () => {
+  const dependencies = createCategoryServiceWithCategories([{ id: "10", name: "Food" }]);
+  const winner = { ...transaction, status: "confirmed", category: "Transport" };
+  const { service } = createService(
+    [[{ ...transaction, transaction_type: "expense" }], [], [winner]],
+    dependencies.budgetService, undefined, undefined, "1", undefined,
+    dependencies.categoryService,
+  );
+  const watchdogCalls = spyOnWatchdog(service);
+
+  const result = await service.setPendingTransactionCategory({
+    transactionId: "101", categoryId: "10", userId: "1",
+  });
+
+  assert.equal(result.status, "already_resolved");
+  assert.equal(result.summary?.category, "Transport");
+  assert.deepEqual(watchdogCalls, []);
 });
 
 test("watchdog preserves n8n fixture order for all notifications", async (t) => {

@@ -7521,12 +7521,8 @@ export class TransactionService {
           UPDATE transactions
           SET category = $1,
               updated_at = now()
-          WHERE id::text = $3
-            AND user_id::text = $4
-            AND status = 'pending'
-          RETURNING id, user_id, transaction_type, amount, merchant,
-                    merchant_normalized, category, pocket_id, transaction_date,
-                    notes, status, source, confidence, raw_payload, created_at
+          WHERE id::text = $2
+            AND user_id::text = $3
         `,
         [category.name, String(transaction.id), String(transaction.user_id)],
       );
@@ -7665,12 +7661,25 @@ export class TransactionService {
         ],
       );
 
-      confirmedTransaction = update.rows[0] ?? {
-        ...transaction,
-        category: assignment?.category ?? category.name,
-        pocket_id: assignment?.pocketId ?? transaction.pocket_id ?? null,
-        status: "confirmed",
-      };
+      if (!update.rows[0]) {
+        const current = await this.findTransaction(
+          String(transaction.id),
+          String(transaction.user_id),
+        );
+        if (!current || this.cleanString(current.status)?.toLowerCase() === "pending") {
+          throw new BadRequestException("transaction category transition failed");
+        }
+        return {
+          status: "already_resolved",
+          pendingTransactionId: null,
+          transactionId: String(transaction.id),
+          confirmationPayload: null,
+          summary: this.transactionSummary(current),
+          editMessage: null,
+        };
+      }
+
+      confirmedTransaction = update.rows[0];
     }
 
     const summary = this.transactionSummary(confirmedTransaction);

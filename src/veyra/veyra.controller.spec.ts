@@ -308,6 +308,29 @@ test('/transactions/callback/handle non-manage callbacks use existing transactio
   ]);
 });
 
+for (const callbackData of ['change_categories:123', 'catid:10:123']) {
+  test(`/transactions/callback/handle forwards ${callbackData} unchanged`, async () => {
+    const { calls, callbackResponse, controller } = createController();
+
+    const result = await controller.handleTransactionCallback({
+      telegramUserId: '123456789',
+      userId: 1,
+      callbackData,
+      chatId: 'chat-1',
+      messageId: 42,
+    });
+
+    assert.equal(result, callbackResponse);
+    assert.deepEqual(calls[0], {
+      method: 'handleTransactionCallback',
+      request: {
+        telegramUserId: '123456789', userId: 1, callbackData,
+        chatId: 'chat-1', messageId: 42,
+      },
+    });
+  });
+}
+
 test('/transactions/callback/handle missing callback data returns existing callback fallback', async () => {
   const { calls, controller } = createController();
 
