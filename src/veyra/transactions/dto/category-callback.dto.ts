@@ -19,7 +19,7 @@ export type TransactionSetCategoryStatus =
   | "updated"
   | "not_found"
   | "already_resolved"
-  | "unauthorized_budget"
+  | "unauthorized_category"
   | "awaiting_pocket";
 
 export interface TransactionCategoryOptionsRequestDto {
@@ -39,6 +39,8 @@ export interface TransactionCategoryOptionsResponseDto {
 export interface TransactionSetCategoryRequestDto {
   pendingTransactionId?: string;
   transactionId?: string;
+  categoryId?: string;
+  /** @deprecated Use categoryId. */
   budgetId?: string;
   userId: string;
   category?: string;

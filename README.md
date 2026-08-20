@@ -1981,7 +1981,7 @@ Supported callback data:
 save_transaction:{transactionId}
 cancel_transaction:{transactionId}
 change_categories:{transactionId}
-catid:{budgetId}:{transactionId}
+catid:{categoryId}:{transactionId}
 veyra_risk:{reviewId}:planned
 veyra_risk:{reviewId}:necessary
 veyra_risk:{reviewId}:regret
@@ -2021,7 +2021,7 @@ Example response:
 }
 ```
 
-For `change_categories:{transactionId}`, `telegram.reply_markup` contains `inline_keyboard` buttons using `catid:{budgetId}:{transactionId}`. For `veyra_risk:{reviewId}:{response}`, Core API validates ownership, requires a pending `large_transaction` review, stores `user_response` as `planned`, `necessary`, `regret`, or `ignore`, sets `status = "resolved"`, clears the inline keyboard, and returns Telegram-safe text. Duplicate risk callbacks return `This transaction review was already answered.` and do not overwrite the first response. Unknown or invalid callback data returns `status: "error"` and safe user-facing `telegram.text`.
+For `change_categories:{transactionId}`, `telegram.reply_markup` contains `inline_keyboard` buttons using `catid:{categoryId}:{transactionId}`. Core validates that the active category belongs to the user. Confirmed transactions are reclassified without changing status or pocket, then Watchdog is reevaluated. n8n keeps routing callback prefixes and sending Telegram edits unchanged. For `veyra_risk:{reviewId}:{response}`, Core API validates ownership, requires a pending `large_transaction` review, stores `user_response` as `planned`, `necessary`, `regret`, or `ignore`, sets `status = "resolved"`, clears the inline keyboard, and returns Telegram-safe text. Duplicate risk callbacks return `This transaction review was already answered.` and do not overwrite the first response. Unknown or invalid callback data returns `status: "error"` and safe user-facing `telegram.text`.
 
 For a successful `save_transaction:{transactionId}`, Core runs Watchdog and
 keeps the existing aggregated confirmation text. When Watchdog returns a
@@ -2555,9 +2555,9 @@ curl -X POST "$CORE_API_URL/api/veyra/conversational/handle" \
 
 ### `POST /api/veyra/transactions/category-options`
 
-Builds Telegram-ready category selection text and inline keyboard buttons for a transaction category callback. This endpoint reads the production `transactions` row for ownership and active leaf `budgets` for options; it does not update, confirm, insert, or send Telegram messages.
+Builds Telegram-ready category selection text and inline keyboard buttons for a transaction category callback. This endpoint reads the production `transactions` row for ownership and active user categories for options; it does not update, confirm, insert, or send Telegram messages.
 
-Production-compatible category callbacks use `catid:{budgetId}:{transactionId}` for active leaf budgets. Parent budgets with active children are excluded, child categories are labeled as `Parent / Child`, button labels are truncated to Telegram-safe length, and the endpoint falls back to `Food`, `Transport`, `Groceries`, `Bills`, `Health & Beauty`, `Shopping`, `Entertainment`, `Transfer`, and `Other` when no active leaf budgets exist. `callbackMode: "experimental"` keeps the old `tx_set_category:{pendingTransactionId}:{categorySlug}` draft format.
+Production-compatible category callbacks use `catid:{categoryId}:{transactionId}` for active user categories. Category IDs are ownership-validated on selection; category and pocket assignment are independent. `callbackMode: "experimental"` keeps the old `tx_set_category:{pendingTransactionId}:{categorySlug}` draft format.
 
 Example request body:
 
@@ -2580,13 +2580,13 @@ Example response:
       [
         {
           "text": "Food",
-          "callback_data": "catid:food-budget-id:transaction-id"
+          "callback_data": "catid:food-category-id:transaction-id"
         }
       ],
       [
         {
           "text": "Health & Beauty",
-          "callback_data": "catid:health-budget-id:transaction-id"
+          "callback_data": "catid:health-category-id:transaction-id"
         }
       ]
     ]
@@ -2607,7 +2607,7 @@ Example request body:
 ```json
 {
   "transactionId": "transaction-id",
-  "budgetId": "food-budget-id",
+  "categoryId": "food-category-id",
   "userId": "example-user-id"
 }
 ```
@@ -2993,14 +2993,14 @@ Recommended Veyra set-category callback flow:
 
 ```txt
 Telegram Callback Query Trigger
-  -> parse callback_data catid:{budgetId}:{transactionId}
+  -> parse callback_data catid:{categoryId}:{transactionId}
   -> HTTP Request
      Method: POST
      URL: http://core-api:3001/api/veyra/transactions/set-category
      Body:
      {
        "transactionId": "={{$json.transactionId}}",
-       "budgetId": "={{$json.budgetId}}",
+      "categoryId": "={{$json.categoryId}}",
        "userId": "={{$json.user_id}}"
      }
   -> Telegram Edit Message Text or Telegram Send Message

@@ -12,6 +12,7 @@ import { QueryResultRow } from "pg";
 import { VeyraAiService } from "../../ai/veyra-ai.service";
 import { DatabaseService } from "../../database/database.service";
 import { BudgetService } from "../budgets/budget.service";
+import { CategoryService } from "../categories/category.service";
 import { PocketDto } from "../budgets/dto/pocket.dto";
 import { BudgetWatchdogResponseDto } from "../budgets/dto/overspending-check.dto";
 import {
@@ -236,14 +237,8 @@ interface TransactionRow extends QueryResultRow {
   created_at?: string | Date | null;
 }
 
-interface BudgetCategoryRow extends QueryResultRow {
-  id: string | number;
-  category: string;
-  parent_category: string | null;
-}
-
 interface CategoryOption {
-  budgetId: string | null;
+  categoryId: string | null;
   label: string;
   category: string;
 }
@@ -411,7 +406,7 @@ interface ManageStateData {
 interface ParsedTransactionCallback {
   action: TransactionCallbackHandleAction;
   transactionId?: number;
-  budgetId?: number;
+  categoryId?: number;
   reviewId?: number;
   riskAction?: TransactionRiskUserResponse;
   error?: string;
@@ -470,6 +465,7 @@ export class TransactionService {
     @Optional()
     private readonly emailParserTemplateRepository?: EmailParserTemplateRepository,
     @Optional() private readonly veyraAiService?: VeyraAiService,
+    @Optional() private readonly categoryService?: CategoryService,
   ) {}
 
   placeholderStatus() {
@@ -4611,10 +4607,10 @@ export class TransactionService {
       });
     }
 
-    if (parsed.action === "catid" && parsed.transactionId && parsed.budgetId) {
+    if (parsed.action === "catid" && parsed.transactionId && parsed.categoryId) {
       const result = await this.setPendingTransactionCategory({
         transactionId: String(parsed.transactionId),
-        budgetId: String(parsed.budgetId),
+        categoryId: String(parsed.categoryId),
         userId: String(userId),
       });
 
@@ -4818,7 +4814,13 @@ export class TransactionService {
 
     const categoryOptions =
       callbackMode === PRODUCTION_CALLBACK_MODE && transactionId
-        ? await this.findCategoryOptions(userId)
+        ? (await this.requireCategoryService().listActive(userId)).map(
+            (category) => ({
+              categoryId: category.id,
+              label: category.name,
+              category: category.name,
+            }),
+          )
         : this.defaultCategoryOptions();
     const source = transaction ?? pendingTransaction;
 
@@ -4851,7 +4853,7 @@ export class TransactionService {
   ): Promise<TransactionSetCategoryResponseDto> {
     const pendingTransactionId = this.cleanString(request.pendingTransactionId);
     const transactionId = this.cleanString(request.transactionId);
-    const budgetId = this.cleanString(request.budgetId);
+    const categoryId = this.cleanString(request.categoryId ?? request.budgetId);
     const userId = this.cleanString(request.userId);
     const category = this.normalizeCategoryOption(request.category);
 
@@ -4859,10 +4861,10 @@ export class TransactionService {
       throw new BadRequestException("userId is required");
     }
 
-    if (transactionId || budgetId) {
+    if (transactionId || categoryId) {
       return this.setTransactionCategory({
         transactionId,
-        budgetId,
+        categoryId,
         userId,
       });
     }
@@ -5118,6 +5120,13 @@ export class TransactionService {
       throw new ServiceUnavailableException("Budget service is unavailable");
     }
     return this.budgetService;
+  }
+
+  private requireCategoryService(): CategoryService {
+    if (!this.categoryService) {
+      throw new ServiceUnavailableException("Category service is unavailable");
+    }
+    return this.categoryService;
   }
 
   private awaitingPocketResponse(
@@ -6811,8 +6820,8 @@ export class TransactionService {
           UPDATE transactions
           SET status = $1,
               updated_at = now()
-          WHERE id::text = $2
-            AND user_id::text = $3
+          WHERE id::text = $3
+            AND user_id::text = $4
         `,
         [nextStatus, String(transaction.id), String(transaction.user_id)],
       );
@@ -7063,16 +7072,16 @@ export class TransactionService {
         };
       }
 
-      const budgetId = this.normalizeCallbackId(parts[1]);
+      const categoryId = this.normalizeCallbackId(parts[1]);
       const transactionId = this.normalizeCallbackId(parts[2]);
       const reviewId =
         parts.length === 4 ? this.normalizeCallbackId(parts[3]) : undefined;
 
-      if (!budgetId || !transactionId || (parts.length === 4 && !reviewId)) {
+      if (!categoryId || !transactionId || (parts.length === 4 && !reviewId)) {
         return {
           action,
           transactionId,
-          budgetId,
+          categoryId,
           reviewId,
           error: "Invalid transaction callback.",
         };
@@ -7080,7 +7089,7 @@ export class TransactionService {
 
       return {
         action,
-        budgetId,
+        categoryId,
         transactionId,
         reviewId,
       };
@@ -7350,7 +7359,7 @@ export class TransactionService {
       return "This transaction was already handled.";
     }
 
-    if (status === "unauthorized_budget") {
+    if (status === "unauthorized_category") {
       return "Selected category was not found.";
     }
 
@@ -7376,8 +7385,8 @@ export class TransactionService {
         inline_keyboard: categoryOptions.map((option) => [
           {
             text: this.telegramSafeButtonLabel(option.label),
-            callback_data: option.budgetId
-              ? this.categorySelectCallbackData(option.budgetId, transactionId)
+            callback_data: option.categoryId
+              ? this.categorySelectCallbackData(option.categoryId, transactionId)
               : `tx_set_category:${pendingTransactionId}:${this.categorySlug(
                   option.category,
                 )}`,
@@ -7421,10 +7430,10 @@ export class TransactionService {
   }
 
   private categorySelectCallbackData(
-    budgetId: string,
+    categoryId: string,
     transactionId: string,
   ): string {
-    return `catid:${budgetId}:${transactionId}`;
+    return `catid:${categoryId}:${transactionId}`;
   }
 
   private categorySlug(category: string): string {
@@ -7451,59 +7460,10 @@ export class TransactionService {
 
   private defaultCategoryOptions(): CategoryOption[] {
     return TRANSACTION_CATEGORY_OPTIONS.map((category) => ({
-      budgetId: null,
+      categoryId: null,
       label: category,
       category,
     }));
-  }
-
-  private async findCategoryOptions(userId: string): Promise<CategoryOption[]> {
-    const result = await this.database.query<BudgetCategoryRow>(
-      `
-        SELECT
-          child.id,
-          child.category,
-          parent.category AS parent_category
-        FROM budgets child
-        LEFT JOIN budgets parent
-          ON parent.id = child.parent_budget_id
-          AND parent.user_id = child.user_id
-        WHERE child.user_id::text = $1
-          AND COALESCE(child.is_active, true) = true
-          AND NOT EXISTS (
-            SELECT 1
-            FROM budgets active_child
-            WHERE active_child.parent_budget_id = child.id
-              AND active_child.user_id = child.user_id
-              AND COALESCE(active_child.is_active, true) = true
-          )
-        ORDER BY
-          COALESCE(parent.category, child.category),
-          child.category
-      `,
-      [userId],
-    );
-
-    if (result.rows.length === 0) {
-      return this.defaultCategoryOptions();
-    }
-
-    return result.rows.map((row) => ({
-      budgetId: String(row.id),
-      label: row.parent_category
-        ? `${row.parent_category} / ${row.category}`
-        : row.category,
-      category: row.category,
-    }));
-  }
-
-  private async findBudgetCategory(
-    budgetId: string,
-    userId: string,
-  ): Promise<CategoryOption | undefined> {
-    const options = await this.findCategoryOptions(userId);
-
-    return options.find((option) => option.budgetId === budgetId);
   }
 
   private telegramSafeButtonLabel(label: string): string {
@@ -7512,15 +7472,15 @@ export class TransactionService {
 
   private async setTransactionCategory(input: {
     transactionId: string | undefined;
-    budgetId: string | undefined;
+    categoryId: string | undefined;
     userId: string;
   }): Promise<TransactionSetCategoryResponseDto> {
     if (!input.transactionId) {
       throw new BadRequestException("transactionId is required");
     }
 
-    if (!input.budgetId) {
-      throw new BadRequestException("budgetId is required");
+    if (!input.categoryId) {
+      throw new BadRequestException("categoryId is required");
     }
 
     const transaction = await this.findTransaction(
@@ -7539,15 +7499,14 @@ export class TransactionService {
       };
     }
 
-    if (this.cleanString(transaction.status)?.toLowerCase() !== "pending") {
-      if (
-        transaction.source === "email" &&
-        this.cleanString(transaction.status)?.toLowerCase() === "confirmed"
-      ) {
-        await this.completePendingEmailTemplateActivation(transaction);
-      }
+    const category = await this.requireCategoryService().findActiveById(
+      input.userId,
+      input.categoryId,
+    );
+
+    if (!category) {
       return {
-        status: "already_resolved",
+        status: "unauthorized_category",
         pendingTransactionId: null,
         transactionId: String(transaction.id),
         confirmationPayload: null,
@@ -7556,14 +7515,44 @@ export class TransactionService {
       };
     }
 
-    const budgetCategory = await this.findBudgetCategory(
-      input.budgetId,
-      input.userId,
-    );
-
-    if (!budgetCategory) {
+    if (this.cleanString(transaction.status)?.toLowerCase() === "confirmed") {
+      await this.database.query(
+        `
+          UPDATE transactions
+          SET category = $1,
+              updated_at = now()
+          WHERE id::text = $2
+            AND user_id::text = $3
+        `,
+        [category.name, String(transaction.id), String(transaction.user_id)],
+      );
+      const confirmedTransaction = { ...transaction, category: category.name };
+      const watchdog = await this.evaluateTransactionWatchdog(String(transaction.id));
+      const summary = this.transactionSummary(confirmedTransaction);
+      const editMessage = this.transactionEditMessage(
+        String(transaction.id),
+        summary,
+        "confirmed",
+        confirmedTransaction,
+      );
       return {
-        status: "unauthorized_budget",
+        status: "updated",
+        pendingTransactionId: null,
+        transactionId: String(transaction.id),
+        confirmationPayload: null,
+        summary,
+        editMessage: {
+          ...editMessage,
+          text: this.appendWatchdogMessage(editMessage.text, watchdog),
+          parseMode: watchdog.watchdog?.hasAlert ? "HTML" : editMessage.parseMode,
+        },
+        notifications: watchdog.notifications,
+      };
+    }
+
+    if (this.cleanString(transaction.status)?.toLowerCase() !== "pending") {
+      return {
+        status: "already_resolved",
         pendingTransactionId: null,
         transactionId: String(transaction.id),
         confirmationPayload: null,
@@ -7583,7 +7572,7 @@ export class TransactionService {
               pocketId: transaction.pocket_id
                 ? String(transaction.pocket_id)
                 : null,
-              category: budgetCategory.category,
+              category: category.name,
             })
           : null;
       if (assignment?.status === "awaiting_pocket") {
@@ -7600,7 +7589,7 @@ export class TransactionService {
       const transitioned = await this.transitionPendingEmailTransaction({
         transaction,
         status: "confirmed",
-        category: assignment?.category ?? budgetCategory.category,
+        category: assignment?.category ?? category.name,
         pocketId: assignment?.pocketId,
       });
 
@@ -7631,17 +7620,38 @@ export class TransactionService {
 
       confirmedTransaction = transitioned;
     } else {
+      const assignment =
+        this.cleanString(transaction.transaction_type)?.toLowerCase() === "expense"
+          ? await this.requireBudgetService().resolveExpenseAssignment({
+              userId: input.userId,
+              pocketId: transaction.pocket_id ? String(transaction.pocket_id) : null,
+              category: category.name,
+            })
+          : null;
+      if (assignment?.status === "awaiting_pocket") {
+        return {
+          status: "awaiting_pocket",
+          pendingTransactionId: null,
+          transactionId: String(transaction.id),
+          confirmationPayload: null,
+          summary: this.transactionSummary(transaction),
+          editMessage: null,
+          pockets: assignment.pockets,
+        };
+      }
       await this.database.query(
         `
           UPDATE transactions
           SET category = $1,
+              pocket_id = $2,
               status = 'confirmed',
               updated_at = now()
           WHERE id::text = $2
             AND user_id::text = $3
         `,
         [
-          budgetCategory.category,
+          assignment?.category ?? category.name,
+          assignment?.pocketId ?? transaction.pocket_id ?? null,
           String(transaction.id),
           String(transaction.user_id),
         ],
@@ -7649,7 +7659,8 @@ export class TransactionService {
 
       confirmedTransaction = {
         ...transaction,
-        category: budgetCategory.category,
+        category: assignment?.category ?? category.name,
+        pocket_id: assignment?.pocketId ?? transaction.pocket_id ?? null,
         status: "confirmed",
       };
     }
