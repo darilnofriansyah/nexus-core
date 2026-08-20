@@ -913,8 +913,8 @@ test('budget overview returns all active budgets with parent child grouping', as
         category: 'Monthly Allowance',
         parent_budget_id: null,
         parent_category: null,
-        amount: null,
-        spent_amount: '0',
+        amount: '4000000',
+        spent_amount: '2000000',
         child_count: '2',
       },
       {
@@ -922,8 +922,8 @@ test('budget overview returns all active budgets with parent child grouping', as
         category: 'Subscription',
         parent_budget_id: null,
         parent_category: null,
-        amount: null,
-        spent_amount: '0',
+        amount: '37200',
+        spent_amount: '37200',
         child_count: '1',
       },
       {
@@ -984,6 +984,8 @@ test('budget overview returns all active budgets with parent child grouping', as
   assert.match(String(calls[1].values[1]), /^\d{4}-\d{2}-\d{2}$/);
   assert.match(String(calls[1].values[2]), /^\d{4}-\d{2}-\d{2}$/);
   assert.match(calls[1].text, /WHERE b\.is_active = true/);
+  assert.match(calls[1].text, /t\.pocket_id = b\.id/);
+  assert.match(calls[1].text, /t\.pocket_id IS NULL/);
   assert.match(calls[1].text, /ORDER BY/);
   assert.equal(state.calls[0].method, 'resetState');
   assert.equal(result.state.nextState, 'idle');

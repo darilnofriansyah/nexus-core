@@ -5632,7 +5632,7 @@ export class TransactionService {
             AND (t.pocket_id::text = $6 OR (t.pocket_id IS NULL AND lower(t.category) = lower(cb.category)))
         ),
         parent_categories AS (
-          SELECT cb.category FROM category_budget cb
+          SELECT pb.category FROM parent_budget pb
           UNION
           SELECT c.category
           FROM parent_budget pb

@@ -1607,7 +1607,10 @@ export class BudgetService {
             AND t.transaction_type = 'expense'
             AND t.transaction_date >= $2::date
             AND t.transaction_date < $3::date
-            AND lower(t.category) = lower(b.category)
+            AND (
+              (b.parent_budget_id IS NULL AND (t.pocket_id = b.id OR (t.pocket_id IS NULL AND lower(t.category) IN (SELECT lower(legacy.category) FROM budgets legacy WHERE legacy.id = b.id OR (legacy.parent_budget_id = b.id AND legacy.is_active = true)))))
+              OR (b.parent_budget_id IS NOT NULL AND ((t.pocket_id = b.parent_budget_id AND lower(t.category) = lower(b.category)) OR (t.pocket_id IS NULL AND lower(t.category) = lower(b.category))))
+            )
           GROUP BY b.id
         )
         SELECT
@@ -1692,18 +1695,10 @@ export class BudgetService {
         return this.formatBudgetOverviewLine(budget);
       }
 
-      const childBudgetAmount = children.reduce(
-        (total, child) => total + child.amount,
-        0,
-      );
-      const childSpentAmount = children.reduce(
-        (total, child) => total + child.spent_amount,
-        0,
-      );
       const parentLine = this.formatBudgetOverviewLine({
         category: budget.category,
-        amount: childBudgetAmount || budget.amount,
-        spent_amount: childSpentAmount,
+        amount: budget.amount,
+        spent_amount: budget.spent_amount,
       });
       const childLines = children.map((child, index) => {
         const prefix = index === children.length - 1 ? '└' : '├';
