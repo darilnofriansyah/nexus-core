@@ -1182,12 +1182,15 @@ export class TransactionService {
       validated.resolution.category,
     );
     let category = budgetCategory ?? validated.resolution.category;
-    if (validated.candidate.transactionType === "expense") {
-      const assignment = await this.requireBudgetService().resolveExpenseAssignment({
-        userId: validated.userId,
-        pocketId: request.pocketId,
-        category,
-      });
+    const assignment =
+      validated.candidate.transactionType === "expense"
+        ? await this.requireBudgetService().resolveExpenseAssignment({
+            userId: validated.userId,
+            pocketId: request.pocketId,
+            category,
+          })
+        : null;
+    if (assignment) {
       category = assignment.category;
     }
     const transaction =
@@ -1200,6 +1203,8 @@ export class TransactionService {
             },
             confidence: validated.resolution.confidence,
             rawPayload: validated.rawPayload,
+            pocketId: assignment?.status === "resolved" ? assignment.pocketId : null,
+            pocketName: assignment?.status === "resolved" ? assignment.pocketName : null,
           })
         : await this.saveEmailReviewTransaction({
             userId: validated.userId,
@@ -1211,6 +1216,8 @@ export class TransactionService {
             },
             confidence: validated.resolution.confidence,
             rawPayload: validated.rawPayload,
+            pocketId: assignment?.status === "resolved" ? assignment.pocketId : null,
+            pocketName: assignment?.status === "resolved" ? assignment.pocketName : null,
           });
 
     const telegramText = this.buildEmailReviewTelegramText({
@@ -2321,6 +2328,8 @@ export class TransactionService {
     candidate: ValidatedEmailCandidate & { category: string };
     confidence: number;
     rawPayload: ValidatedLegacyEmailReview["rawPayload"];
+    pocketId: string | null;
+    pocketName: string | null;
   }): Promise<
     NonNullable<EmailTransactionResolveReviewResponseDto["transaction"]>
   > {
@@ -2341,7 +2350,7 @@ export class TransactionService {
           confidence,
           raw_payload
         )
-        VALUES ($1, $2, $3, $4, $5, $6, NULL, $7, 'email', $8, 'pending', $9, $10)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'email', $9, 'pending', $10, $11)
         RETURNING id
       `,
       [
@@ -2351,6 +2360,7 @@ export class TransactionService {
         input.candidate.merchant,
         input.candidate.merchantNormalized,
         input.candidate.category,
+        input.pocketId,
         input.candidate.transactionDate,
         this.cleanString(input.candidate.description) ?? null,
         input.confidence,
@@ -2373,6 +2383,8 @@ export class TransactionService {
     candidate: ValidatedEmailCandidate & { category: string };
     confidence: number;
     rawPayload: ValidatedEmailCandidateReview["rawPayload"];
+    pocketId: string | null;
+    pocketName: string | null;
   }): Promise<
     NonNullable<EmailTransactionResolveReviewResponseDto["transaction"]>
   > {
@@ -2383,6 +2395,7 @@ export class TransactionService {
       input.candidate.merchant,
       input.candidate.merchantNormalized,
       input.candidate.category,
+      input.pocketId,
       input.candidate.transactionDate,
       null,
       "pending",
@@ -2424,7 +2437,7 @@ export class TransactionService {
               emailImport.raw_payload,
             );
         const insertValues = [...values];
-        insertValues[10] = rawPayload;
+        insertValues[11] = rawPayload;
 
         if (emailImport.transaction_id !== null) {
           const existing = await client.query<EmailReviewTransactionRow>(
@@ -2488,7 +2501,7 @@ export class TransactionService {
               confidence,
               raw_payload
             )
-            VALUES ($1, $2, $3, $4, $5, $6, NULL, $7, 'email', $8, $9, $10, $11)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'email', $9, $10, $11, $12)
             RETURNING id
           `,
           insertValues,
@@ -2580,6 +2593,7 @@ export class TransactionService {
         input.candidate.merchant,
         input.candidate.merchantNormalized,
         input.candidate.category,
+        input.pocketId,
         input.candidate.transactionDate,
         null,
         input.confidence,
@@ -2596,21 +2610,21 @@ export class TransactionService {
               merchant = $3,
               merchant_normalized = $4,
               category = $5,
-              pocket_id = NULL,
-              transaction_date = $6,
-              notes = $7,
-              confidence = $8,
-              raw_payload = $9,
+              pocket_id = $6,
+              transaction_date = $7,
+              notes = $8,
+              confidence = $9,
+              raw_payload = $10,
               updated_at = now()
           FROM transaction_imports AS email_import
-          WHERE transaction.id = $10
-            AND transaction.user_id = $11
+          WHERE transaction.id = $11
+            AND transaction.user_id = $12
             AND transaction.source = 'email'
             AND transaction.status = 'pending'
             AND email_import.transaction_id = transaction.id
             AND email_import.user_id = transaction.user_id
             AND email_import.source = 'email'
-            AND email_import.source_reference = $12
+            AND email_import.source_reference = $13
             AND email_import.status = 'pending'
           RETURNING transaction.id
         `,
@@ -2642,6 +2656,8 @@ export class TransactionService {
       userId: string;
       candidate: ValidatedEmailCandidate & { category: string };
       confidence: number;
+      pocketId: string | null;
+      pocketName: string | null;
     },
     transactionId: string | number,
   ): NonNullable<EmailTransactionResolveReviewResponseDto["transaction"]> {
@@ -2653,8 +2669,8 @@ export class TransactionService {
       merchant: input.candidate.merchant,
       merchantNormalized: input.candidate.merchantNormalized,
       category: input.candidate.category,
-      pocket_id: null,
-      pocket_name: null,
+      pocket_id: input.pocketId,
+      pocket_name: input.pocketName,
       transactionDate: input.candidate.transactionDate,
       source: "email",
       status: "pending",
@@ -6745,7 +6761,9 @@ export class TransactionService {
           "expense"
           ? await this.requireBudgetService().resolveExpenseAssignment({
               userId: String(transaction.user_id),
-              pocketId: request.pocketId,
+              pocketId:
+                request.pocketId ??
+                (transaction.pocket_id ? String(transaction.pocket_id) : null),
               category: transaction.category,
             })
           : null;
@@ -7293,6 +7311,10 @@ export class TransactionService {
 
     if (status === "already_rejected") {
       return "This transaction was already cancelled.";
+    }
+
+    if (status === "awaiting_pocket") {
+      return "Select a pocket before confirming this expense.";
     }
 
     return "Transaction callback could not be completed.";

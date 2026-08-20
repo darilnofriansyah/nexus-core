@@ -220,8 +220,9 @@ function createBudgetServiceWithCalls() {
           status: "resolved" as const,
           category: "Uncategorized",
           needsCategoryReview: true,
-          pocketId: "42",
-          pocketName: "Monthly Transactions",
+          pocketId: request.pocketId ?? "42",
+          pocketName:
+            request.pocketId === "77" ? "Cash" : "Monthly Transactions",
         };
       },
     } as unknown as BudgetService,
@@ -2170,7 +2171,7 @@ test("confirming pending email fills missing pocket_id from default", async () =
 test("explicit review pocket overrides default", async () => {
   const { calls: assignmentCalls, service: budgetService } =
     createBudgetServiceWithCalls();
-  const { service } = createService(
+  const { calls, service } = createService(
     [
       [{ id: "1", telegram_id: "976684739" }],
       [{ category: "Food" }],
@@ -2187,6 +2188,48 @@ test("explicit review pocket overrides default", async () => {
   });
 
   assert.equal(assignmentCalls[0].pocketId, "77");
+  const insert = calls.find(({ text }) => /INSERT INTO transactions/.test(text));
+  assert.ok(insert?.values.includes("77"));
+});
+
+test("pending email confirmation keeps its selected review pocket", async () => {
+  const { calls: assignmentCalls, service: budgetService } =
+    createBudgetServiceWithCalls();
+  const { transactionCalls, service } = createService(
+    [
+      [{ ...pendingCreditCardExpense, pocket_id: "77" }],
+      [{ ...pendingCreditCardExpense, status: "confirmed", pocket_id: "77" }],
+      [{ id: "import-1" }],
+      [],
+    ],
+    budgetService,
+  );
+
+  const result = await service.confirmTransaction({
+    transactionId: "101",
+    userId: "1",
+  });
+
+  assert.equal(result.status, "confirmed");
+  assert.equal(assignmentCalls[0].pocketId, "77");
+  const update = transactionCalls.find(({ text }) => /UPDATE transactions/.test(text));
+  assert.ok(update?.values.includes("77"));
+});
+
+test("save callback asks for a pocket when confirmation awaits one", async () => {
+  const { service } = createService(
+    [[{ ...pendingCreditCardExpense, pocket_id: null }]],
+    createAwaitingPocketBudgetService(),
+  );
+
+  const result = await service.handleTransactionCallback({
+    telegramUserId: "976684739",
+    userId: 1,
+    callbackData: "save_transaction:101",
+  });
+
+  assert.equal(result.status, "error");
+  assert.match(result.telegram.text, /Select a pocket/);
 });
 
 test("pending email remains pending when multiple pockets lack default", async () => {
@@ -3860,8 +3903,8 @@ test("keeps every AI result pending and stores only a validated proposal", async
     calls[2].text,
     /status IN \('needs_ai', 'needs_review'\).*status = 'pending'.*transaction_id IS NOT NULL/s,
   );
-  assert.equal(calls[3].values[8], "pending");
-  const rawPayload = calls[3].values[10] as Record<string, unknown>;
+  assert.equal(calls[3].values[9], "pending");
+  const rawPayload = calls[3].values[11] as Record<string, unknown>;
   assert.equal(rawPayload.parserSource, "ai");
   assert.equal("emailText" in rawPayload, false);
   assert.equal("emailHtml" in rawPayload, false);
@@ -4044,7 +4087,7 @@ test("whitelists runtime email authentication before transaction and import pers
       /UPDATE transaction_imports/.test(call.text) &&
       /raw_payload = \$2/.test(call.text),
   );
-  const transactionPayload = transactionInsert?.values[10] as Record<
+  const transactionPayload = transactionInsert?.values[11] as Record<
     string,
     unknown
   >;
@@ -4095,7 +4138,7 @@ test("drops an invalid or oversized authentication domain", async () => {
     const insert = calls.find((call) =>
       /INSERT INTO transactions/.test(call.text),
     );
-    const rawPayload = insert?.values[10] as Record<string, unknown>;
+    const rawPayload = insert?.values[11] as Record<string, unknown>;
     const authentication = (rawPayload.email as Record<string, unknown>)
       .authentication as Record<string, unknown>;
     assert.equal(authentication.domain, undefined);
@@ -4296,7 +4339,7 @@ test("updates the same pending row after a valid AI correction", async () => {
   assert.match(update.text, /transaction\.status = 'pending'/);
   assert.match(update.text, /transaction\.source = 'email'/);
   assert.equal(update.values[1], 30000);
-  assert.equal(update.values[9], "123");
+  assert.equal(update.values[10], "123");
   assert.equal(
     JSON.stringify(update.values).includes(privateDescription),
     false,
@@ -4445,7 +4488,7 @@ test("keeps AI result pending when the template proposal is invalid", async () =
   );
 
   assert.equal(result.status, "pending");
-  const rawPayload = calls[3].values[10] as Record<string, unknown>;
+  const rawPayload = calls[3].values[11] as Record<string, unknown>;
   assert.equal(rawPayload.validatedTemplate, null);
 });
 
@@ -4468,7 +4511,7 @@ test("keeps AI result pending when the template proposal is malformed", async ()
   const insert = calls.find((call) =>
     /INSERT INTO transactions/.test(call.text),
   );
-  const rawPayload = insert?.values[10] as Record<string, unknown>;
+  const rawPayload = insert?.values[11] as Record<string, unknown>;
   assert.equal(rawPayload.validatedTemplate, null);
 });
 
@@ -4518,8 +4561,8 @@ test("resolves medium confidence email review as pending with production actions
       { text: "Cancel", callback_data: "cancel_transaction:123" },
     ],
   ]);
-  assert.equal(calls[3].values[8], "pending");
-  assert.equal(calls[3].values[9], 84);
+  assert.equal(calls[3].values[9], "pending");
+  assert.equal(calls[3].values[10], 84);
   assert.equal(
     calls.some((call) => /merchant_aliases|category_rules/.test(call.text)),
     false,
@@ -4562,8 +4605,8 @@ test("resolves low confidence email review as pending with LLM category", async 
   assert.equal(result.transaction?.confidence, 74);
   assert.equal(result.actions?.confirm.transactionId, "123");
   assert.equal(result.replyMarkup?.inline_keyboard[0][0].text, "Save");
-  assert.equal(calls[3].values[8], "pending");
-  assert.equal(calls[3].values[9], 74);
+  assert.equal(calls[3].values[9], "pending");
+  assert.equal(calls[3].values[10], 74);
 });
 
 test("resolves low confidence email review with unknown LLM category as pending", async () => {
@@ -4598,7 +4641,7 @@ test("resolves low confidence email review with unknown LLM category as pending"
   assert.equal(result.status, "pending");
   assert.equal(result.transaction?.category, "LLM Made Category");
   assert.equal(calls[3].values[5], "LLM Made Category");
-  assert.equal(calls[3].values[8], "pending");
+  assert.equal(calls[3].values[9], "pending");
 });
 
 test("keeps high confidence AI result pending when category is not in budgets", async () => {
@@ -6534,7 +6577,7 @@ test("never upgrades a pre-hash import into a learnable correction", async () =>
 
   const correctedPayload = correction.calls.find((call) =>
     /UPDATE transactions AS transaction/.test(call.text),
-  )?.values[8] as Record<string, unknown>;
+  )?.values[9] as Record<string, unknown>;
   const correctedEmail = correctedPayload.email as Record<string, unknown>;
   assert.equal(correctedEmail.binding, undefined);
   assert.equal(correctedPayload.validatedTemplate, null);
@@ -6573,13 +6616,13 @@ test("binds AI correction SQL to one import with contiguous placeholders", async
   assert.ok(update);
   assert.match(update.text, /FROM transaction_imports AS email_import/);
   assert.match(update.text, /email_import\.transaction_id = transaction\.id/);
-  assert.match(update.text, /email_import\.source_reference = \$12/);
+  assert.match(update.text, /email_import\.source_reference = \$13/);
   assert.deepEqual(
     [...update.text.matchAll(/\$(\d+)/g)].map((match) => Number(match[1])),
-    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13],
   );
-  assert.equal(update.values.length, 12);
-  assert.ok((update.values[8] as Record<string, unknown>).validatedTemplate);
+  assert.equal(update.values.length, 13);
+  assert.ok((update.values[9] as Record<string, unknown>).validatedTemplate);
 });
 
 test("drops a replayable proposal that does not reproduce the AI candidate", async () => {
@@ -6601,7 +6644,7 @@ test("drops a replayable proposal that does not reproduce the AI candidate", asy
   const insert = calls.find((call) =>
     /INSERT INTO transactions/.test(call.text),
   );
-  const rawPayload = insert?.values[10] as Record<string, unknown>;
+  const rawPayload = insert?.values[11] as Record<string, unknown>;
   assert.equal(rawPayload.validatedTemplate, null);
 });
 
@@ -6625,7 +6668,7 @@ test("clears the stored proposal after a material correction no longer matches i
   const update = calls.find((call) =>
     /UPDATE transactions AS transaction/.test(call.text),
   );
-  const rawPayload = update?.values[8] as Record<string, unknown>;
+  const rawPayload = update?.values[9] as Record<string, unknown>;
   assert.equal(rawPayload.validatedTemplate, null);
 });
 
@@ -7459,7 +7502,7 @@ test("formats AI review dates in the resolved Telegram user timezone", async () 
   const insert = calls.find((call) =>
     /INSERT INTO transactions/.test(call.text),
   );
-  const rawPayload = insert?.values[10] as Record<string, unknown>;
+  const rawPayload = insert?.values[11] as Record<string, unknown>;
   assert.deepEqual(rawPayload.reviewContext, {
     timeZone: "Asia/Jakarta",
     originalTransactionDate: "2026-07-27T00:30:00+07:00",
