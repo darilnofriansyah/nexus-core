@@ -1,6 +1,7 @@
 WITH active_child_matches AS (
   SELECT child.user_id, lower(child.category) AS category_key,
-         min(child.parent_budget_id) AS pocket_id
+         min(child.parent_budget_id) AS pocket_id,
+         count(*) AS match_count
   FROM public.budgets child
   JOIN public.budgets parent
     ON parent.id = child.parent_budget_id
@@ -9,22 +10,26 @@ WITH active_child_matches AS (
    AND parent.is_active = true
   WHERE child.parent_budget_id IS NOT NULL AND child.is_active = true
   GROUP BY child.user_id, lower(child.category)
-  HAVING count(*) = 1
 ), active_top_level_matches AS (
-  SELECT user_id, lower(category) AS category_key, min(id) AS pocket_id
+  SELECT user_id, lower(category) AS category_key, min(id) AS pocket_id,
+         count(*) AS match_count
   FROM public.budgets
   WHERE parent_budget_id IS NULL AND is_active = true
   GROUP BY user_id, lower(category)
-  HAVING count(*) = 1
 ), single_active_pockets AS (
-  SELECT user_id, min(id) AS pocket_id
+  SELECT user_id, min(id) AS pocket_id, count(*) AS match_count
   FROM public.budgets
   WHERE parent_budget_id IS NULL AND is_active = true
   GROUP BY user_id
-  HAVING count(*) = 1
 ), candidates AS (
   SELECT t.id,
-         coalesce(child.pocket_id, top_level.pocket_id, single_pocket.pocket_id) AS pocket_id
+         CASE
+           WHEN COALESCE(child.match_count, 0) > 1 THEN NULL
+           WHEN child.match_count = 1 THEN child.pocket_id
+           WHEN COALESCE(top_level.match_count, 0) > 1 THEN NULL
+           WHEN top_level.match_count = 1 THEN top_level.pocket_id
+           WHEN single_pocket.match_count = 1 THEN single_pocket.pocket_id
+         END AS pocket_id
   FROM public.transactions t
   LEFT JOIN active_child_matches child
     ON child.user_id = t.user_id AND child.category_key = lower(t.category)

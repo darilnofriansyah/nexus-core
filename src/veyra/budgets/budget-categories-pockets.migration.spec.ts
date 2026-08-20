@@ -27,6 +27,11 @@ test("pocket backfill assigns only unambiguous null expense rows", () => {
   );
   assert.match(backfill, /t\.pocket_id IS NULL/);
   assert.match(backfill, /t\.transaction_type = 'expense'/);
-  assert.equal((backfill.match(/HAVING count\(\*\) = 1/g) ?? []).length, 3);
+  assert.equal((backfill.match(/count\(\*\) AS match_count/g) ?? []).length, 3);
+  assert.match(backfill, /WHEN COALESCE\(child\.match_count, 0\) > 1 THEN NULL/);
+  assert.match(backfill, /WHEN child\.match_count = 1 THEN child\.pocket_id/);
+  assert.match(backfill, /WHEN COALESCE\(top_level\.match_count, 0\) > 1 THEN NULL/);
+  assert.match(backfill, /WHEN top_level\.match_count = 1 THEN top_level\.pocket_id/);
+  assert.match(backfill, /WHEN single_pocket\.match_count = 1 THEN single_pocket\.pocket_id/);
   assert.doesNotMatch(backfill, /DELETE FROM|SET category|SET status/);
 });
