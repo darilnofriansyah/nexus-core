@@ -78,6 +78,7 @@ test('active budgets aggregate child budget amounts and categories', async () =>
   const { calls, repository } = createRepository([
     [
       {
+        id: '42',
         category: 'Daily',
         amount: '1200000',
         categories: ['Food', 'Transport'],
@@ -93,9 +94,18 @@ test('active budgets aggregate child budget amounts and categories', async () =>
   assert.deepEqual(calls[0].values, ['1', null]);
   assert.deepEqual(budgets, [
     {
+      id: '42',
       category: 'Daily',
       amount: 1200000,
       categories: ['Food', 'Transport'],
     },
   ]);
+});
+
+test('pocket totals exclude assigned rows from another pocket', async () => {
+  const { calls, repository } = createRepository();
+  await repository.pocketTotal('1', '42', ['Food'], '2026-06-25', '2026-07-25');
+  assert.match(calls[0].text, /t\.pocket_id::text = \$4/);
+  assert.match(calls[0].text, /t\.pocket_id IS NULL/);
+  assert.deepEqual(calls[0].values, ['1', '2026-06-25', '2026-07-25', '42', ['Food']]);
 });

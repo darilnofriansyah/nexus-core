@@ -5600,7 +5600,8 @@ export class TransactionService {
           SELECT b.id, b.category, b.amount, b.parent_budget_id
           FROM budgets b
           WHERE b.user_id::text = $1
-            AND lower(b.category) = lower($2)
+            AND (($6::text IS NOT NULL AND b.parent_budget_id::text = $6 AND lower(b.category) = lower($2))
+              OR ($6::text IS NULL AND lower(b.category) = lower($2)))
             AND COALESCE(b.is_active, true) = true
           ORDER BY CASE WHEN b.parent_budget_id IS NOT NULL THEN 0 ELSE 1 END
           LIMIT 1
@@ -5622,6 +5623,7 @@ export class TransactionService {
             AND t.transaction_type = 'expense'
             AND t.transaction_date >= $4::date
             AND t.transaction_date < $5::date
+            AND (t.pocket_id::text = $6 OR (t.pocket_id IS NULL AND lower(t.category) = lower(cb.category)))
         ),
         parent_categories AS (
           SELECT cb.category FROM category_budget cb
@@ -5640,7 +5642,7 @@ export class TransactionService {
             AND t.transaction_type = 'expense'
             AND t.transaction_date >= $4::date
             AND t.transaction_date < $5::date
-            AND lower(t.category) IN (SELECT lower(category) FROM parent_categories)
+            AND (t.pocket_id::text = $6 OR (t.pocket_id IS NULL AND lower(t.category) IN (SELECT lower(category) FROM parent_categories)))
         ),
         total_budget AS (
           SELECT COALESCE(SUM(amount), 0) AS amount
@@ -5684,6 +5686,7 @@ export class TransactionService {
         String(transaction.id),
         cycle.cycle_start,
         cycle.cycle_end,
+        transaction.pocket_id == null ? null : String(transaction.pocket_id),
       ],
     );
     const row = result.rows[0];

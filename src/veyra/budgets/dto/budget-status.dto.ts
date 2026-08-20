@@ -1,7 +1,8 @@
 export interface BudgetStatusRequestDto {
   userId?: string;
   telegramUserId?: string;
-  category: string;
+  pocketId?: string;
+  category?: string;
   asOfDate?: string;
 }
 

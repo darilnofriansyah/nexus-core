@@ -691,6 +691,7 @@ export class ConversationalService {
       ? (activeBudgets[0] ?? null)
       : activeBudgets.length
         ? {
+            id: 'total',
             category: 'Total',
             amount: activeBudgets.reduce((sum, item) => sum + item.amount, 0),
             categories: activeBudgets.flatMap((item) => item.categories),
@@ -746,20 +747,8 @@ export class ConversationalService {
     period: ConversationalPeriodDto,
     budget: BudgetItem | null,
   ) {
-    const categories = budget?.categories.length ? budget.categories : [category];
-    const totals = await Promise.all(
-      categories.map((item) =>
-        this.repository.categoryTotal(userId, item, period.start, period.end),
-      ),
-    );
-
-    return totals.reduce(
-      (sum, item) => ({
-        total: sum.total + item.total,
-        count: sum.count + item.count,
-      }),
-      { total: 0, count: 0 },
-    );
+    if (budget?.id) return this.repository.pocketTotal(userId, budget.id, budget.categories, period.start, period.end);
+    return this.repository.categoryTotal(userId, category, period.start, period.end);
   }
 
   private buildBurnRateForecast(

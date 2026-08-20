@@ -4,6 +4,8 @@ NestJS API for gradually moving reusable Veyra and Aegis business logic out of n
 
 This app is intentionally small. It is a service layer pilot, not a replacement for existing production workflows.
 
+`/veyra/budgets/status` accepts `{ "userId": "1", "pocketId": "42" }`. Category lookup remains compatible for rows with `pocket_id IS NULL`; n8n still triggers watchdogs and sends Telegram messages.
+
 ## Project Structure
 
 ```txt

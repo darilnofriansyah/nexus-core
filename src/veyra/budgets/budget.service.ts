@@ -115,6 +115,7 @@ interface WatchdogTransactionRow extends QueryResultRow {
   category: string | null;
   status: string | null;
   transaction_date: string | Date | null;
+  pocket_id: string | number | null;
 }
 
 type BudgetHandleIntent =
@@ -310,13 +311,15 @@ export class BudgetService {
   ): Promise<BudgetStatusResponseDto> {
     const userId = this.cleanString(request.userId ?? request.telegramUserId);
     const category = this.cleanString(request.category);
+    const pocketId = this.cleanString(request.pocketId);
+    const lookup = pocketId ?? category;
 
     if (!userId) {
       throw new BadRequestException('userId or telegramUserId is required');
     }
 
-    if (!category) {
-      throw new BadRequestException('category is required');
+    if (!lookup) {
+      throw new BadRequestException('pocketId or category is required');
     }
 
     const cycleStartDay = await this.getCycleStartDay(userId);
@@ -333,13 +336,22 @@ export class BudgetService {
           WHERE id::text = $1 OR telegram_id::text = $1
           LIMIT 1
         ),
-        selected_budget AS (
+        pocket AS (
           SELECT b.id, b.category, b.parent_budget_id, b.amount AS budget_amount
           FROM budgets b
           JOIN matched_user u ON u.id = b.user_id
-          WHERE lower(b.category) = lower($2)
+          WHERE (b.id::text = $2 OR lower(b.category) = lower($2))
+            AND b.parent_budget_id IS NULL
             AND COALESCE(b.is_active, true) = true
           LIMIT 1
+        ),
+        legacy_pocket_categories AS (
+          SELECT category FROM pocket
+          UNION
+          SELECT child.category
+          FROM budgets child
+          JOIN pocket ON child.parent_budget_id = pocket.id
+          WHERE COALESCE(child.is_active, true) = true
         ),
         child_spending AS (
           SELECT
@@ -348,39 +360,43 @@ export class BudgetService {
             child.amount AS budget_amount,
             COALESCE(SUM(t.amount), 0) AS spent_amount
           FROM budgets child
-          JOIN selected_budget parent ON child.parent_budget_id = parent.id
+          JOIN pocket parent ON child.parent_budget_id = parent.id
           LEFT JOIN matched_user u ON true
           LEFT JOIN transactions t ON t.user_id = u.id
             AND t.status = 'confirmed'
             AND t.transaction_type = 'expense'
             AND t.transaction_date >= $3::date
             AND t.transaction_date < $4::date
+            AND (
+              t.pocket_id = child.parent_budget_id
+              OR (t.pocket_id IS NULL AND lower(t.category) = lower(child.category))
+            )
             AND lower(t.category) = lower(child.category)
           WHERE COALESCE(child.is_active, true) = true
           GROUP BY child.id, child.category, child.amount
         ),
-        direct_spending AS (
+        pocket_spending AS (
           SELECT COALESCE(SUM(t.amount), 0) AS spent_amount
           FROM transactions t
           JOIN matched_user u ON u.id = t.user_id
-          JOIN selected_budget b ON lower(t.category) = lower(b.category)
+          JOIN pocket ON true
           WHERE t.status = 'confirmed'
             AND t.transaction_type = 'expense'
             AND t.transaction_date >= $3::date
             AND t.transaction_date < $4::date
+            AND (
+              t.pocket_id = pocket.id
+              OR (t.pocket_id IS NULL AND lower(t.category) IN (SELECT lower(category) FROM legacy_pocket_categories))
+            )
         ),
         totals AS (
           SELECT
             CASE
-              WHEN EXISTS (SELECT 1 FROM child_spending)
-              THEN COALESCE(SUM(child_spending.budget_amount), 0)
-              ELSE (SELECT budget_amount FROM selected_budget)
+              WHEN (SELECT budget_amount FROM pocket) IS NOT NULL
+              THEN (SELECT budget_amount FROM pocket)
+              ELSE COALESCE(SUM(child_spending.budget_amount), 0)
             END AS budget_amount,
-            CASE
-              WHEN EXISTS (SELECT 1 FROM child_spending)
-              THEN COALESCE(SUM(child_spending.spent_amount), 0)
-              ELSE (SELECT spent_amount FROM direct_spending)
-            END AS spent_amount
+            (SELECT spent_amount FROM pocket_spending) AS spent_amount
           FROM child_spending
         ),
         child_breakdown AS (
@@ -405,11 +421,11 @@ export class BudgetService {
           totals.budget_amount,
           totals.spent_amount,
           child_breakdown.child_breakdown
-        FROM selected_budget sb
+        FROM pocket sb
         CROSS JOIN totals
         CROSS JOIN child_breakdown
       `,
-      [userId, category, cycle.cycle_start, cycle.cycle_end],
+      [userId, lookup, cycle.cycle_start, cycle.cycle_end],
     );
 
     const row = result.rows[0];
@@ -822,16 +838,18 @@ export class BudgetService {
       return this.skippedWatchdog('transaction_category_missing');
     }
 
-    let status: BudgetStatusResponseDto;
+    let statuses: BudgetStatusResponseDto[];
 
     try {
-      status = await this.getDirectBudgetStatus(
-        userId,
-        transaction.category,
-        this.parseReferenceDate(
-          this.toReferenceDateString(transaction.transaction_date),
-        ),
-      );
+      const referenceDate = this.parseReferenceDate(this.toReferenceDateString(transaction.transaction_date));
+      if (transaction.pocket_id) {
+        const parent = await this.getBudgetStatus({ userId, pocketId: String(transaction.pocket_id), asOfDate: this.toReferenceDateString(transaction.transaction_date) });
+        const child = parent.child_breakdown.find((item) => item.category.toLowerCase() === transaction.category?.toLowerCase());
+        statuses = [parent];
+        if (child) statuses.push({ ...parent, budget_id: child.budget_id, category: child.category, parent_budget_id: parent.budget_id, budget_amount: child.budget_amount, spent_amount: child.spent_amount, remaining_amount: child.remaining_amount, spent_percent: child.spent_percent, child_breakdown: [] });
+      } else {
+        statuses = [await this.getDirectBudgetStatus(userId, transaction.category, referenceDate)];
+      }
     } catch (error) {
       if (error instanceof NotFoundException) {
         return this.skippedWatchdog('budget_not_found');
@@ -842,7 +860,7 @@ export class BudgetService {
 
     const alerts: BudgetWatchdogAlertDto[] = [];
 
-    for (const alertType of this.resolveBudgetWatchdogAlertTypes(status)) {
+    for (const status of statuses) for (const alertType of this.resolveBudgetWatchdogAlertTypes(status)) {
       const periodKey = this.periodKeyFromCycleStart(status.cycle_start);
       const alertRecord = this.buildOverspendingAlertRecord({
         userId,
@@ -852,9 +870,7 @@ export class BudgetService {
         periodKey,
       });
 
-      if (await this.hasBudgetAlert(alertRecord)) {
-        continue;
-      }
+      if (await this.hasBudgetAlert(alertRecord)) continue;
 
       await this.insertBudgetAlert(alertRecord);
       alerts.push(this.buildWatchdogAlert(status, alertType));
@@ -1129,7 +1145,8 @@ export class BudgetService {
           transaction_type,
           category,
           status,
-          transaction_date
+          transaction_date,
+          pocket_id
         FROM transactions
         WHERE id::text = $1
           AND user_id::text = $2
@@ -1296,7 +1313,8 @@ export class BudgetService {
           SELECT COALESCE(SUM(t.amount), 0) AS spent_amount
           FROM transactions t
           JOIN matched_user u ON u.id = t.user_id
-          JOIN selected_budget b ON lower(t.category) = lower(b.category)
+          JOIN selected_budget b ON t.pocket_id IS NULL
+            AND lower(t.category) = lower(b.category)
           WHERE t.status = 'confirmed'
             AND t.transaction_type = 'expense'
             AND t.transaction_date >= $3::date

@@ -48,6 +48,7 @@ export interface CashflowSummary {
 }
 
 export interface BudgetItem {
+  id?: string;
   category: string;
   amount: number;
   categories: string[];
@@ -98,6 +99,7 @@ interface CashflowRow extends QueryResultRow {
 }
 
 interface BudgetRow extends QueryResultRow {
+  id: string | number;
   category: string;
   amount: string | number;
   categories: string[] | string;
@@ -407,6 +409,7 @@ export class ConversationalRepository {
     const result = await this.database.query<BudgetRow>(
       `
         SELECT
+          b.id,
           b.category,
           CASE
             WHEN COUNT(child.id) > 0 THEN COALESCE(SUM(child.amount), 0)
@@ -432,6 +435,7 @@ export class ConversationalRepository {
     );
 
     return result.rows.map((row) => ({
+      id: String(row.id),
       category: row.category,
       amount: Number(row.amount),
       categories: Array.isArray(row.categories)
@@ -441,6 +445,17 @@ export class ConversationalRepository {
             .split(',')
             .filter(Boolean),
     }));
+  }
+
+  async pocketTotal(userId: string, pocketId: string, categories: string[], start: string, end: string): Promise<AmountCount> {
+    const result = await this.database.query<AmountCountRow>(
+      `SELECT COALESCE(SUM(amount), 0) AS total, COUNT(*) AS count FROM transactions t
+       WHERE t.user_id::text = $1 AND t.status = 'confirmed' AND t.transaction_type = 'expense'
+         AND t.transaction_date >= $2::date AND t.transaction_date < $3::date
+         AND (t.pocket_id::text = $4 OR (t.pocket_id IS NULL AND lower(t.category) = ANY(SELECT lower(value) FROM unnest($5::text[]) value)))`,
+      [userId, start, end, pocketId, categories],
+    );
+    return this.mapAmountCount(result.rows[0]);
   }
 
   private mapBreakdown(rows: BreakdownRow[]): BreakdownItem[] {

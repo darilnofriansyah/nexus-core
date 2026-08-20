@@ -294,7 +294,7 @@ test('looks up user cycle then maps budget status from confirmed spending query'
   assert.match(calls[1].text, /COALESCE\(b\.is_active, true\) = true/);
   assert.match(calls[1].text, /COALESCE\(child\.is_active, true\) = true/);
   assert.match(calls[1].text, /SUM\(child_spending\.budget_amount\)/);
-  assert.match(calls[1].text, /SUM\(child_spending\.spent_amount\)/);
+  assert.match(calls[1].text, /pocket_spending/);
   assert.match(calls[1].text, /child_breakdown\.child_breakdown/);
   assert.doesNotMatch(calls[1].text, /budget_scope/);
   assert.doesNotMatch(
@@ -313,6 +313,44 @@ test('looks up user cycle then maps budget status from confirmed spending query'
     cycle_start: '2026-06-15',
     cycle_end: '2026-07-15',
   });
+});
+
+test('parent pocket counts assigned confirmed expenses regardless of category', async () => {
+  const { calls, service } = createService([
+    [{ cycle_start_day: 1 }],
+    [{ budget_id: '42', category: 'Monthly Transactions', parent_budget_id: null, budget_amount: '1000000', spent_amount: '500000', child_breakdown: [] }],
+  ]);
+
+  const result = await service.getBudgetStatus({ userId: '1', pocketId: '42', category: 'Monthly Transactions' } as never);
+
+  assert.equal(result.spent_amount, 500000);
+  assert.match(calls[1].text, /t\.pocket_id = pocket\.id/);
+  assert.match(calls[1].text, /t\.status = 'confirmed'/);
+  assert.match(calls[1].text, /t\.transaction_type = 'expense'/);
+});
+
+test('assigned rows never category-match another pocket', async () => {
+  const { calls, service } = createService([
+    [{ cycle_start_day: 1 }],
+    [{ budget_id: '42', category: 'Monthly Transactions', parent_budget_id: null, budget_amount: '1000000', spent_amount: '0', child_breakdown: [] }],
+  ]);
+
+  await service.getBudgetStatus({ userId: '1', pocketId: '42', category: 'Monthly Transactions' } as never);
+
+  assert.match(calls[1].text, /t\.pocket_id = pocket\.id/);
+  assert.doesNotMatch(calls[1].text, /t\.pocket_id IS NOT NULL[\s\S]*lower\(t\.category\) = lower\(pocket\.category\)/);
+});
+
+test('child cap requires its parent pocket and matching category', async () => {
+  const { calls, service } = createService([
+    [{ cycle_start_day: 1 }],
+    [{ budget_id: '42', category: 'Monthly Transactions', parent_budget_id: null, budget_amount: '1000000', spent_amount: '250000', child_breakdown: [] }],
+  ]);
+
+  await service.getBudgetStatus({ userId: '1', pocketId: '42', category: 'Monthly Transactions' } as never);
+
+  assert.match(calls[1].text, /t\.pocket_id = child\.parent_budget_id/);
+  assert.match(calls[1].text, /lower\(t\.category\) = lower\(child\.category\)/);
 });
 
 test('returns direct category status without child breakdown', async () => {
@@ -1363,7 +1401,7 @@ test('alerts at 80 percent spending', async () => {
   assert.doesNotMatch(calls[1].text, /budget_scope/);
   assert.match(
     calls[1].text,
-    /JOIN selected_budget b ON lower\(t\.category\) = lower\(b\.category\)/,
+    /JOIN selected_budget b ON t\.pocket_id IS NULL/,
   );
   assert.deepEqual(calls[2].values, [
     'user-1',
