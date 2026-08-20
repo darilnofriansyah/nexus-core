@@ -5138,6 +5138,23 @@ export class TransactionService {
     watchdog?: TransactionWatchdogResponseDto,
     needsCategoryReview = false,
   ): TransactionHandleResponseDto {
+    const confirmationPayload = this.buildConfirmationPayload({
+      transactionId: transaction.id,
+      userId: transaction.userId,
+      transactionType: transaction.transactionType,
+      amount: transaction.amount,
+      merchant: transaction.merchant,
+      merchantNormalized: transaction.merchantNormalized,
+      category: transaction.category,
+      pocketId: transaction.pocketId,
+      pocketName: transaction.pocketName,
+      needsCategoryReview,
+      notes: transaction.notes,
+      transactionDate: transaction.transactionDate,
+      source: transaction.source,
+      confidence: transaction.confidence,
+    });
+
     if (transaction.status === "confirmed") {
       const message =
         transaction.transactionType === "income"
@@ -5161,25 +5178,16 @@ export class TransactionService {
         message: this.appendWatchdogMessage(message, watchdog),
         notifications: watchdog?.notifications ?? [],
         ...(watchdog?.watchdog ? { watchdog: watchdog.watchdog } : {}),
+        ...(needsCategoryReview
+          ? {
+              confirmationPayload: {
+                text: confirmationPayload.text,
+                reply_markup: confirmationPayload.replyMarkup,
+              },
+            }
+          : {}),
       };
     }
-
-    const confirmationPayload = this.buildConfirmationPayload({
-      transactionId: transaction.id,
-      userId: transaction.userId,
-      transactionType: transaction.transactionType,
-      amount: transaction.amount,
-      merchant: transaction.merchant,
-      merchantNormalized: transaction.merchantNormalized,
-      category: transaction.category,
-      pocketId: transaction.pocketId,
-      pocketName: transaction.pocketName,
-      needsCategoryReview,
-      notes: transaction.notes,
-      transactionDate: transaction.transactionDate,
-      source: transaction.source,
-      confidence: transaction.confidence,
-    });
 
     return {
       status: transaction.status,

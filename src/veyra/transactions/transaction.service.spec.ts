@@ -1038,9 +1038,16 @@ test("saves Toys under default Monthly Transactions without Toys budget", async 
     createBudgetService(),
   );
 
-  const result = await service.handleManualTransaction(manualExpense());
+  const result = await service.handleManualTransaction(
+    manualExpense({
+      llmResult: {
+        ...manualExpense().llmResult,
+        confidence: 95,
+      },
+    }),
+  );
 
-  assert.equal(result.status, "pending");
+  assert.equal(result.status, "confirmed");
   const insert = calls.find(({ text }) => /INSERT INTO transactions/.test(text));
   assert.match(insert?.text ?? "", /category,\s*pocket_id/);
   assert.ok(insert?.values.includes("42"));
