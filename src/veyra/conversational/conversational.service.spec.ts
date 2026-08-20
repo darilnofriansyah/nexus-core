@@ -73,6 +73,20 @@ class FakeRepository {
     );
   }
 
+  async pocketTotal(
+    _userId: string,
+    _pocketId: string,
+    categories: string[],
+  ): Promise<AmountCount> {
+    return categories.reduce(
+      (total, category) => {
+        const item = this.categoryTotals.get(category.toLowerCase()) ?? { total: 75000, count: 3 };
+        return { total: total.total + item.total, count: total.count + item.count };
+      },
+      { total: 0, count: 0 },
+    );
+  }
+
   async merchantTotal() {
     return { total: 65000, count: 2 };
   }
@@ -301,6 +315,7 @@ test('burn_rate_forecast uses child budgets for parent budget forecast', async (
     const { repo, service } = createService();
     repo.budgets = [
       {
+        id: '42',
         category: 'Daily',
         amount: 1000000,
         categories: ['Food', 'Transport'],

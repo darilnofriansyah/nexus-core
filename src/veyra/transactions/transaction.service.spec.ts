@@ -5767,7 +5767,7 @@ test("email review AI result skips watchdog until confirmed", async () => {
     [{ id: "tx-review" }],
     [{ id: "import-1" }],
   ]);
-  spyOnWatchdog(service);
+  const watchdogCalls = spyOnWatchdog(service);
 
   const result = await service.resolveEmailTransactionReview({
     telegramUserId: "976684739",
@@ -7827,7 +7827,7 @@ test("catid callback updates confirmed expense category without changing status"
     undefined,
     dependencies.categoryService,
   );
-  spyOnWatchdog(service);
+  const watchdogCalls = spyOnWatchdog(service);
 
   const result = await service.setPendingTransactionCategory({
     transactionId: "101",
