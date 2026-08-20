@@ -40,8 +40,6 @@ export interface TransactionSetCategoryRequestDto {
   pendingTransactionId?: string;
   transactionId?: string;
   categoryId?: string;
-  /** @deprecated Use categoryId. */
-  budgetId?: string;
   userId: string;
   category?: string;
 }

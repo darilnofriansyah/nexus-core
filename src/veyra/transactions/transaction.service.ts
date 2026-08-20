@@ -4853,7 +4853,7 @@ export class TransactionService {
   ): Promise<TransactionSetCategoryResponseDto> {
     const pendingTransactionId = this.cleanString(request.pendingTransactionId);
     const transactionId = this.cleanString(request.transactionId);
-    const categoryId = this.cleanString(request.categoryId ?? request.budgetId);
+    const categoryId = this.cleanString(request.categoryId);
     const userId = this.cleanString(request.userId);
     const category = this.normalizeCategoryOption(request.category);
 
@@ -6820,8 +6820,8 @@ export class TransactionService {
           UPDATE transactions
           SET status = $1,
               updated_at = now()
-          WHERE id::text = $3
-            AND user_id::text = $4
+          WHERE id::text = $2
+            AND user_id::text = $3
         `,
         [nextStatus, String(transaction.id), String(transaction.user_id)],
       );
@@ -7521,8 +7521,12 @@ export class TransactionService {
           UPDATE transactions
           SET category = $1,
               updated_at = now()
-          WHERE id::text = $2
-            AND user_id::text = $3
+          WHERE id::text = $3
+            AND user_id::text = $4
+            AND status = 'pending'
+          RETURNING id, user_id, transaction_type, amount, merchant,
+                    merchant_normalized, category, pocket_id, transaction_date,
+                    notes, status, source, confidence, raw_payload, created_at
         `,
         [category.name, String(transaction.id), String(transaction.user_id)],
       );
@@ -7639,15 +7643,19 @@ export class TransactionService {
           pockets: assignment.pockets,
         };
       }
-      await this.database.query(
+      const update = await this.database.query<TransactionRow>(
         `
           UPDATE transactions
           SET category = $1,
               pocket_id = $2,
               status = 'confirmed',
               updated_at = now()
-          WHERE id::text = $2
-            AND user_id::text = $3
+          WHERE id::text = $3
+            AND user_id::text = $4
+            AND status = 'pending'
+          RETURNING id, user_id, transaction_type, amount, merchant,
+                    merchant_normalized, category, pocket_id, transaction_date,
+                    notes, status, source, confidence, raw_payload, created_at
         `,
         [
           assignment?.category ?? category.name,
@@ -7657,7 +7665,7 @@ export class TransactionService {
         ],
       );
 
-      confirmedTransaction = {
+      confirmedTransaction = update.rows[0] ?? {
         ...transaction,
         category: assignment?.category ?? category.name,
         pocket_id: assignment?.pocketId ?? transaction.pocket_id ?? null,

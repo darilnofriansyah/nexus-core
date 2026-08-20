@@ -2598,7 +2598,7 @@ If the transaction row is missing, `status` is `not_found`. If a legacy pending 
 
 ### `POST /api/veyra/transactions/set-category`
 
-Updates the selected production transaction category, sets `status = confirmed`, and returns Telegram edit-message data. The budget id must belong to the same user and be an active leaf budget.
+Updates the selected production transaction category and returns Telegram edit-message data. The category id must belong to the same user and be active. Confirmed rows change category only; pending rows are atomically confirmed with their resolved or retained pocket.
 
 Category confirmation runs the transaction watchdog after the category/status update succeeds because category changes can affect both budget impact and risk evaluation.
 
@@ -2633,7 +2633,7 @@ Example response:
 }
 ```
 
-If the transaction row is missing, `status` is `not_found`. If the budget id does not belong to an active leaf budget for the same user, `status` is `unauthorized_budget`.
+If the transaction row is missing, `status` is `not_found`. If the category does not belong to the user's active category catalog, `status` is `unauthorized_category`.
 
 ## How n8n Should Call This API
 
@@ -3013,7 +3013,7 @@ Telegram text = {{$json.editMessage.text}}
 Parse mode = {{$json.editMessage.parseMode}}
 ```
 
-This replaces only active leaf-budget lookup, category button formatting, and the transaction category update. Keep callback routing, Telegram answering/sending, overspend orchestration after successful selection, rejection, and edit-transaction flows in n8n for now.
+This replaces category lookup, category button formatting, and the transaction category update. Keep callback routing, Telegram answering/sending, overspend orchestration after successful selection, rejection, and edit-transaction flows in n8n for now.
 
 Recommended Veyra intent classification architecture:
 
@@ -3218,7 +3218,7 @@ Transaction set category test:
 ```bash
 curl -X POST http://localhost:3001/api/veyra/transactions/set-category \
   -H 'content-type: application/json' \
-  -d '{"transactionId":"transaction-1","budgetId":"food-budget-id","userId":"example-user-id"}'
+  -d '{"transactionId":"transaction-1","categoryId":"food-category-id","userId":"example-user-id"}'
 ```
 
 Intent classify test:

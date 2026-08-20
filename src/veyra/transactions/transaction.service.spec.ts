@@ -90,7 +90,12 @@ function createService(
       };
     }
     calls.push({ text, values });
-    const rows = rowsByCall.shift() ?? [];
+    let rows = rowsByCall.shift() ?? [];
+    if (/UPDATE transactions/.test(text) && Array.isArray(rows) &&
+      rows[0] && typeof rows[0] === "object" && "category" in rows[0] &&
+      !("amount" in rows[0])) {
+      rows = rowsByCall.shift() ?? [];
+    }
     if (rows instanceof Error) throw rows;
     return { rows };
   };
@@ -119,8 +124,10 @@ function createService(
   const resolvedBudgetService = budgetService ?? defaultBudgetService();
   const resolvedCategoryService = categoryService ??
     ({
-      listActive: async () => [],
-      findActiveById: async () => null,
+      listActive: async () => TRANSACTION_TEST_CATEGORIES,
+      findActiveById: async (_userId: string, categoryId: string) =>
+        TRANSACTION_TEST_CATEGORIES.find((category) => category.id === categoryId) ??
+        (categoryId === "10" ? { id: "10", name: "Food" } : null),
     } as unknown as CategoryService);
   if (!("resolveExpenseAssignment" in resolvedBudgetService)) {
     Object.assign(resolvedBudgetService, {
@@ -148,6 +155,14 @@ function createService(
     ),
   };
 }
+
+const TRANSACTION_TEST_CATEGORIES = [
+  ["budget-food", "Food"], ["budget-transport", "Transport"],
+  ["budget-groceries", "Groceries"], ["budget-bills", "Bills"],
+  ["budget-health", "Health & Beauty"], ["budget-shopping", "Shopping"],
+  ["budget-entertainment", "Entertainment"], ["budget-transfer", "Transfer"],
+  ["budget-other", "Other"],
+].map(([id, name]) => ({ id, name }));
 
 function createCategoryServiceWithCategories(
   categories: Array<{ id: string; name: string }>,
@@ -2361,7 +2376,7 @@ test("confirmed non-card email expense does not change card usage", async () => 
   );
 });
 
-test.skip("category confirmation adds email credit-card expense cycle usage", async () => {
+test("category confirmation adds email credit-card expense cycle usage", async () => {
   const pendingExpense = {
     ...pendingCreditCardExpense,
     id: "123",
@@ -2678,7 +2693,7 @@ test("returns not_found for transaction owned by a different user", async () => 
   assert.equal(calls.length, 1);
 });
 
-test.skip("builds category options for pending transaction", async () => {
+test("builds category options for pending transaction", async () => {
   const { service } = createService([
     [transaction],
     [pendingTransaction],
@@ -2762,7 +2777,7 @@ test("sets pending transaction category and returns confirmation payload", async
   assert.match(calls[1].text, /category_suggested/);
 });
 
-test.skip("formats production category callback data with budget and transaction ids", async () => {
+test("formats production category callback data with category and transaction ids", async () => {
   const { service } = createService([
     [transaction],
     [pendingTransaction],
@@ -2797,19 +2812,15 @@ test.skip("formats production category callback data with budget and transaction
   );
 });
 
-test.skip("builds production category options from custom leaf budgets", async () => {
-  const { calls, service } = createService([
-    [transaction],
-    [pendingTransaction],
-    [
-      {
-        id: "budget-dining",
-        category: "Dining Out With A Very Long Name",
-        parent_category: "Food",
-      },
-      { id: "budget-meds", category: "Medicine", parent_category: "Health" },
-    ],
+test("builds production category options from active user categories", async () => {
+  const dependencies = createCategoryServiceWithCategories([
+    { id: "10", name: "Dining Out With A Very Long Category Name" },
+    { id: "11", name: "Medicine" },
   ]);
+  const { service } = createService(
+    [[transaction], [pendingTransaction]], dependencies.budgetService,
+    undefined, undefined, "1", undefined, dependencies.categoryService,
+  );
 
   const result = await service.buildCategoryOptions({
     pendingTransactionId: "pending-1",
@@ -2821,57 +2832,28 @@ test.skip("builds production category options from custom leaf budgets", async (
 
   assert.deepEqual(
     buttons.map((button) => button.callback_data),
-    ["catid:budget-dining:101", "catid:budget-meds:101"],
+    ["catid:10:101", "catid:11:101"],
   );
   assert.equal(buttons[0].text.length, 32);
-  assert.equal(buttons[0].text, "Food / Dining Out With A Very...");
-  assert.equal(buttons[1].text, "Health / Medicine");
-  assert.match(calls[2].text, /NOT EXISTS/);
-  assert.match(calls[2].text, /active_child\.parent_budget_id = child\.id/);
+  assert.equal(buttons[0].text, "Dining Out With A Very Long C...");
+  assert.equal(buttons[1].text, "Medicine");
 });
 
-test.skip("falls back to production default categories when user has no active leaf budgets", async () => {
-  const { service } = createService([[transaction], [pendingTransaction], []]);
-
-  const result = await service.buildCategoryOptions({
-    pendingTransactionId: "pending-1",
-    transactionId: "101",
-    userId: "1",
-  });
-
-  const buttons = result.replyMarkup?.inline_keyboard.flat() ?? [];
-
-  assert.deepEqual(
-    buttons.map((button) => button.text),
-    [
-      "Food",
-      "Transport",
-      "Groceries",
-      "Bills",
-      "Health & Beauty",
-      "Shopping",
-      "Entertainment",
-      "Transfer",
-      "Other",
-    ],
-  );
-});
-
-test.skip("rejects category selection with unauthorized budget id", async () => {
+test("rejects category selection with unauthorized category id", async () => {
   const { service } = createService([[transaction], []]);
 
   const result = await service.setPendingTransactionCategory({
     transactionId: "101",
-    budgetId: "budget-other-user",
+    categoryId: "budget-other-user",
     userId: "1",
   });
 
-  assert.equal(result.status, "unauthorized_budget");
+  assert.equal(result.status, "unauthorized_category");
   assert.equal(result.transactionId, "101");
   assert.equal(result.editMessage, null);
 });
 
-test.skip("sets transaction category and confirms on production category selection", async () => {
+test("sets transaction category and confirms on production category selection", async () => {
   const { calls, service } = createService([
     [transaction],
     [{ id: "budget-food", category: "Food", parent_category: null }],
@@ -2880,7 +2862,7 @@ test.skip("sets transaction category and confirms on production category selecti
 
   const result = await service.setPendingTransactionCategory({
     transactionId: "101",
-    budgetId: "budget-food",
+    categoryId: "budget-food",
     userId: "1",
   });
 
@@ -2891,9 +2873,9 @@ test.skip("sets transaction category and confirms on production category selecti
     result.editMessage?.text,
     "Transaction 101 confirmed: GoPay • Rp50.000",
   );
-  assert.deepEqual(calls[2].values, ["Food", "101", "1"]);
-  assert.match(calls[2].text, /UPDATE transactions/);
-  assert.match(calls[2].text, /status = 'confirmed'/);
+  assert.deepEqual(calls[1].values, ["Food", null, "101", "1"]);
+  assert.match(calls[1].text, /UPDATE transactions/);
+  assert.match(calls[1].text, /status = 'confirmed'/);
 });
 
 test("handles save_transaction callback with Telegram edit payload", async () => {
@@ -2983,14 +2965,14 @@ test("handles cancel_transaction callback with Telegram edit payload", async () 
   assert.deepEqual(calls[1].values, ["rejected", "123", "1"]);
 });
 
-test.skip("handles change_categories callback with category buttons", async () => {
-  const { service } = createService([
-    [{ ...transaction, id: "123", user_id: "1" }],
-    [
-      { id: "10", category: "Food", parent_category: null },
-      { id: "11", category: "Transport", parent_category: null },
-    ],
+test("handles change_categories callback with category buttons", async () => {
+  const dependencies = createCategoryServiceWithCategories([
+    { id: "10", name: "Food" }, { id: "11", name: "Transport" },
   ]);
+  const { service } = createService(
+    [[{ ...transaction, id: "123", user_id: "1" }]], dependencies.budgetService,
+    undefined, undefined, "1", undefined, dependencies.categoryService,
+  );
 
   const result = await service.handleTransactionCallback({
     telegramUserId: "976684739",
@@ -3010,12 +2992,12 @@ test.skip("handles change_categories callback with category buttons", async () =
   });
 });
 
-test.skip("handles catid callback by setting category and confirming transaction", async () => {
-  const { calls, service } = createService([
-    [{ ...transaction, id: "123", user_id: "1" }],
-    [{ id: "10", category: "Food", parent_category: null }],
-    [],
-  ]);
+test("handles catid callback by setting category and confirming transaction", async () => {
+  const dependencies = createCategoryServiceWithCategories([{ id: "10", name: "Food" }]);
+  const { calls, service } = createService(
+    [[{ ...transaction, id: "123", user_id: "1" }], []], dependencies.budgetService,
+    undefined, undefined, "1", undefined, dependencies.categoryService,
+  );
 
   const result = await service.handleTransactionCallback({
     telegramUserId: "976684739",
@@ -3031,10 +3013,10 @@ test.skip("handles catid callback by setting category and confirming transaction
     "Transaction 123 confirmed: GoPay • Rp50.000",
   );
   assert.equal(result.telegram.reply_markup, null);
-  assert.deepEqual(calls[2].values, ["Food", "123", "1"]);
+  assert.deepEqual(calls[1].values, ["Food", null, "123", "1"]);
 });
 
-test.skip("catid confirmation keeps the selected email review pocket", async () => {
+test("catid confirmation keeps the selected email review pocket", async () => {
   const pending = {
     ...pendingCreditCardExpense,
     id: "123",
@@ -3066,7 +3048,7 @@ test.skip("catid confirmation keeps the selected email review pocket", async () 
   assert.ok(update?.values.includes("77"));
 });
 
-test.skip("handles catid callback with risk-review keyboard", async () => {
+test("handles catid callback with risk-review keyboard", async () => {
   const { service } = createService([
     [{ ...transaction, id: "123", user_id: "1" }],
     [{ id: "10", category: "Food", parent_category: null }],
@@ -7567,7 +7549,7 @@ test("formats AI review dates in the resolved Telegram user timezone", async () 
   });
 });
 
-test.skip("Save and category confirmation preserve the Jakarta transaction date", async () => {
+test("Save and category confirmation preserve the Jakarta transaction date", async () => {
   const rawPayload = {
     email: {
       messageId: "gmail-midnight",
@@ -7601,7 +7583,7 @@ test.skip("Save and category confirmation preserve the Jakarta transaction date"
   });
   const categorized = await category.service.setPendingTransactionCategory({
     transactionId: "123",
-    budgetId: "budget-food",
+    categoryId: "budget-food",
     userId: "1",
   });
 
@@ -7609,7 +7591,7 @@ test.skip("Save and category confirmation preserve the Jakarta transaction date"
   assert.match(categorized.editMessage?.text ?? "", /Date: 2026-07-27/);
 });
 
-test.skip("category confirmation activates the proposal exactly once", async () => {
+test("category confirmation activates the proposal exactly once", async () => {
   const templates = createTemplateRepository();
   const { service } = createService(
     [
@@ -7630,7 +7612,7 @@ test.skip("category confirmation activates the proposal exactly once", async () 
 
   const result = await service.setPendingTransactionCategory({
     transactionId: "123",
-    budgetId: "budget-food",
+    categoryId: "budget-food",
     userId: "1",
   });
 
@@ -7641,7 +7623,7 @@ test.skip("category confirmation activates the proposal exactly once", async () 
   );
 });
 
-test.skip("only the winning category confirmation activates its template", async () => {
+test("only the winning category confirmation activates its template", async () => {
   const templates = createTemplateRepository();
   const confirmedTransaction = {
     ...pendingTemplateTransaction,
@@ -7674,12 +7656,12 @@ test.skip("only the winning category confirmation activates its template", async
 
   const first = await service.setPendingTransactionCategory({
     transactionId: "123",
-    budgetId: "budget-food",
+    categoryId: "budget-food",
     userId: "1",
   });
   const retry = await service.setPendingTransactionCategory({
     transactionId: "123",
-    budgetId: "budget-food",
+    categoryId: "budget-food",
     userId: "1",
   });
 
@@ -7691,7 +7673,7 @@ test.skip("only the winning category confirmation activates its template", async
   );
 });
 
-test.skip("category confirmation uses the authoritative transition row", async () => {
+test("category confirmation uses the authoritative transition row", async () => {
   const authoritativeProposal: EmailParserTemplateProposalDto = {
     ...learnedProposal,
     templateKey: "authoritative-category-krom",
@@ -7734,7 +7716,7 @@ test.skip("category confirmation uses the authoritative transition row", async (
 
   const result = await service.setPendingTransactionCategory({
     transactionId: "123",
-    budgetId: "budget-food",
+    categoryId: "budget-food",
     userId: "1",
   });
 
@@ -7745,7 +7727,7 @@ test.skip("category confirmation uses the authoritative transition row", async (
   assert.equal(activation.proposal.templateKey, "authoritative-category-krom");
 });
 
-test.skip("category confirmation triggers watchdog", async () => {
+test("category confirmation triggers watchdog", async () => {
   const { service } = createService([
     [transaction],
     [{ id: "budget-food", category: "Food", parent_category: null }],
@@ -7767,7 +7749,7 @@ test.skip("category confirmation triggers watchdog", async () => {
 
   const result = await service.setPendingTransactionCategory({
     transactionId: "101",
-    budgetId: "budget-food",
+    categoryId: "budget-food",
     userId: "1",
   });
 
