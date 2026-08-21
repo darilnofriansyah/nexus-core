@@ -253,8 +253,12 @@ export class BudgetService {
   async listPockets(
     request: PocketListRequestDto,
   ): Promise<{ status: 'ok'; pockets: PocketDto[] }> {
-    const userId = this.requireUserId(request.userId);
-    await this.ensureFinancialSetup(userId);
+    const telegramUserId = this.requireUserId(request.userId);
+    const userId = await this.repository.findActiveUserIdByTelegramId(
+      telegramUserId,
+    );
+    if (!userId) throw new NotFoundException('Telegram user not found');
+    await this.repository.ensureDefaultPocket(userId);
     return { status: 'ok', pockets: await this.repository.listPockets(userId) };
   }
 

@@ -10,6 +10,10 @@ interface PocketRow extends QueryResultRow {
   is_default: boolean;
 }
 
+interface UserRow extends QueryResultRow {
+  id: string | number;
+}
+
 export interface PocketStatusQuery {
   userId: string;
   pocketId?: string;
@@ -46,6 +50,21 @@ export interface PocketOverviewRow extends QueryResultRow {
 @Injectable()
 export class BudgetRepository {
   constructor(private readonly database: DatabaseService) {}
+
+  async findActiveUserIdByTelegramId(
+    telegramUserId: string,
+  ): Promise<string | null> {
+    const result = await this.database.query<UserRow>(
+      `
+        SELECT id
+        FROM telegram_users
+        WHERE telegram_id = $1::bigint AND is_active IS TRUE
+        LIMIT 1
+      `,
+      [telegramUserId],
+    );
+    return result.rows[0] ? String(result.rows[0].id) : null;
+  }
 
   async ensureDefaultPocket(userId: string): Promise<void> {
     await this.database.withTransaction(async (client) => {

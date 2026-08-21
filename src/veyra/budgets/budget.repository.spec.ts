@@ -26,6 +26,16 @@ test('creates Main Pocket only when user has no top-level pocket', async () => {
   assert.match(calls[0].text, /parent_budget_id IS NULL/);
 });
 
+test('finds only an active internal user by Telegram ID', async () => {
+  const { calls, repository } = createRepository([[{ id: '1' }]]);
+
+  assert.equal(await repository.findActiveUserIdByTelegramId('976684739'), '1');
+  assert.match(calls[0].text, /FROM telegram_users/);
+  assert.match(calls[0].text, /telegram_id = \$1::bigint/);
+  assert.match(calls[0].text, /is_active IS TRUE/);
+  assert.deepEqual(calls[0].values, ['976684739']);
+});
+
 test('explicit pocket lookup requires active top-level ownership', async () => {
   const { calls, repository } = createRepository();
   await repository.findPocket('1', '20');

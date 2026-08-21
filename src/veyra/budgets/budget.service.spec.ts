@@ -98,6 +98,36 @@ test('setup ensures categories before default pocket', async () => {
   assert.deepEqual(events, ['categories', 'pocket']);
 });
 
+test('pocket list resolves a Telegram user and skips category default setup', async () => {
+  const events: string[] = [];
+  const pockets = [{ id: '10', name: 'Main Pocket', amount: null, isDefault: true }];
+  const { service } = createService({
+    categoryService: {
+      ensureDefaults: async () => {
+        events.push('categories');
+      },
+    },
+    repository: {
+      findActiveUserIdByTelegramId: async (telegramUserId: string) => {
+        events.push(`user:${telegramUserId}`);
+        return '1';
+      },
+      ensureDefaultPocket: async (userId: string) => {
+        events.push(`pocket:${userId}`);
+      },
+      listPockets: async (userId: string) => {
+        events.push(`list:${userId}`);
+        return pockets;
+      },
+    } as never,
+  });
+
+  const result = await service.listPockets({ userId: '976684739' });
+
+  assert.deepEqual(result, { status: 'ok', pockets });
+  assert.deepEqual(events, ['user:976684739', 'pocket:1', 'list:1']);
+});
+
 test('expense assignment runs first-use setup before resolving choices', async () => {
   const events: string[] = [];
   const { service } = createService({
