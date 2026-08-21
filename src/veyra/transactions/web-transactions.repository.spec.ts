@@ -101,6 +101,8 @@ const transactionRows = [
     transaction_date: '2026-08-13T04:00:00.123456Z',
     updated_at: '2026-08-13T05:00:00.654321Z',
     credit_card: true,
+    pocket_id: '9',
+    pocket_name: 'Daily',
   },
   {
     id: '125',
@@ -112,6 +114,8 @@ const transactionRows = [
     transaction_date: '2026-08-13T06:00:00.000001Z',
     updated_at: '2026-08-13T06:01:00.000002Z',
     credit_card: false,
+    pocket_id: null,
+    pocket_name: null,
   },
 ];
 
@@ -134,6 +138,8 @@ function lockedRow(
     updated_at: oldTime,
     version_matches: true,
     raw_payload: { parsed: { paymentType: ' Credit Card ' } },
+    pocket_id: '9',
+    pocket_name: 'Daily',
     ...overrides,
   };
 }
@@ -149,6 +155,8 @@ function returnedRow(overrides: Record<string, unknown> = {}) {
     transaction_date: transactionDate,
     updated_at: '2026-08-13T04:00:00.000001Z',
     credit_card: true,
+    pocket_id: '9',
+    pocket_name: 'Daily',
     ...overrides,
   };
 }
@@ -239,6 +247,8 @@ test('web transactions repository scopes finalized rows to filters and a duplica
     transactionDate: '2026-08-13T04:00:00.123456Z',
     updatedAt: '2026-08-13T05:00:00.654321Z',
     creditCard: true,
+    pocketId: '9',
+    pocketName: 'Daily',
   });
 });
 
@@ -380,6 +390,62 @@ test('web transactions repository update locks owned finalized row and atomicall
   assert.equal(lifecycle.committed, true);
   assert.equal(lifecycle.rolledBack, false);
   assert.equal(transactionCount(), 1);
+});
+
+test('web transactions repository changes or clears only an owned active top-level pocket', async () => {
+  const { calls, repository } = createUpdateRepository([
+    [lockedRow()],
+    [{ id: '10' }],
+    [returnedRow({ pocket_id: '10', pocket_name: 'Travel' })],
+  ]);
+
+  const result = await repository.updateTransaction(
+    updateInput({ pocketId: '10' } as WebTransactionChanges),
+  );
+
+  assert.equal(result.kind, 'updated');
+  assert.match(calls[1].text, /FROM budgets/);
+  assert.match(calls[1].text, /user_id = \$1::bigint/);
+  assert.match(calls[1].text, /parent_budget_id IS NULL/);
+  assert.match(calls[1].text, /is_active = true/);
+  assert.deepEqual(calls[1].values, ['1', '10']);
+  assert.match(calls[2].text, /pocket_id = \$1/);
+  assert.deepEqual(calls[2].values, ['10', '123', '1']);
+
+  const cleared = createUpdateRepository([
+    [lockedRow()],
+    [returnedRow({ pocket_id: null, pocket_name: null })],
+  ]);
+  const clearedResult = await cleared.repository.updateTransaction(
+    updateInput({ pocketId: null } as WebTransactionChanges),
+  );
+
+  assert.equal(clearedResult.kind, 'updated');
+  assert.match(cleared.calls[1].text, /pocket_id = \$1/);
+  assert.deepEqual(cleared.calls[1].values, [null, '123', '1']);
+
+  const unchanged = createUpdateRepository([[lockedRow()], [{ id: '9' }]]);
+  const unchangedResult = await unchanged.repository.updateTransaction(
+    updateInput({ pocketId: '9' } as WebTransactionChanges),
+  );
+
+  assert.deepEqual(unchangedResult, { kind: 'no_change' });
+  assert.equal(unchanged.calls.length, 2);
+});
+
+test('web transactions repository rejects invalid pockets after version locking and before update', async () => {
+  const { calls, repository } = createUpdateRepository([
+    [lockedRow()],
+    [],
+  ]);
+
+  const result = await repository.updateTransaction(
+    updateInput({ pocketId: '99' } as WebTransactionChanges),
+  );
+
+  assert.deepEqual(result, { kind: 'invalid', message: 'pocket must be active and owned by user' });
+  assert.equal(calls.length, 2);
+  assert.doesNotMatch(calls.map(({ text }) => text).join('\n'), /UPDATE transactions/);
 });
 
 test('web transactions repository credit-card update uses negative delta and skips non-amount or non-card changes', async () => {

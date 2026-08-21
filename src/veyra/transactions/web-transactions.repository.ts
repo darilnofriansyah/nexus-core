@@ -25,6 +25,8 @@ interface TransactionRow extends QueryResultRow {
   amount: string | number;
   merchant: string | null;
   category: string | null;
+  pocket_id: string | number | null;
+  pocket_name: string | null;
   transaction_type: WebTransactionRow['transactionType'];
   source: WebTransactionRow['source'];
   transaction_date: string;
@@ -39,6 +41,8 @@ interface LockedTransactionRow extends QueryResultRow {
   amount: string | number;
   merchant: string | null;
   category: string | null;
+  pocket_id: string | number | null;
+  pocket_name: string | null;
   transaction_date: string;
   source: WebTransactionRow['source'];
   status: string;
@@ -56,6 +60,10 @@ export interface UpdateWebTransactionInput {
 
 interface CategoryRow extends QueryResultRow {
   category: string;
+}
+
+interface PocketLookupRow extends QueryResultRow {
+  id: string | number;
 }
 
 type CategoryFilter = Omit<
@@ -114,6 +122,8 @@ export class WebTransactionsRepository {
           amount,
           merchant,
           NULLIF(${CATEGORY_CANONICAL_SQL}, '') AS category,
+          pocket_id,
+          (SELECT category FROM budgets pocket WHERE pocket.id = transactions.pocket_id AND pocket.user_id = transactions.user_id) AS pocket_name,
           transaction_type,
           source,
           to_char(transaction_date AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS transaction_date,
@@ -169,7 +179,8 @@ export class WebTransactionsRepository {
                  source, status,
                  to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at,
                  updated_at = $3::timestamptz AS version_matches,
-                 raw_payload
+                 raw_payload, pocket_id,
+                 (SELECT category FROM budgets pocket WHERE pocket.id = transactions.pocket_id AND pocket.user_id = transactions.user_id) AS pocket_name
           FROM transactions
           WHERE id = $1 AND user_id = $2
             AND status = 'confirmed'
@@ -185,6 +196,12 @@ export class WebTransactionsRepository {
       }
       if (!locked.version_matches) {
         return { kind: 'conflict' };
+      }
+      if (!(await this.validPocket(client, userId, changes))) {
+        return {
+          kind: 'invalid',
+          message: 'pocket must be active and owned by user',
+        };
       }
 
       const currentTransaction = this.lockedTransaction(locked);
@@ -319,6 +336,8 @@ export class WebTransactionsRepository {
       amount: toPublicIdrAmount(row.amount),
       merchant: row.merchant,
       category: row.category,
+      pocketId: this.pocketId(row.pocket_id),
+      pocketName: row.pocket_name,
       transactionType: row.transaction_type,
       source: row.source,
       transactionDate: row.transaction_date,
@@ -333,6 +352,8 @@ export class WebTransactionsRepository {
       amount: toPublicIdrAmount(row.amount),
       merchant: row.merchant,
       category: row.category,
+      pocketId: this.pocketId(row.pocket_id),
+      pocketName: row.pocket_name,
       transactionType: row.transaction_type,
       source: row.source,
       transactionDate: row.transaction_date,
@@ -364,7 +385,9 @@ export class WebTransactionsRepository {
         changes.amount !== Number(locked.amount)) ||
       this.hasMerchantChanged(locked, changes) ||
       (this.supplied(changes, 'category') &&
-        changes.category !== locked.category)
+        changes.category !== locked.category) ||
+      (this.supplied(changes, 'pocketId') &&
+        changes.pocketId !== this.pocketId(locked.pocket_id))
     );
   }
 
@@ -392,6 +415,7 @@ export class WebTransactionsRepository {
       assignments.push('merchant_normalized = NULL');
     }
     this.addAssignment(assignments, values, changes, 'category');
+    this.addAssignment(assignments, values, changes, 'pocketId');
     values.push(transactionId, userId);
     const transactionIdParameter = values.length - 1;
     const userIdParameter = values.length;
@@ -406,6 +430,8 @@ export class WebTransactionsRepository {
           amount,
           merchant,
           NULLIF(${CATEGORY_CANONICAL_SQL}, '') AS category,
+          pocket_id,
+          (SELECT category FROM budgets pocket WHERE pocket.id = transactions.pocket_id AND pocket.user_id = transactions.user_id) AS pocket_name,
           transaction_type,
           source,
           to_char(transaction_date AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS transaction_date,
@@ -434,7 +460,8 @@ export class WebTransactionsRepository {
       return;
     }
     values.push(changes[column]);
-    assignments.push(`${column} = $${values.length}`);
+    const target = column === 'pocketId' ? 'pocket_id' : column;
+    assignments.push(`${target} = $${values.length}`);
   }
 
   private supplied(
@@ -446,6 +473,31 @@ export class WebTransactionsRepository {
 
   private hasText(value: string | null): value is string {
     return typeof value === 'string' && value.trim().length > 0;
+  }
+
+  private async validPocket(
+    client: Pick<PoolClient, 'query'>,
+    userId: string,
+    changes: WebTransactionChanges,
+  ): Promise<boolean> {
+    if (!this.supplied(changes, 'pocketId') || changes.pocketId === null) {
+      return true;
+    }
+    const result = await client.query<PocketLookupRow>(
+      `
+        SELECT id
+        FROM budgets
+        WHERE user_id = $1::bigint AND id = $2::bigint
+          AND parent_budget_id IS NULL AND is_active = true
+        LIMIT 1
+      `,
+      [userId, changes.pocketId],
+    );
+    return result.rows.length === 1;
+  }
+
+  private pocketId(value: string | number | null): string | null {
+    return value === null ? null : String(value);
   }
 
   private isEligibleCreditCardExpense(row: LockedTransactionRow): boolean {

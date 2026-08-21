@@ -15,12 +15,16 @@ export function toPublicWebTransaction(
   const type = publicTransactionType(row.transactionType);
   const merchant = publicNullableText(row.merchant);
   const category = publicNullableText(row.category);
+  const pocketId = publicNullableIdentifier(row.pocketId);
+  const pocketName = publicNullableText(row.pocketName);
 
   return {
     id: publicIdentifier(row.id),
     amount: toPublicIdrAmount(row.amount),
     merchant,
     category,
+    pocketId,
+    pocketName,
     type,
     source: publicSource(row.source),
     transactionDate: publicTimestamp(row.transactionDate),
@@ -86,6 +90,13 @@ function publicIdentifier(value: unknown): string {
     return invalidPublicData();
   }
   return value;
+}
+
+function publicNullableIdentifier(value: unknown): string | null {
+  if (value === null) {
+    return null;
+  }
+  return publicIdentifier(value);
 }
 
 function publicNullableText(value: unknown): string | null {

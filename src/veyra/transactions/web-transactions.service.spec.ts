@@ -24,6 +24,8 @@ function row(overrides: Partial<WebTransactionRow> = {}): WebTransactionRow {
     amount: 25000,
     merchant: 'TUKU',
     category: 'Dining',
+    pocketId: '9',
+    pocketName: 'Daily',
     transactionType: 'expense',
     source: 'email',
     transactionDate: '2026-08-13T03:00:00.123456Z',
@@ -298,6 +300,8 @@ test('web transactions service maps only public fields and preserves microsecond
     'creditCard',
     'id',
     'merchant',
+    'pocketId',
+    'pocketName',
     'source',
     'transactionDate',
     'type',
@@ -543,6 +547,7 @@ test('web transactions service update preserves omitted fields and normalizes su
       expectedUpdatedAt: oldTime,
       merchant: null,
       category: ' Income ',
+      pocketId: ' 9 ',
     },
   });
 
@@ -552,11 +557,33 @@ test('web transactions service update preserves omitted fields and normalizes su
       userId: '1',
       transactionId: '123',
       expectedUpdatedAt: oldTime,
-      changes: { merchant: null, category: 'Income' },
+      changes: { merchant: null, category: 'Income', pocketId: '9' },
     },
   ]);
   assert.equal(result.id, '123');
   assert.equal('transactionType' in result, false);
+});
+
+test('web transactions service accepts only a positive pocket id or null', async () => {
+  const { repository, service } = createService();
+  const invalidPocketIds = [0, -1, 1.5, '0', '9223372036854775808', '', ' '];
+
+  for (const pocketId of invalidPocketIds) {
+    await assert.rejects(
+      () =>
+        service.updateTransaction({
+          transactionId: '123',
+          request: { ...updateRequest, pocketId } as WebTransactionUpdateRequestDto,
+        }),
+      BadRequestException,
+    );
+  }
+
+  await service.updateTransaction({
+    transactionId: '123',
+    request: { ...updateRequest, pocketId: null } as WebTransactionUpdateRequestDto,
+  });
+  assert.equal(repository.updateCalls.at(-1)?.changes.pocketId, null);
 });
 
 test('web transactions service maps missing or foreign rows alike and stale rows to conflict', async () => {

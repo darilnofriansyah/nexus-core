@@ -22,6 +22,7 @@ export interface WebTransactionUpdateRequestDto {
   amount?: number | null;
   merchant?: string | null;
   category?: string | null;
+  pocketId?: string | null;
   expectedUpdatedAt: string;
 }
 
@@ -30,6 +31,8 @@ export interface WebTransactionDto {
   amount: number;
   merchant: string | null;
   category: string | null;
+  pocketId: string | null;
+  pocketName: string | null;
   type: WebTransactionType;
   source: "telegram" | "email" | "manual" | "import";
   transactionDate: string;
@@ -74,6 +77,8 @@ export interface WebTransactionRow {
   amount: number;
   merchant: string | null;
   category: string | null;
+  pocketId: string | null;
+  pocketName: string | null;
   transactionType: WebTransactionType;
   source: "telegram" | "email" | "manual" | "import";
   transactionDate: string;
@@ -85,6 +90,7 @@ export interface WebTransactionChanges {
   amount?: number;
   merchant?: string | null;
   category?: string | null;
+  pocketId?: string | null;
 }
 
 export type WebTransactionUpdateResult =
@@ -92,7 +98,9 @@ export type WebTransactionUpdateResult =
   | { kind: "conflict" }
   | {
       kind: "invalid";
-      message: "expense merchant and category are required";
+      message:
+        | "expense merchant and category are required"
+        | "pocket must be active and owned by user";
     }
   | { kind: "no_change" }
   | { kind: "updated"; transaction: WebTransactionRow };

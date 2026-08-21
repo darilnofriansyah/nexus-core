@@ -19,11 +19,13 @@ test("web transaction DTOs represent only approved public fields", () => {
   const update: WebTransactionUpdateRequestDto = {
     telegramUserId: "976684739",
     amount: 30000,
+    pocketId: null,
     expectedUpdatedAt: "2026-08-13T03:01:00.123456Z",
   };
 
   assert.equal(query.cycle, "current");
   assert.equal(update.amount, 30000);
+  assert.equal(update.pocketId, null);
 });
 
 test("web transaction DTO limits match the public contract", () => {

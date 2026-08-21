@@ -48,6 +48,7 @@ const UPDATE_KEYS = new Set([
   'amount',
   'merchant',
   'category',
+  'pocketId',
 ]);
 
 @Injectable()
@@ -314,6 +315,9 @@ export class WebTransactionsService {
     if (this.supplied(request, 'category')) {
       changes.category = this.updateText(request.category, 'category');
     }
+    if (this.supplied(request, 'pocketId')) {
+      changes.pocketId = this.updatePocketId(request.pocketId);
+    }
     if (Object.keys(changes).length === 0) {
       throw new BadRequestException('at least one changed field is required');
     }
@@ -332,6 +336,13 @@ export class WebTransactionsService {
       throw new BadRequestException('amount must be a positive safe integer');
     }
     return value;
+  }
+
+  private updatePocketId(value: unknown): string | null {
+    if (value === null) {
+      return null;
+    }
+    return this.identifier(value);
   }
 
   private updateText(value: unknown, name: string): string | null {

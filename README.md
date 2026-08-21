@@ -474,6 +474,8 @@ interpret it. Both directions always return rows in UI-descending order.
       "amount": 25000,
       "merchant": "TUKU",
       "category": "Dining",
+      "pocketId": "42",
+      "pocketName": "Monthly Transactions",
       "type": "expense",
       "source": "email",
       "transactionDate": "2026-08-13T03:00:00.123456Z",
@@ -489,7 +491,7 @@ interpret it. Both directions always return rows in UI-descending order.
 
 ### `PATCH /api/veyra/transactions/:id`
 
-Updates only `amount`, `merchant`, and `category` on one finalized income or
+Updates only `amount`, `merchant`, `category`, and `pocketId` on one finalized income or
 expense transaction owned by the active user. `expectedUpdatedAt` is required
 and must exactly equal the public microsecond UTC `updatedAt` from the last
 read. At least one editable field is required. `amount` must be a positive safe
@@ -504,9 +506,14 @@ immutable through this API.
   "expectedUpdatedAt": "2026-08-13T04:00:00.000001Z",
   "amount": 30000,
   "merchant": "TUKU Kemang",
-  "category": "Dining"
+  "category": "Dining",
+  "pocketId": "42"
 }
 ```
+
+`pocketId` may be `null` to clear assignment. A non-null value must identify
+an active top-level pocket owned by `telegramUserId`; foreign, archived, and
+child pockets return `400`.
 
 On success (`200`), the response is the updated public transaction object shown
 above. If the amount changes on an eligible confirmed email credit-card expense
@@ -522,7 +529,7 @@ return `400` for unsupported fields or invalid request values. Query returns
 `404` for a missing or inactive Telegram identity. PATCH returns `404` for a
 missing, inactive, or foreign transaction; `409` when `expectedUpdatedAt` is
 stale; and `400` when no effective change remains or the final expense
-merchant/category would be empty.
+merchant/category would be empty or `pocketId` is invalid.
 
 ### `POST /api/veyra/messages/route`
 
