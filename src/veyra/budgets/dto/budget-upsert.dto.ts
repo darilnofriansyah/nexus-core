@@ -3,7 +3,8 @@ export type BudgetPeriodType = 'monthly';
 export type BudgetUpsertAction = 'created' | 'updated';
 
 export interface BudgetUpsertRequestDto {
-  userId: string;
+  userId?: string;
+  telegramUserId?: string;
   category: string;
   amount: number;
   parentCategory?: string;

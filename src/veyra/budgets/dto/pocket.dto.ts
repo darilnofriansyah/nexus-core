@@ -10,13 +10,15 @@ export interface PocketListRequestDto {
 }
 
 export interface PocketRenameRequestDto {
-  userId: string | number;
+  userId?: string | number;
+  telegramUserId?: string | number;
   pocketId: string;
   name: string;
 }
 
 export interface PocketDefaultRequestDto {
-  userId: string | number;
+  userId?: string | number;
+  telegramUserId?: string | number;
   pocketId: string;
 }
 

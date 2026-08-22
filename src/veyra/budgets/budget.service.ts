@@ -263,7 +263,7 @@ export class BudgetService {
   }
 
   async renamePocket(request: PocketRenameRequestDto): Promise<PocketDto> {
-    const userId = this.requireUserId(request.userId);
+    const userId = await this.resolveWriteUserId(request);
     const name = this.cleanString(request.name);
     if (!name) throw new BadRequestException('name is required');
     await this.ensureFinancialSetup(userId);
@@ -277,7 +277,7 @@ export class BudgetService {
   }
 
   async setDefaultPocket(request: PocketDefaultRequestDto): Promise<PocketDto> {
-    const userId = this.requireUserId(request.userId);
+    const userId = await this.resolveWriteUserId(request);
     await this.ensureFinancialSetup(userId);
     const pocket = await this.repository.setDefaultPocket(
       userId,
@@ -371,7 +371,7 @@ export class BudgetService {
   async upsertBudget(
     request: BudgetUpsertRequestDto,
   ): Promise<BudgetUpsertResponseDto> {
-    const userId = this.cleanString(request.userId);
+    const userId = await this.resolveWriteUserId(request);
     const category = this.cleanString(request.category);
     const amount = this.toNumber(request.amount);
     const parentCategory = this.cleanString(request.parentCategory);
@@ -2053,6 +2053,21 @@ export class BudgetService {
     const userId = this.cleanString(String(value ?? ''));
     if (!userId) throw new BadRequestException('userId is required');
     return userId;
+  }
+
+  private async resolveWriteUserId(request: {
+    userId?: string | number;
+    telegramUserId?: string | number;
+  }): Promise<string> {
+    const userId = this.cleanString(String(request.userId ?? ''));
+    const telegramUserId = this.cleanString(String(request.telegramUserId ?? ''));
+    if (Boolean(userId) === Boolean(telegramUserId)) {
+      throw new BadRequestException('Provide exactly one userId or telegramUserId');
+    }
+    if (userId) return userId;
+    const resolved = await this.repository.findActiveUserIdByTelegramId(telegramUserId as string);
+    if (!resolved) throw new NotFoundException('Telegram user not found');
+    return resolved;
   }
 
   private cleanString(value: string | undefined): string | undefined {

@@ -617,6 +617,152 @@ test('requires userId to list budget categories', async () => {
   assert.equal(calls.length, 0);
 });
 
+test('upserts a budget for a resolved Telegram user', async () => {
+  const { calls, service } = createService({
+    rowsByCall: [[{
+      budget_id: 'budget-1',
+      user_id: 'internal-1',
+      category: 'Food',
+      amount: '1500000',
+      parent_budget_id: null,
+      parent_category: null,
+      period_type: 'monthly',
+      inserted: true,
+    }]],
+    repository: {
+      findActiveUserIdByTelegramId: async () => 'internal-1',
+    },
+  });
+
+  const result = await service.upsertBudget({
+    telegramUserId: '976684739',
+    category: 'Food',
+    amount: 1500000,
+  });
+
+  assert.equal(calls[0]?.values[0], 'internal-1');
+  assert.equal(result.user_id, 'internal-1');
+});
+
+test('renames a pocket for a resolved Telegram user', async () => {
+  const events: string[] = [];
+  const pocket = { id: '42', name: 'Food', amount: null, isDefault: false };
+  const { service } = createService({
+    categoryService: { ensureDefaults: async () => { events.push('categories'); } },
+    repository: {
+      findActiveUserIdByTelegramId: async (telegramUserId: string) => {
+        events.push(`resolve:${telegramUserId}`);
+        return 'internal-1';
+      },
+      ensureDefaultPocket: async (userId: string) => {
+        events.push(`setup:${userId}`);
+      },
+      renamePocket: async (userId: string) => {
+        events.push(`rename:${userId}`);
+        return pocket;
+      },
+    },
+  });
+
+  assert.deepEqual(
+    await service.renamePocket({
+      telegramUserId: '976684739',
+      pocketId: '42',
+      name: 'Food',
+    }),
+    pocket,
+  );
+  assert.deepEqual(events, [
+    'resolve:976684739',
+    'categories',
+    'setup:internal-1',
+    'rename:internal-1',
+  ]);
+});
+
+test('sets a default pocket for a resolved Telegram user', async () => {
+  const events: string[] = [];
+  const pocket = { id: '42', name: 'Food', amount: null, isDefault: true };
+  const { service } = createService({
+    categoryService: { ensureDefaults: async () => { events.push('categories'); } },
+    repository: {
+      findActiveUserIdByTelegramId: async (telegramUserId: string) => {
+        events.push(`resolve:${telegramUserId}`);
+        return 'internal-1';
+      },
+      ensureDefaultPocket: async (userId: string) => {
+        events.push(`setup:${userId}`);
+      },
+      setDefaultPocket: async (userId: string) => {
+        events.push(`default:${userId}`);
+        return pocket;
+      },
+    },
+  });
+
+  assert.deepEqual(
+    await service.setDefaultPocket({
+      telegramUserId: '976684739',
+      pocketId: '42',
+    }),
+    pocket,
+  );
+  assert.deepEqual(events, [
+    'resolve:976684739',
+    'categories',
+    'setup:internal-1',
+    'default:internal-1',
+  ]);
+});
+
+for (const [label, request] of [
+  ['neither identity', { category: 'Food', amount: 1500000 }],
+  ['both identities', { userId: 'internal-1', telegramUserId: '976684739', category: 'Food', amount: 1500000 }],
+] as const) {
+  test(`rejects budget upsert with ${label}`, async () => {
+    const { calls, service } = createService();
+
+    await assert.rejects(
+      service.upsertBudget(request),
+      (error: unknown) =>
+        error instanceof BadRequestException &&
+        error.message === 'Provide exactly one userId or telegramUserId',
+    );
+    assert.equal(calls.length, 0);
+  });
+}
+
+for (const [label, write] of [
+  ['budget upsert', (service: BudgetService) => service.upsertBudget({ telegramUserId: 'missing', category: 'Food', amount: 1500000 })],
+  ['pocket rename', (service: BudgetService) => service.renamePocket({ telegramUserId: 'missing', pocketId: '42', name: 'Food' })],
+  ['default pocket', (service: BudgetService) => service.setDefaultPocket({ telegramUserId: 'missing', pocketId: '42' })],
+] as const) {
+  test(`${label} rejects an unknown Telegram user before mutations`, async () => {
+    const events: string[] = [];
+    const { calls, service } = createService({
+      categoryService: { ensureDefaults: async () => { events.push('categories'); } },
+      repository: {
+        findActiveUserIdByTelegramId: async () => {
+          events.push('resolve');
+          return null;
+        },
+        ensureDefaultPocket: async () => { events.push('setup'); },
+        renamePocket: async () => { events.push('rename'); return null; },
+        setDefaultPocket: async () => { events.push('default'); return null; },
+      },
+    });
+
+    await assert.rejects(
+      write(service),
+      (error: unknown) =>
+        error instanceof NotFoundException &&
+        error.message === 'Telegram user not found',
+    );
+    assert.deepEqual(events, ['resolve']);
+    assert.equal(calls.length, 0);
+  });
+}
+
 test('creates a budget without parent', async () => {
   const { calls, service } = createService([
     [

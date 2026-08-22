@@ -131,12 +131,16 @@ test('category and pocket routes forward their typed bodies', async () => {
     [controller.listPockets({ userId: 1 }), 'listPockets', { userId: 1 }],
     [
       controller.renamePocket({
-        userId: 1,
+        telegramUserId: '976684739',
         pocketId: '42',
         name: 'Monthly Transactions',
       }),
       'renamePocket',
-      { userId: 1, pocketId: '42', name: 'Monthly Transactions' },
+      {
+        telegramUserId: '976684739',
+        pocketId: '42',
+        name: 'Monthly Transactions',
+      },
     ],
     [
       controller.setDefaultPocket({ userId: 1, pocketId: '42' }),

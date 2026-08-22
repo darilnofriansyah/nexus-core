@@ -813,6 +813,11 @@ n8n HTTP Request nodes can use these bodies. NestJS manages the data; n8n keeps 
 { "userId": 1, "pocketId": "42" }
 ```
 
+Server-side Veyra callers may send `telegramUserId` instead of `userId` to
+`budgets/upsert`, `budgets/pockets/rename`, and `budgets/pockets/default`.
+Send exactly one identity field; Core resolves `telegramUserId` to an active
+internal user before writing.
+
 ### `POST /api/veyra/budgets/upsert`
 
 Creates or updates one budget using exact-case category matching for the same user. Child budgets are matched by `parent_budget_id` and `category`, matching the production `budgets_parent_budget_category_unique` constraint. Top-level budgets are matched in code by user and category because PostgreSQL unique constraints allow multiple `NULL` parent values. `periodType` defaults to `monthly`; other period types are rejected until the database behavior is reviewed.
