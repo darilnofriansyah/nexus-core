@@ -2,7 +2,10 @@ import {
   BadRequestException,
   Injectable,
   NotFoundException,
+  Optional,
+  ServiceUnavailableException,
 } from '@nestjs/common';
+import { VeyraAiService } from '../../ai/veyra-ai.service';
 import { QueryResultRow } from 'pg';
 import { DatabaseService } from '../../database/database.service';
 import { CategoryService } from '../categories/category.service';
@@ -178,6 +181,7 @@ export class BudgetService {
     private readonly database: DatabaseService,
     private readonly categoryService: CategoryService,
     private readonly repository: BudgetRepository,
+    @Optional() private readonly veyraAiService?: VeyraAiService,
   ) {}
 
   async ensureFinancialSetup(userId: string | number): Promise<void> {
@@ -805,10 +809,9 @@ export class BudgetService {
       });
     }
 
-    const payload = this.mergeBudgetHandlePayload(
-      request.statePayload,
-      request.llmResult,
-    );
+    const llmResult =
+      request.llmResult ?? (await this.parseBudgetIntent(request));
+    const payload = this.mergeBudgetHandlePayload(request.statePayload, llmResult);
     const intent = this.resolveBudgetHandleIntent(payload, request.text);
 
     if (intent === 'reset') {
@@ -1343,6 +1346,27 @@ export class BudgetService {
     }
 
     return merged;
+  }
+
+  private async parseBudgetIntent(
+    request: BudgetHandleRequestDto,
+  ): Promise<Record<string, unknown>> {
+    const text = this.cleanStringValue(request.text);
+
+    if (!text) {
+      throw new BadRequestException(
+        'text is required when llmResult is absent',
+      );
+    }
+
+    if (!this.veyraAiService) {
+      throw new ServiceUnavailableException('AI budget intent parsing is unavailable');
+    }
+
+    return this.veyraAiService.parseBudgetIntent({
+      text,
+      statePayload: request.statePayload ?? {},
+    });
   }
 
   private normalizeBudgetHandlePayload(

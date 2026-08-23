@@ -62,6 +62,7 @@ export interface ConversationalHandleRequestDto {
   timezone?: string | null;
   statePayload?: Record<string, unknown> | null;
   llmResult?: ConversationalLlmResultDto | null;
+  renderInsight?: boolean | null;
 }
 
 export interface ConversationalTelegramMessageDto {

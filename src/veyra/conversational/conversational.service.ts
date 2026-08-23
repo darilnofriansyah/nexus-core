@@ -1,4 +1,5 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
+import { VeyraAiService } from '../../ai/veyra-ai.service';
 import {
   BreakdownItem,
   BudgetItem,
@@ -112,7 +113,10 @@ interface IntentResult {
 
 @Injectable()
 export class ConversationalService {
-  constructor(private readonly repository: ConversationalRepository) {}
+  constructor(
+    private readonly repository: ConversationalRepository,
+    @Optional() private readonly veyraAiService?: VeyraAiService,
+  ) {}
 
   async handle(
     request: ConversationalHandleRequestDto,
@@ -216,6 +220,18 @@ export class ConversationalService {
             result.facts,
           )
         : null;
+
+    if (request.renderInsight === true && insightPayload) {
+      return this.response(
+        true,
+        'ok',
+        intent,
+        intent === 'weekly_spending_review'
+          ? await this.renderWeeklyReview(insightPayload, result.message)
+          : await this.renderInsight(insightPayload, result.message),
+        result.data,
+      );
+    }
 
     return this.response(
       true,
@@ -1008,6 +1024,40 @@ export class ConversationalService {
       facts,
       rules: INSIGHT_RULES,
     };
+  }
+
+  private async renderInsight(
+    payload: ConversationalInsightPayloadDto,
+    fallback: string,
+  ): Promise<string> {
+    try {
+      const text = await this.veyraAiService?.renderAnalyticsInsight(payload);
+      return text ? this.escape(text) : fallback;
+    } catch {
+      return fallback;
+    }
+  }
+
+  private async renderWeeklyReview(
+    payload: ConversationalInsightPayloadDto,
+    fallback: string,
+  ): Promise<string> {
+    try {
+      const review = await this.veyraAiService?.renderWeeklyReview(payload);
+      if (!review) return fallback;
+
+      return [
+        fallback,
+        '',
+        '<b>Insights</b>',
+        ...review.insights.map((insight) => `• ${this.escape(insight)}`),
+        '',
+        "<b>Veyra's Verdict</b>",
+        this.escape(review.verdict),
+      ].join('\n');
+    } catch {
+      return fallback;
+    }
   }
 
   private response(

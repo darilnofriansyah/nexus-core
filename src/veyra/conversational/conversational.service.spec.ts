@@ -12,6 +12,7 @@ import {
   WeekpartItem,
 } from './conversational.repository';
 import { clampLimit, ConversationalService } from './conversational.service';
+import type { VeyraAiService } from '../../ai/veyra-ai.service';
 
 class FakeRepository {
   user: ConversationalUser | null = {
@@ -131,11 +132,17 @@ class FakeRepository {
   }
 }
 
-function createService(repo = new FakeRepository()) {
+function createService(
+  repo = new FakeRepository(),
+  ai?: Partial<
+    Pick<VeyraAiService, 'renderAnalyticsInsight' | 'renderWeeklyReview'>
+  >,
+) {
   return {
     repo,
     service: new ConversationalService(
       repo as unknown as ConversationalRepository,
+      ai as VeyraAiService | undefined,
     ),
   };
 }
@@ -437,6 +444,48 @@ test('spending_trend always returns needs_insight when data exists', async () =>
   assert.equal(result.insight_payload?.facts.change_percent, null);
 });
 
+test('renderInsight returns rendered analytics text and clears insight payload', async () => {
+  let seenPayload: unknown;
+  const ai = {
+    renderAnalyticsInsight: async (payload: unknown) => {
+      seenPayload = payload;
+      return '• Total spending: Rp100.000.';
+    },
+  } as Pick<VeyraAiService, 'renderAnalyticsInsight'>;
+  const { service } = createService(new FakeRepository(), ai);
+
+  const result = await service.handle({
+    userId: 1,
+    text: 'how much did I spend?',
+    renderInsight: true,
+    llmResult: { intent: 'spending_summary', needs_insight: true },
+  });
+
+  assert.equal(result.status, 'ok');
+  assert.equal(result.message.text, '• Total spending: Rp100.000.');
+  assert.equal(result.insight_payload, null);
+  assert.equal((seenPayload as { intent?: unknown }).intent, 'spending_summary');
+});
+
+test('renderInsight falls back to deterministic analytics message on renderer failure', async () => {
+  const ai = {
+    renderAnalyticsInsight: async () => {
+      throw new Error('unavailable');
+    },
+  } as Pick<VeyraAiService, 'renderAnalyticsInsight'>;
+  const { service } = createService(new FakeRepository(), ai);
+
+  const result = await service.handle({
+    userId: 1,
+    renderInsight: true,
+    llmResult: { intent: 'spending_summary', needs_insight: true },
+  });
+
+  assert.equal(result.status, 'ok');
+  assert.equal(result.insight_payload, null);
+  assert.match(result.message.text, /Spending: <b>Rp100\.000<\/b>/);
+});
+
 test('daily_spending_review returns Telegram-ready summary without insight', async () => {
   mock.timers.enable({
     apis: ['Date'],
@@ -515,6 +564,56 @@ test('weekly_spending_review returns deterministic facts for n8n insight LLM', a
   } finally {
     mock.timers.reset();
   }
+});
+
+test('weekly_spending_review renders insight when renderInsight is true', async () => {
+  let seenPayload: unknown;
+  const ai = {
+    renderWeeklyReview: async (payload: unknown) => {
+      seenPayload = payload;
+      return {
+        rating: 'neutral' as const,
+        insights: ['Spending rose sharply.', 'Bills dominate.', 'Activity stayed limited.'],
+        verdict: 'This week was uneven.',
+      };
+    },
+  } as Partial<Pick<VeyraAiService, 'renderWeeklyReview'>>;
+  const { service } = createService(new FakeRepository(), ai);
+
+  const result = await service.handle({
+    userId: 1,
+    renderInsight: true,
+    llmResult: { intent: 'weekly_spending_review' },
+  });
+
+  assert.equal(result.status, 'ok');
+  assert.equal(result.insight_payload, null);
+  assert.match(result.message.text, /<b>Insights<\/b>/);
+  assert.match(result.message.text, /<b>Veyra's Verdict<\/b>/);
+  assert.equal(
+    (seenPayload as { intent?: unknown }).intent,
+    'weekly_spending_review',
+  );
+});
+
+test('weekly_spending_review falls back to deterministic message on renderer failure', async () => {
+  const ai = {
+    renderWeeklyReview: async () => {
+      throw new Error('unavailable');
+    },
+  } as Partial<Pick<VeyraAiService, 'renderWeeklyReview'>>;
+  const { service } = createService(new FakeRepository(), ai);
+
+  const result = await service.handle({
+    userId: 1,
+    renderInsight: true,
+    llmResult: { intent: 'weekly_spending_review' },
+  });
+
+  assert.equal(result.status, 'ok');
+  assert.equal(result.insight_payload, null);
+  assert.match(result.message.text, /Weekly Spending Review/);
+  assert.doesNotMatch(result.message.text, /Insights|Verdict/);
 });
 
 test('cashflow_summary always returns needs_insight when data exists', async () => {

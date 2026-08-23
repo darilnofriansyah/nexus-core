@@ -878,7 +878,20 @@ Example response:
 
 ### `POST /api/veyra/budgets/handle`
 
-Orchestrates one parsed budget conversation step for n8n. n8n should run LLM parsing first, pass the previous budget `statePayload` plus the new `llmResult`, then send the returned `message` through Telegram Reliable Sender. Core API saves pending budget state when more information is needed and resets state to `idle` after success, reset/cancel, unsupported delete, or unknown action.
+Orchestrates one budget conversation step for n8n. When `llmResult` is absent, Core parses `text` with the preserved `gpt-5-mini` strict Responses API contract; this requires `OPENAI_API_KEY` in the Core API environment. Caller-provided `llmResult` remains accepted during the rollback window. Inference failures return HTTP `503` without writing budget or conversation state. Core API saves pending budget state when more information is needed and resets state to `idle` after success, reset/cancel, unsupported delete, or unknown action.
+
+Core parsing request body:
+
+```json
+{
+  "telegramUserId": "123456789",
+  "userId": 1,
+  "text": "Netflix under Subscription 37200",
+  "statePayload": {}
+}
+```
+
+Rollback request body with n8n-provided parsing:
 
 Example request body:
 
@@ -2383,7 +2396,7 @@ help, greeting, unknown
 
 ### `POST /api/veyra/conversational/handle`
 
-Handles structured analytics results from the n8n Master Intent Classifier. Core API resolves the user, resolves the period from `telegram_users.cycle_start_day`, queries PostgreSQL, calculates deterministic facts, and returns either a Telegram-ready message or an `insight_payload` for n8n's Insight LLM. Core API does not call any LLM.
+Handles structured analytics results from the n8n Master Intent Classifier. Core API resolves the user, resolves the period from `telegram_users.cycle_start_day`, queries PostgreSQL, and calculates deterministic facts. With `renderInsight: true`, Core renders supported analytics insight text with `gpt-5-mini`; otherwise it preserves the legacy `insight_payload` handoff for n8n.
 
 Example n8n HTTP Request body:
 
@@ -2394,6 +2407,7 @@ Example n8n HTTP Request body:
   "text": "how my spending looked like this week?",
   "timezone": "Asia/Jakarta",
   "statePayload": {},
+  "renderInsight": true,
   "llmResult": {
     "intent": "spending_summary",
     "period": "this_week",
@@ -2430,11 +2444,11 @@ Supported MVP intents: `spending_summary`, `category_spending`, `merchant_spendi
 
 Unsupported for now returns `status: "unsupported_intent"`: `subscription_summary`, `subscription_detail`, `spending_comparison`, `merchant_comparison`, `category_comparison`, `weekday_analysis`, `most_frequent_merchant`, `unknown`.
 
-When `status` is `needs_insight`, n8n should send `insight_payload` to the Insight LLM, then send the LLM result through Telegram Reliable Sender. Otherwise send `message` directly. Keep Telegram trigger, Master Intent Classifier LLM, optional Insight LLM, reliable Telegram sender, and workflow orchestration in n8n.
+`renderInsight: true` is opt-in cutover. For supported non-weekly analytics, Core returns `status: "ok"`, rendered `message.text`, and `insight_payload: null`; n8n sends `message` directly through Telegram Reliable Sender. If Core rendering fails, response still returns the deterministic message with `status: "ok"`. Without this field, existing `needs_insight` and `insight_payload` behavior remains unchanged. Keep Telegram trigger, Master Intent Classifier LLM, reliable Telegram sender, and workflow orchestration in n8n.
 
 `burn_rate_forecast` is deterministic and returns a Telegram-ready HTML message from Core API. It counts only confirmed expense transactions in the user's current cycle from `telegram_users.cycle_start_day`; pending, rejected, deleted, income, transfer, and reversal rows are ignored by the existing analytics queries. When `category` is null, Core API compares total spending against the sum of active top-level budgets; parent budgets use active child budget amounts and child category spending. n8n should classify the intent, pass any explicit `category`, then send `message` directly.
 
-Scheduled spending reviews use the same endpoint. n8n keeps the Schedule Trigger, optional weekly Insight LLM, Telegram Reliable Sender, credentials, and workflow orchestration. Core API replaces the n8n SQL and deterministic text-formatting nodes.
+Scheduled spending reviews use the same endpoint. With `renderInsight: true`, Core adds the weekly insight and verdict using `gpt-5.4`; otherwise it preserves legacy `needs_insight` handoff. n8n keeps the Schedule Trigger, Telegram Reliable Sender, credentials, and workflow orchestration. Core API replaces the n8n SQL, deterministic text-formatting, and optional weekly AI nodes.
 
 Daily scheduled request:
 
@@ -2462,6 +2476,7 @@ Weekly scheduled request:
   "userId": 1,
   "timezone": "Asia/Jakarta",
   "text": "weekly spending review",
+  "renderInsight": true,
   "llmResult": {
     "intent": "weekly_spending_review",
     "period": "this_week",
@@ -2471,7 +2486,7 @@ Weekly scheduled request:
 }
 ```
 
-Weekly returns `status: "needs_insight"` when there is spending data. `message.text` contains deterministic total/category/merchant sections, while `insight_payload.facts` contains the week comparison, weekday/weekend split, top categories, and top merchants for n8n's Insight LLM to produce only the `Insights` and `Veyra's Verdict` sections.
+Weekly with `renderInsight: true` returns `status: "ok"`, a Telegram-ready `message.text` containing deterministic totals plus three insights and Veyra's verdict, and `insight_payload: null`. If rendering fails, it returns deterministic total/category/merchant sections with `status: "ok"`. Omit or set `renderInsight: false` to preserve `needs_insight` and `insight_payload` for rollback.
 
 Example burn-rate request:
 
@@ -2529,7 +2544,7 @@ Example burn-rate response:
 }
 ```
 
-Insight LLM prompt:
+Legacy analytics Insight LLM prompt (keep only while `renderInsight` is omitted):
 
 ```txt
 You are Veyra, a strict personal finance assistant.
@@ -2818,12 +2833,11 @@ Body:
   "telegramUserId": "={{$json.telegram_user_id}}",
   "userId": "={{$json.user_id}}",
   "text": "={{$json.message_text}}",
-  "statePayload": "={{$json.state_payload || {}}}",
-  "llmResult": "={{$json.llm_result}}"
+  "statePayload": "={{$json.state_payload || {}}}"
 }
 ```
 
-n8n should run LLM parsing first, then call `/api/veyra/budgets/handle`, then send `message.text`, `message.parse_mode`, and `message.disable_web_page_preview` through Telegram Reliable Sender for single-message replies. For `budget_overview`, iterate over `data.messages` and send each string as its own Telegram Reliable Sender call. This replaces only the budget workflow orchestration step after parsing; keep Telegram Trigger nodes, LLM parsing, Telegram sending, callback routing, credentials, retries, and production workflow management in n8n.
+Replace `LLM Agent - Parse Budget Intent` in `Veyra Budget Handler - Nexus Core API` with this Core request after sanitized parity acceptance. During rollback, include `"llmResult": "={{$json.llm_result}}"` and retain the existing n8n parser. n8n sends `message.text`, `message.parse_mode`, and `message.disable_web_page_preview` through Telegram Reliable Sender for single-message replies. For `budget_overview`, iterate over `data.messages` and send each string as its own Telegram Reliable Sender call. Keep Telegram Trigger nodes, Telegram sending, callback routing, credentials, retries, and production workflow management in n8n.
 
 Recommended Veyra overspending handle node settings:
 

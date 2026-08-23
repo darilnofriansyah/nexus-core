@@ -15,6 +15,7 @@ import {
   MASTER_INTENTS,
 } from "./veyra-prompts";
 import type { MasterIntentResultDto } from "../veyra/messages/dto/message-route.dto";
+import type { ConversationalInsightPayloadDto } from "../veyra/conversational/dto/conversational-handle.dto";
 import { ClassifyMasterIntentInput, VeyraAiService } from "./veyra-ai.service";
 
 const validResult = {
@@ -27,6 +28,43 @@ const validResult = {
   notes: "Spend 25k at Tuku",
   missing_fields: [],
   confidence: 0.94,
+};
+
+const validBudgetIntentResult = {
+  intent: "set_sub_budget",
+  category: "Netflix",
+  parent_category: "Subscription",
+  amount: 37200,
+  missing_fields: [],
+};
+
+const analyticsInsightPayload: ConversationalInsightPayloadDto = {
+  intent: "spending_summary",
+  user_text: "how much did I spend?",
+  period: { label: "current_cycle", start: "2026-07-25", end: "2026-08-25" },
+  comparison_period: null,
+  facts: { total: 125000, transaction_count: 3 },
+  rules: ["Use only these numbers."],
+};
+
+const weeklyReviewPayload: ConversationalInsightPayloadDto = {
+  ...analyticsInsightPayload,
+  intent: "weekly_spending_review",
+  facts: {
+    weekly_spending: 3941794,
+    transaction_count: 7,
+    week_comparison: { current_week: 3941794, previous_week: 3000000, pct_change: 31.4 },
+  },
+};
+
+const validWeeklyReviewResult = {
+  rating: "neutral",
+  insights: [
+    "Spending rose sharply from last week.",
+    "Bills and Bibit account for much of the total.",
+    "Transaction activity remained limited.",
+  ],
+  verdict: "This week was uneven. Keep an eye on concentration.",
 };
 
 const validEmailResult = {
@@ -232,6 +270,193 @@ test("extracts a valid manual transaction with a stateless strict-schema request
       },
     },
   ]);
+});
+
+test("parses a budget intent with the preserved stateless strict-schema contract", async () => {
+  const requests: unknown[] = [];
+  const client = {
+    responses: {
+      create: async (request: unknown) => {
+        requests.push(request);
+        return {
+          id: "resp_budget_123",
+          status: "completed",
+          output_text: JSON.stringify(validBudgetIntentResult),
+          usage: { input_tokens: 8, output_tokens: 12 },
+        };
+      },
+    },
+  } as unknown as OpenAI;
+
+  const service = new VeyraAiService(client) as unknown as {
+    parseBudgetIntent(input: unknown): Promise<unknown>;
+  };
+  const result = await service.parseBudgetIntent({
+    text: "Netflix under Subscription 37200",
+    statePayload: {},
+  });
+
+  assert.deepEqual(result, validBudgetIntentResult);
+  const [request] = requests as Array<{
+    model: string;
+    store: boolean;
+    input: Array<{ role: string; content: string }>;
+    text: {
+      format: {
+        type: string;
+        name: string;
+        strict: boolean;
+        schema: { required: string[] };
+      };
+    };
+  }>;
+  assert.equal(request.model, "gpt-5-mini");
+  assert.equal(request.store, false);
+  assert.match(request.input[0].content, /budget intent parser/);
+  assert.deepEqual(JSON.parse(request.input[1].content), {
+    text: "Netflix under Subscription 37200",
+    statePayload: {},
+  });
+  assert.deepEqual(request.text.format, {
+    type: "json_schema",
+    name: "budget_intent",
+    strict: true,
+    schema: request.text.format.schema,
+  });
+  assert.deepEqual(request.text.format.schema.required, [
+    "intent",
+    "category",
+    "parent_category",
+    "amount",
+    "missing_fields",
+  ]);
+});
+
+test("rejects malformed budget intent output without exposing the message", async () => {
+  await assert.rejects(
+    new VeyraAiService(
+      clientFor({
+        status: "completed",
+        output_text: JSON.stringify({ ...validBudgetIntentResult, extra: true }),
+      }),
+    ).parseBudgetIntent({
+      text: "private budget text",
+      statePayload: {},
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof ServiceUnavailableException);
+      assert.equal(error.getStatus(), 503);
+      assert.equal(error.message, "AI budget intent parsing failed");
+      assert.doesNotMatch(error.message, /private budget text/);
+      return true;
+    },
+  );
+});
+
+test("renders analytics insight with stateless strict-schema contract", async () => {
+  const requests: unknown[] = [];
+  const client = {
+    responses: {
+      create: async (request: unknown) => {
+        requests.push(request);
+        return {
+          id: "resp_insight_123",
+          status: "completed",
+          output_text: JSON.stringify({ text: "• Total spending: Rp125.000." }),
+          usage: { input_tokens: 8, output_tokens: 12 },
+        };
+      },
+    },
+  } as unknown as OpenAI;
+
+  const result = await new VeyraAiService(client).renderAnalyticsInsight(
+    analyticsInsightPayload,
+  );
+
+  assert.equal(result, "• Total spending: Rp125.000.");
+  const [request] = requests as Array<{
+    model: string;
+    store: boolean;
+    input: Array<{ role: string; content: string }>;
+    text: { format: { type: string; name: string; strict: boolean } };
+  }>;
+  assert.equal(request.model, "gpt-5-mini");
+  assert.equal(request.store, false);
+  assert.match(request.input[0].content, /analytics insight renderer/);
+  assert.deepEqual(JSON.parse(request.input[1].content), analyticsInsightPayload);
+  assert.equal(request.text.format.type, "json_schema");
+  assert.equal(request.text.format.name, "analytics_insight");
+  assert.equal(request.text.format.strict, true);
+});
+
+test("rejects unsafe analytics insight output", async () => {
+  await assert.rejects(
+    new VeyraAiService(
+      clientFor({
+        status: "completed",
+        output_text: JSON.stringify({ text: "<b>Invented</b>" }),
+      }),
+    ).renderAnalyticsInsight(analyticsInsightPayload),
+    (error: unknown) => {
+      assert.ok(error instanceof ServiceUnavailableException);
+      assert.equal(error.getStatus(), 503);
+      assert.equal(error.message, "AI analytics insight rendering failed");
+      return true;
+    },
+  );
+});
+
+test("renders weekly review with stateless strict-schema contract", async () => {
+  const requests: unknown[] = [];
+  const client = {
+    responses: {
+      create: async (request: unknown) => {
+        requests.push(request);
+        return {
+          id: "resp_weekly_123",
+          status: "completed",
+          output_text: JSON.stringify(validWeeklyReviewResult),
+        };
+      },
+    },
+  } as unknown as OpenAI;
+
+  assert.deepEqual(
+    await new VeyraAiService(client).renderWeeklyReview(weeklyReviewPayload),
+    validWeeklyReviewResult,
+  );
+  const [request] = requests as Array<{
+    model: string;
+    store: boolean;
+    input: Array<{ role: string; content: string }>;
+    text: { format: { name: string; strict: boolean } };
+  }>;
+  assert.equal(request.model, "gpt-5.4");
+  assert.equal(request.store, false);
+  assert.match(request.input[0].content, /weekly review renderer/);
+  assert.deepEqual(JSON.parse(request.input[1].content), weeklyReviewPayload);
+  assert.equal(request.text.format.name, "weekly_review");
+  assert.equal(request.text.format.strict, true);
+});
+
+test("rejects malformed weekly review output", async () => {
+  await assert.rejects(
+    new VeyraAiService(
+      clientFor({
+        status: "completed",
+        output_text: JSON.stringify({
+          ...validWeeklyReviewResult,
+          insights: validWeeklyReviewResult.insights.slice(0, 2),
+        }),
+      }),
+    ).renderWeeklyReview(weeklyReviewPayload),
+    (error: unknown) => {
+      assert.ok(error instanceof ServiceUnavailableException);
+      assert.equal(error.getStatus(), 503);
+      assert.equal(error.message, "AI weekly review rendering failed");
+      return true;
+    },
+  );
 });
 
 test("reviews an email with the preserved stateless strict-schema contract", async () => {

@@ -2,6 +2,7 @@ import * as assert from 'node:assert/strict';
 import { mock, test } from 'node:test';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { DatabaseService } from '../../database/database.service';
+import { VeyraAiService } from '../../ai/veyra-ai.service';
 import { CategoryService } from '../categories/category.service';
 import { BudgetRepository } from './budget.repository';
 import { BudgetService } from './budget.service';
@@ -10,6 +11,7 @@ interface ServiceOptions {
   rowsByCall?: unknown[][];
   categoryService?: Partial<CategoryService>;
   repository?: Partial<BudgetRepository>;
+  veyraAiService?: Partial<VeyraAiService>;
 }
 
 function createService(input: unknown[][] | ServiceOptions = []) {
@@ -17,6 +19,7 @@ function createService(input: unknown[][] | ServiceOptions = []) {
     rowsByCall = [],
     categoryService,
     repository,
+    veyraAiService,
   } = Array.isArray(input) ? { rowsByCall: input } : input;
   const calls: Array<{ text: string; values: unknown[] }> = [];
   const database = {
@@ -76,7 +79,12 @@ function createService(input: unknown[][] | ServiceOptions = []) {
 
   return {
     calls,
-    service: new BudgetService(database, categories, budgets),
+    service: new BudgetService(
+      database,
+      categories,
+      budgets,
+      veyraAiService as VeyraAiService | undefined,
+    ),
   };
 }
 
@@ -1333,6 +1341,116 @@ test('budget handle follow-up amount merges pending state and calls upsert', asy
   assert.match(result.message.text, /Budget updated\./);
   assert.match(result.message.text, /Amount: Rp1\.000\.000/);
   assert.equal(result.data.intent, 'set_budget');
+});
+
+test('budget handle parses a missing LLM result and merges the pending state', async () => {
+  const parsedInputs: unknown[] = [];
+  const { calls, service } = createService({
+    rowsByCall: [
+      [
+        {
+          budget_id: 'budget-1',
+          user_id: '1',
+          category: 'Food',
+          amount: '1000000',
+          parent_budget_id: null,
+          parent_category: null,
+          period_type: 'monthly',
+          inserted: false,
+        },
+      ],
+    ],
+    veyraAiService: {
+      parseBudgetIntent: async (input: unknown) => {
+        parsedInputs.push(input);
+        return {
+          intent: 'unknown',
+          category: null,
+          parent_category: null,
+          amount: 1000000,
+          missing_fields: [],
+        };
+      },
+    },
+  });
+  const state = createStateStore();
+  const statePayload = {
+    intent: 'set_budget',
+    category: 'Food',
+    pending: true,
+    missing_fields: ['amount'],
+  };
+
+  const result = await service.handleBudgetRequest(
+    { userId: 1, text: '1 juta', statePayload },
+    state.store,
+  );
+
+  assert.deepEqual(parsedInputs, [{ text: '1 juta', statePayload }]);
+  assert.deepEqual(calls[0].values, [
+    '1',
+    'Food',
+    1000000,
+    null,
+    'monthly',
+    false,
+  ]);
+  assert.equal(result.data.intent, 'set_budget');
+  assert.equal(state.calls[0].method, 'resetState');
+});
+
+test('budget handle keeps caller-provided LLM result as the rollback path', async () => {
+  let parserCalls = 0;
+  const { service } = createService({
+    veyraAiService: {
+      parseBudgetIntent: async () => {
+        parserCalls += 1;
+        throw new Error('should not run');
+      },
+    },
+  });
+  const state = createStateStore();
+
+  const result = await service.handleBudgetRequest(
+    {
+      userId: 1,
+      text: 'show my budgets',
+      llmResult: { intent: 'unknown' },
+    },
+    state.store,
+  );
+
+  assert.equal(parserCalls, 0);
+  assert.equal(result.data.intent, 'unknown');
+  assert.equal(state.calls[0].method, 'resetState');
+});
+
+test('budget handle requires text when its LLM result is absent', async () => {
+  let parserCalls = 0;
+  const { calls, service } = createService({
+    veyraAiService: {
+      parseBudgetIntent: async () => {
+        parserCalls += 1;
+        return {
+          intent: 'unknown',
+          category: null,
+          parent_category: null,
+          amount: null,
+          missing_fields: [],
+        };
+      },
+    },
+  });
+  const state = createStateStore();
+
+  await assert.rejects(
+    () => service.handleBudgetRequest({ userId: 1 }, state.store),
+    /text is required when llmResult is absent/,
+  );
+
+  assert.equal(parserCalls, 0);
+  assert.equal(calls.length, 0);
+  assert.deepEqual(state.calls, []);
 });
 
 test('budget handle set sub budget without parent asks parent question', async () => {

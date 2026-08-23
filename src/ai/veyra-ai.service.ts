@@ -15,7 +15,17 @@ import {
 } from "../veyra/transactions/dto/email-transaction.dto";
 import { ManualTransactionLlmResultDto } from "../veyra/transactions/dto/handle-transaction.dto";
 import type { MasterIntentResultDto } from "../veyra/messages/dto/message-route.dto";
+import type { ConversationalInsightPayloadDto } from "../veyra/conversational/dto/conversational-handle.dto";
 import {
+  ANALYTICS_INSIGHT_INSTRUCTIONS,
+  ANALYTICS_INSIGHT_MODEL,
+  ANALYTICS_INSIGHT_PROMPT_VERSION,
+  ANALYTICS_INSIGHT_SCHEMA,
+  BUDGET_INTENT_INSTRUCTIONS,
+  BUDGET_INTENT_MODEL,
+  BUDGET_INTENT_PROMPT_VERSION,
+  BUDGET_INTENT_SCHEMA,
+  BUDGET_INTENTS,
   EMAIL_TRANSACTION_INSTRUCTIONS,
   EMAIL_TRANSACTION_MODEL,
   EMAIL_TRANSACTION_PROMPT_VERSION,
@@ -29,7 +39,21 @@ import {
   MASTER_INTENT_PROMPT_VERSION,
   MASTER_INTENT_SCHEMA,
   MASTER_INTENTS,
+  WEEKLY_REVIEW_INSTRUCTIONS,
+  WEEKLY_REVIEW_MODEL,
+  WEEKLY_REVIEW_PROMPT_VERSION,
+  WEEKLY_REVIEW_SCHEMA,
 } from "./veyra-prompts";
+
+const BUDGET_RESULT_KEYS = [
+  "intent",
+  "category",
+  "parent_category",
+  "amount",
+  "missing_fields",
+] as const;
+
+const BUDGET_MISSING_FIELDS = ["category", "parent_category", "amount"];
 
 const RESULT_KEYS = [
   "intent",
@@ -59,6 +83,25 @@ export interface ClassifyMasterIntentInput {
   message: string;
   currentState: string | null;
   stateData: Record<string, unknown>;
+}
+
+export interface ParseBudgetIntentInput {
+  text: string;
+  statePayload: Record<string, unknown>;
+}
+
+export interface BudgetIntentResult extends Record<string, unknown> {
+  intent: (typeof BUDGET_INTENTS)[number];
+  category: string | null;
+  parent_category: string | null;
+  amount: number | null;
+  missing_fields: Array<(typeof BUDGET_MISSING_FIELDS)[number]>;
+}
+
+export interface WeeklyReviewResult {
+  rating: "good" | "neutral" | "bad";
+  insights: [string, string, string];
+  verdict: string;
 }
 
 export type EmailAiReviewResult =
@@ -246,6 +289,236 @@ export class VeyraAiService {
     }
   }
 
+  async parseBudgetIntent(
+    input: ParseBudgetIntentInput,
+  ): Promise<BudgetIntentResult> {
+    const startedAt = Date.now();
+    let responseId: string | undefined;
+    let inputTokens: number | undefined;
+    let outputTokens: number | undefined;
+
+    try {
+      const signal = AbortSignal.timeout(readEnv().openAiTimeoutMs);
+      const response = await Promise.race([
+        this.getClient().responses.create(
+          {
+            model: BUDGET_INTENT_MODEL,
+            store: false,
+            input: [
+              { role: "developer", content: BUDGET_INTENT_INSTRUCTIONS },
+              { role: "user", content: JSON.stringify(input) },
+            ],
+            text: {
+              format: {
+                type: "json_schema",
+                name: "budget_intent",
+                strict: true,
+                schema: BUDGET_INTENT_SCHEMA,
+              },
+            },
+          },
+          { signal },
+        ),
+        new Promise<never>((_, reject) =>
+          signal.addEventListener("abort", () => reject(signal.reason), {
+            once: true,
+          }),
+        ),
+      ]);
+
+      responseId = response.id;
+      inputTokens = response.usage?.input_tokens;
+      outputTokens = response.usage?.output_tokens;
+
+      if (
+        response.status !== "completed" ||
+        this.hasRefusal(response.output) ||
+        !response.output_text.trim()
+      ) {
+        throw new Error("Invalid response");
+      }
+
+      const result = this.parseBudgetIntentResult(response.output_text);
+      this.logResult({
+        capability: "budget-intent",
+        model: BUDGET_INTENT_MODEL,
+        promptVersion: BUDGET_INTENT_PROMPT_VERSION,
+        responseId,
+        latencyMs: Date.now() - startedAt,
+        inputTokens,
+        outputTokens,
+        validation: "passed",
+      });
+      return result;
+    } catch {
+      this.logResult({
+        capability: "budget-intent",
+        model: BUDGET_INTENT_MODEL,
+        promptVersion: BUDGET_INTENT_PROMPT_VERSION,
+        responseId,
+        latencyMs: Date.now() - startedAt,
+        inputTokens,
+        outputTokens,
+        validation: "failed",
+      });
+      throw new ServiceUnavailableException("AI budget intent parsing failed");
+    }
+  }
+
+  async renderAnalyticsInsight(
+    input: ConversationalInsightPayloadDto,
+  ): Promise<string> {
+    const startedAt = Date.now();
+    let responseId: string | undefined;
+    let inputTokens: number | undefined;
+    let outputTokens: number | undefined;
+
+    try {
+      const signal = AbortSignal.timeout(readEnv().openAiTimeoutMs);
+      const response = await Promise.race([
+        this.getClient().responses.create(
+          {
+            model: ANALYTICS_INSIGHT_MODEL,
+            store: false,
+            input: [
+              { role: "developer", content: ANALYTICS_INSIGHT_INSTRUCTIONS },
+              { role: "user", content: JSON.stringify(input) },
+            ],
+            text: {
+              format: {
+                type: "json_schema",
+                name: "analytics_insight",
+                strict: true,
+                schema: ANALYTICS_INSIGHT_SCHEMA,
+              },
+            },
+          },
+          { signal },
+        ),
+        new Promise<never>((_, reject) =>
+          signal.addEventListener("abort", () => reject(signal.reason), {
+            once: true,
+          }),
+        ),
+      ]);
+
+      responseId = response.id;
+      inputTokens = response.usage?.input_tokens;
+      outputTokens = response.usage?.output_tokens;
+
+      if (
+        response.status !== "completed" ||
+        this.hasRefusal(response.output) ||
+        !response.output_text.trim()
+      ) {
+        throw new Error("Invalid response");
+      }
+
+      const result = this.parseAnalyticsInsightResult(response.output_text);
+      this.logResult({
+        capability: "analytics-insight",
+        model: ANALYTICS_INSIGHT_MODEL,
+        promptVersion: ANALYTICS_INSIGHT_PROMPT_VERSION,
+        responseId,
+        latencyMs: Date.now() - startedAt,
+        inputTokens,
+        outputTokens,
+        validation: "passed",
+      });
+      return result;
+    } catch {
+      this.logResult({
+        capability: "analytics-insight",
+        model: ANALYTICS_INSIGHT_MODEL,
+        promptVersion: ANALYTICS_INSIGHT_PROMPT_VERSION,
+        responseId,
+        latencyMs: Date.now() - startedAt,
+        inputTokens,
+        outputTokens,
+        validation: "failed",
+      });
+      throw new ServiceUnavailableException(
+        "AI analytics insight rendering failed",
+      );
+    }
+  }
+
+  async renderWeeklyReview(
+    input: ConversationalInsightPayloadDto,
+  ): Promise<WeeklyReviewResult> {
+    const startedAt = Date.now();
+    let responseId: string | undefined;
+    let inputTokens: number | undefined;
+    let outputTokens: number | undefined;
+
+    try {
+      const signal = AbortSignal.timeout(readEnv().openAiTimeoutMs);
+      const response = await Promise.race([
+        this.getClient().responses.create(
+          {
+            model: WEEKLY_REVIEW_MODEL,
+            store: false,
+            input: [
+              { role: "developer", content: WEEKLY_REVIEW_INSTRUCTIONS },
+              { role: "user", content: JSON.stringify(input) },
+            ],
+            text: {
+              format: {
+                type: "json_schema",
+                name: "weekly_review",
+                strict: true,
+                schema: WEEKLY_REVIEW_SCHEMA,
+              },
+            },
+          },
+          { signal },
+        ),
+        new Promise<never>((_, reject) =>
+          signal.addEventListener("abort", () => reject(signal.reason), {
+            once: true,
+          }),
+        ),
+      ]);
+
+      responseId = response.id;
+      inputTokens = response.usage?.input_tokens;
+      outputTokens = response.usage?.output_tokens;
+
+      if (
+        response.status !== "completed" ||
+        this.hasRefusal(response.output) ||
+        !response.output_text.trim()
+      ) {
+        throw new Error("Invalid response");
+      }
+
+      const result = this.parseWeeklyReviewResult(response.output_text);
+      this.logResult({
+        capability: "weekly-review",
+        model: WEEKLY_REVIEW_MODEL,
+        promptVersion: WEEKLY_REVIEW_PROMPT_VERSION,
+        responseId,
+        latencyMs: Date.now() - startedAt,
+        inputTokens,
+        outputTokens,
+        validation: "passed",
+      });
+      return result;
+    } catch {
+      this.logResult({
+        capability: "weekly-review",
+        model: WEEKLY_REVIEW_MODEL,
+        promptVersion: WEEKLY_REVIEW_PROMPT_VERSION,
+        responseId,
+        latencyMs: Date.now() - startedAt,
+        inputTokens,
+        outputTokens,
+        validation: "failed",
+      });
+      throw new ServiceUnavailableException("AI weekly review rendering failed");
+    }
+  }
+
   async reviewEmailTransaction(
     input: ReviewEmailTransactionInput,
   ): Promise<EmailAiReviewResult> {
@@ -422,6 +695,84 @@ export class VeyraAiService {
     }
 
     return parsed as ManualTransactionLlmResultDto;
+  }
+
+  private parseBudgetIntentResult(output: string): BudgetIntentResult {
+    let parsed: unknown;
+
+    try {
+      parsed = JSON.parse(output);
+    } catch {
+      throw new Error("Invalid JSON");
+    }
+
+    if (!this.isPlainRecord(parsed)) throw new Error("Invalid result");
+
+    const keys = Object.keys(parsed);
+    if (
+      keys.length !== BUDGET_RESULT_KEYS.length ||
+      !BUDGET_RESULT_KEYS.every((key) =>
+        Object.prototype.hasOwnProperty.call(parsed, key),
+      ) ||
+      !BUDGET_INTENTS.includes(
+        parsed.intent as (typeof BUDGET_INTENTS)[number],
+      ) ||
+      !this.isNullableNonEmptyString(parsed.category) ||
+      !this.isNullableNonEmptyString(parsed.parent_category) ||
+      !this.isNullablePositiveNumber(parsed.amount) ||
+      !Array.isArray(parsed.missing_fields) ||
+      parsed.missing_fields.some(
+        (field) =>
+          typeof field !== "string" ||
+          !BUDGET_MISSING_FIELDS.includes(
+            field as (typeof BUDGET_MISSING_FIELDS)[number],
+          ),
+      ) ||
+      new Set(parsed.missing_fields).size !== parsed.missing_fields.length
+    ) {
+      throw new Error("Invalid budget intent result");
+    }
+
+    return parsed as unknown as BudgetIntentResult;
+  }
+
+  private parseAnalyticsInsightResult(output: string): string {
+    const parsed = JSON.parse(output) as unknown;
+    if (
+      !this.hasExactKeys(parsed, ["text"]) ||
+      !this.isBoundedString(parsed.text, 1200) ||
+      parsed.text.includes("<") ||
+      parsed.text.includes(">")
+    ) {
+      throw new Error("Invalid analytics insight result");
+    }
+
+    const lines = parsed.text.split("\n");
+    if (lines.length > 3 || !lines.every((line) => line.startsWith("• "))) {
+      throw new Error("Invalid analytics insight text");
+    }
+    return parsed.text;
+  }
+
+  private parseWeeklyReviewResult(output: string): WeeklyReviewResult {
+    const parsed = JSON.parse(output) as unknown;
+    if (
+      !this.hasExactKeys(parsed, ["rating", "insights", "verdict"]) ||
+      !["good", "neutral", "bad"].includes(parsed.rating as string) ||
+      !Array.isArray(parsed.insights) ||
+      parsed.insights.length !== 3 ||
+      !parsed.insights.every(
+        (insight) =>
+          this.isBoundedString(insight, 300) &&
+          !/[\n<>]/.test(insight),
+      ) ||
+      !this.isBoundedString(parsed.verdict, 600) ||
+      /[\n<>]/.test(parsed.verdict)
+    ) {
+      throw new Error("Invalid weekly review result");
+    }
+
+    return parsed as unknown as WeeklyReviewResult;
   }
 
   private parseMasterIntentResult(output: string): MasterIntentResultDto {
@@ -679,6 +1030,10 @@ export class VeyraAiService {
     return value === null || typeof value === "string";
   }
 
+  private isNullableNonEmptyString(value: unknown): value is string | null {
+    return value === null || this.isNonEmptyString(value);
+  }
+
   private isNullableIdentifier(
     value: unknown,
   ): value is string | number | null {
@@ -734,6 +1089,9 @@ export class VeyraAiService {
     capability:
       | "master-intent"
       | "transaction-extract"
+      | "budget-intent"
+      | "analytics-insight"
+      | "weekly-review"
       | "email-transaction-review";
     model: string;
     promptVersion: string;

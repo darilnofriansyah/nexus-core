@@ -8,6 +8,16 @@ Purpose: transfer this file into the Nexus Core API NestJS project, inspect that
 
 ## Current Nexus Core state
 
+Repository update on 2026-08-23:
+
+- Budget-intent parsing is implemented inside
+  `POST /api/veyra/budgets/handle` when `llmResult` is absent.
+- The preserved baseline remains `gpt-5-mini`; requests use strict Responses
+  API structured output with `store: false` and application-side validation.
+- Caller-provided `llmResult` remains the rollback path. Core deployment,
+  production n8n edits, parity approval, and production cutover were not
+  performed.
+
 Repository update on 2026-08-09:
 
 - Master-intent classification is implemented inside
@@ -181,8 +191,8 @@ Implementation rules:
 | budget-intent | `budgets/handle` accepts optional `llmResult` | When absent, parse `text` inside Core, then reuse the existing merge, missing-field, state, and budget logic. |
 | master-intent | `messages/route` preserves deterministic route/state fields and appends optional `masterIntent` only for conversational messages | Implemented in Core; do not let the model override callback, slash-command, or active-state precedence. |
 | email-transaction-review | `transactions/email/handle` returns `needs_ai`, and `email/resolve-review` already validates AI results | Invoke AI only where deterministic parsing would return `needs_ai`, then feed the result through the existing review validation path. Do not duplicate email persistence or template validation. |
-| analytics-insight | `conversational/handle` returns deterministic facts and `insight_payload` | Render the existing insight payload inside Core and return it through the existing Telegram message field. Keep deterministic facts outside the prompt. |
-| weekly-review | `weekly_spending_review` already produces deterministic facts | Reuse the analytics renderer boundary with the weekly voice prompt. Do not add another endpoint unless the existing conversational contract cannot preserve the scheduled workflow payload. |
+| analytics-insight | `conversational/handle` returns deterministic facts and `insight_payload` | Implemented behind `renderInsight: true`: Core renders existing payload and returns it through `message`; default legacy handoff remains for rollback. |
+| weekly-review | `weekly_spending_review` already produces deterministic facts | Implemented behind `renderInsight: true` with its preserved `gpt-5.4` prompt/schema; default legacy handoff remains for rollback. |
 
 ### Master-intent phase 3 cutover contract
 
@@ -261,12 +271,16 @@ Each numbered item is a separate migration. Cut over and verify one capability b
 
 1. Move manual transaction extraction into /api/veyra/transactions/handle.
 2. Move budget parsing into /api/veyra/budgets/handle.
+   Repository implementation complete; production fixture approval and n8n
+   cutover remain pending.
 3. Move master-intent classification into /api/veyra/messages/route.
    Repository implementation complete; production fixture approval and n8n
    cutover remain pending.
 4. Move email fallback review into /api/veyra/transactions/email/handle.
 5. Move analytics insight rendering into /api/veyra/conversational/handle.
+   Repository implementation complete; n8n cutover remains pending.
 6. Add weekly-review rendering in Core.
+   Repository implementation complete; n8n cutover remains pending.
 7. Remove five dormant n8n LLM paths after confirming no external/manual callers.
 
 ## Acceptance checks
@@ -1064,6 +1078,39 @@ Return valid JSON only.
 
 ~~~
 
+#### Core weekly-review cutover contract
+
+Use this exact scheduled HTTP Request body when replacing Weekly Review's AI
+Agent node:
+
+~~~json
+{
+  "telegramUserId": "976684739",
+  "userId": 1,
+  "timezone": "Asia/Jakarta",
+  "text": "weekly spending review",
+  "renderInsight": true,
+  "llmResult": {
+    "intent": "weekly_spending_review",
+    "period": "this_week",
+    "comparisonPeriod": "last_week",
+    "needs_insight": true
+  }
+}
+~~~
+
+Core uses `gpt-5.4`, `store: false`, strict JSON schema, and validates exact
+`rating`, three insights, and verdict before it appends Telegram-safe
+`Insights` and `Veyra's Verdict` sections to the deterministic weekly message.
+On refusal, timeout, malformed output, or API failure, it returns the
+deterministic weekly message with `status: "ok"`; it does not block delivery.
+
+Replace only Weekly Review's AI Agent branch with a direct Telegram Reliable
+Sender path using `message`. Keep Schedule Trigger, user fan-out/query nodes,
+Telegram sender, credentials, retries, and workflow orchestration in n8n.
+Roll back by omitting `renderInsight`; legacy `needs_insight` and
+`insight_payload` remain unchanged.
+
 ### Veyra Manual Transaction Handle - Nexus Core API / Basic LLM Chain
 
 - Reach: Production
@@ -1179,6 +1226,44 @@ Output format:
 • Second insight
 • Third insight
 ~~~
+
+#### Core analytics-insight cutover contract
+
+Use this exact HTTP Request body when replacing the non-weekly Insight LLM node:
+
+~~~json
+{
+  "telegramUserId": "976684739",
+  "userId": 1,
+  "text": "how much did I spend this week?",
+  "timezone": "Asia/Jakarta",
+  "statePayload": {},
+  "renderInsight": true,
+  "llmResult": {
+    "intent": "spending_summary",
+    "period": "this_week",
+    "comparisonPeriod": null,
+    "merchant": null,
+    "category": null,
+    "limit": null,
+    "target": null,
+    "needs_insight": true,
+    "confidence": 0.91
+  }
+}
+~~~
+
+Core uses `gpt-5-mini`, `store: false`, strict JSON schema, and validates a
+maximum of three plain `• ` lines before returning Telegram-safe HTML text.
+On refusal, timeout, malformed output, or API failure, Core returns existing
+deterministic `message` with `status: "ok"`; it does not block delivery.
+
+Replace non-weekly `needs_insight` branch and Insight LLM node with a
+direct Telegram Reliable Sender path using `message`. Keep Telegram trigger,
+Master Intent Classifier, schedule trigger, sender, credentials, retries, and
+workflow orchestration in n8n. For `weekly_spending_review`, the same flag
+selects the dedicated weekly renderer below. Roll back by omitting
+`renderInsight`; legacy `needs_insight` and `insight_payload` remain unchanged.
 
 ### Veyra Message Router with Master Intent - Nexus Core API / Master Intent Classifier
 
