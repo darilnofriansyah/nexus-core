@@ -1,5 +1,9 @@
 import { TelegramReplyMarkupDto } from "./confirmation-payload.dto";
-import { BudgetWatchdogResponseDto } from "../../budgets/dto/overspending-check.dto";
+import {
+  BudgetWatchdogResponseDto,
+  OverspendingAlertRecordDto,
+  OverspendingAlertType,
+} from "../../budgets/dto/overspending-check.dto";
 
 export type TransactionWatchdogNotificationType =
   | "risk_review"
@@ -13,6 +17,9 @@ export interface TransactionWatchdogNotificationDto {
   message: string;
   review_id?: number;
   reply_markup?: TelegramReplyMarkupDto;
+  alertType?: OverspendingAlertType;
+  budgetId?: string;
+  alertRecord?: OverspendingAlertRecordDto;
 }
 
 export interface TransactionWatchdogResponseDto {

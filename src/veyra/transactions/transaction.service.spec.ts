@@ -48,6 +48,16 @@ const watchdogN8nFixture = JSON.parse(
     riskReplyMarkup: {
       inline_keyboard: Array<Array<{ text: string; callback_data: string }>>;
     };
+    budgetReplyMarkup: {
+      inline_keyboard: Array<Array<{ text: string; url: string }>>;
+    };
+    budgetAlertRecord: {
+      userId: string;
+      budgetId: string;
+      alertType: "budget_forecast_overrun";
+      thresholdPercent: number;
+      periodKey: string;
+    };
   };
   callbackContext: {
     telegramUserId: string;
@@ -1117,7 +1127,7 @@ test("saves Toys under default Monthly Transactions without Toys budget", async 
   assert.match(
     result.confirmationPayload?.reply_markup.inline_keyboard
       .flat()
-      .find((button) => button.callback_data.startsWith("change_categories:"))
+      .find((button) => button.callback_data?.startsWith("change_categories:"))
       ?.text ?? "",
     /Review Category/,
   );
@@ -2816,7 +2826,7 @@ test("formats production category callback data with category and transaction id
     ],
   );
   assert.equal(
-    buttons.some((button) => button.callback_data.startsWith("tx_")),
+    buttons.some((button) => button.callback_data?.startsWith("tx_")),
     false,
   );
 });
@@ -3970,7 +3980,7 @@ test("keeps every AI result pending and stores only a validated proposal", async
   assert.ok(
     result.replyMarkup?.inline_keyboard
       .flat()
-      .some((button) => button.callback_data.startsWith("save_transaction:")),
+      .some((button) => button.callback_data?.startsWith("save_transaction:")),
   );
 });
 
@@ -4259,7 +4269,7 @@ test("preserves missing merchant behavior for a non-expense AI candidate", async
   assert.ok(
     result.replyMarkup?.inline_keyboard
       .flat()
-      .some((button) => button.callback_data.startsWith("save_transaction:")),
+      .some((button) => button.callback_data?.startsWith("save_transaction:")),
   );
 });
 
@@ -5291,17 +5301,17 @@ test("returns needs_review for BCA known template without category", async () =>
       .flat()
       .map((button) => button.callback_data) ?? [];
   assert.equal(
-    callbacks.some((callback) => callback.startsWith("save_transaction:")),
+    callbacks.some((callback) => callback?.startsWith("save_transaction:")),
     false,
   );
   assert.ok(
-    callbacks.some((callback) => callback.startsWith("change_categories:")),
+    callbacks.some((callback) => callback?.startsWith("change_categories:")),
   );
   assert.ok(
-    callbacks.some((callback) => callback.startsWith("edit_email_details:")),
+    callbacks.some((callback) => callback?.startsWith("edit_email_details:")),
   );
   assert.ok(
-    callbacks.some((callback) => callback.startsWith("cancel_transaction:")),
+    callbacks.some((callback) => callback?.startsWith("cancel_transaction:")),
   );
   assert.match(calls[3].text, /INSERT INTO transaction_imports/);
   assert.match(calls[4].text, /INSERT INTO transactions/);
@@ -5342,17 +5352,17 @@ test("returns needs_review for known email when merchant alias is missing", asyn
       .flat()
       .map((button) => button.callback_data) ?? [];
   assert.equal(
-    callbacks.some((callback) => callback.startsWith("save_transaction:")),
+    callbacks.some((callback) => callback?.startsWith("save_transaction:")),
     false,
   );
   assert.ok(
-    callbacks.some((callback) => callback.startsWith("change_categories:")),
+    callbacks.some((callback) => callback?.startsWith("change_categories:")),
   );
   assert.ok(
-    callbacks.some((callback) => callback.startsWith("edit_email_details:")),
+    callbacks.some((callback) => callback?.startsWith("edit_email_details:")),
   );
   assert.ok(
-    callbacks.some((callback) => callback.startsWith("cancel_transaction:")),
+    callbacks.some((callback) => callback?.startsWith("cancel_transaction:")),
   );
   assert.equal(result.parsed?.merchant, "SHOPEE.CO.ID");
   assert.match(result.telegram.text, /Merchant: SHOPEE\.CO\.ID/);
@@ -8013,7 +8023,7 @@ test("watchdog preserves n8n fixture order for all notifications", async (t) => 
       hasAlert: true,
       alerts: [
         {
-          type: "budget_90" as const,
+          type: "budget_forecast_overrun" as const,
           budgetId: "12",
           category: "Shopping",
           usedPercent: 90,
@@ -8021,6 +8031,10 @@ test("watchdog preserves n8n fixture order for all notifications", async (t) => 
           safeDailySpend: 10000,
           projectedCycleSpend: 1200000,
           projectedOverrun: 200000,
+          telegramText: watchdogN8nFixture.notifications.messages[1],
+          miniAppUrl: "https://t.me/veyra/app?startapp=pocket_12",
+          alertRecord: watchdogN8nFixture.notifications.budgetAlertRecord,
+          topDriver: { category: "Shopping", amount: 900000 },
         },
       ],
       message: null,
@@ -8107,6 +8121,72 @@ test("watchdog preserves n8n fixture order for all notifications", async (t) => 
     watchdogN8nFixture.notifications.riskCallbackData,
   );
   assert.equal(result.notifications[0].review_id, 55);
+  assert.deepEqual(
+    result.notifications[1].reply_markup,
+    watchdogN8nFixture.notifications.budgetReplyMarkup,
+  );
+  assert.deepEqual(
+    result.notifications[1].alertRecord,
+    watchdogN8nFixture.notifications.budgetAlertRecord,
+  );
+  assert.equal(result.notifications[1].alertType, "budget_forecast_overrun");
+  assert.equal(result.notifications[1].budgetId, "12");
+});
+
+test("forecast notification keeps facts without an unconfigured Mini App link", async () => {
+  const alertRecord = {
+    userId: "1",
+    budgetId: "12",
+    alertType: "budget_forecast_overrun" as const,
+    thresholdPercent: 0,
+    periodKey: "2026-08-01",
+  };
+  const budgetService = {
+    evaluateTransaction: async () => ({
+      checked: true,
+      hasAlert: true,
+      alerts: [
+        {
+          type: "budget_forecast_overrun" as const,
+          budgetId: "12",
+          category: "Shopping",
+          usedPercent: 90,
+          remainingAmount: 100000,
+          safeDailySpend: 10000,
+          projectedCycleSpend: 1200000,
+          projectedOverrun: 200000,
+          telegramText: "Shopping may exceed its budget.",
+          miniAppUrl: null,
+          alertRecord,
+        },
+      ],
+      message: null,
+    }),
+  } as unknown as BudgetService;
+  const { service } = createService(
+    [
+      [
+        {
+          ...transaction,
+          id: "101",
+          user_id: "1",
+          transaction_type: "expense",
+          status: "confirmed",
+        },
+      ],
+    ],
+    budgetService,
+  );
+
+  const result = await service.evaluateTransactionWatchdog("101");
+  const notification = result.notifications.find(
+    ({ type }) => type === "budget_alert",
+  );
+
+  assert.equal(notification?.message, "Shopping may exceed its budget.");
+  assert.equal(notification?.budgetId, "12");
+  assert.deepEqual(notification?.alertRecord, alertRecord);
+  assert.equal(notification?.reply_markup, undefined);
 });
 
 test("risk review keeps an assigned top-level pocket without a matching child", async (t) => {

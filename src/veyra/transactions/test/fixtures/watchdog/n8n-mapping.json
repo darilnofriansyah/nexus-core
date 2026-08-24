@@ -13,7 +13,7 @@
     "priorities": [1, 2, 3],
     "messages": [
       "<b>⚠️ Large transaction detected</b>\n\nRp850.000 at Uniqlo\n• 38% of your monthly budget\n\nWas this purchase planned?",
-      "Shopping budget reached 90%",
+      "Shopping may exceed its budget by Rp200.000 this cycle.\nRp900.000 spent of Rp1.000.000.\nSafe daily spend: Rp10.000.\nTop driver: Shopping (Rp900.000).",
       "Burn-rate projected spend Rp1.550.000 exceeds Rp200.000"
     ],
     "riskCallbackData": [
@@ -36,6 +36,23 @@
           { "text": "Ignore", "callback_data": "veyra_risk:55:ignore" }
         ]
       ]
+    },
+    "budgetReplyMarkup": {
+      "inline_keyboard": [
+        [
+          {
+            "text": "View Shopping pocket",
+            "url": "https://t.me/veyra/app?startapp=pocket_12"
+          }
+        ]
+      ]
+    },
+    "budgetAlertRecord": {
+      "userId": "1",
+      "budgetId": "12",
+      "alertType": "budget_forecast_overrun",
+      "thresholdPercent": 0,
+      "periodKey": "2026-08-01"
     }
   },
   "callbackContext": {

@@ -5465,12 +5465,38 @@ export class TransactionService {
   private toBudgetNotifications(
     watchdog: BudgetWatchdogResponseDto | undefined,
   ): TransactionWatchdogNotificationDto[] {
-    return (watchdog?.alerts ?? []).map((alert) => ({
-      type: "budget_alert",
-      priority: 2,
-      severity: "warning",
-      message: `${alert.category} budget reached ${alert.usedPercent}%`,
-    }));
+    return (watchdog?.alerts ?? []).map((alert) => {
+      const base: TransactionWatchdogNotificationDto = {
+        type: "budget_alert",
+        priority: 2,
+        severity: "warning",
+        message: `${alert.category} budget reached ${alert.usedPercent}%`,
+      };
+
+      if (alert.type !== "budget_forecast_overrun") return base;
+
+      return {
+        ...base,
+        message: alert.telegramText ?? base.message,
+        alertType: alert.type,
+        budgetId: alert.budgetId,
+        ...(alert.alertRecord ? { alertRecord: alert.alertRecord } : {}),
+        ...(alert.miniAppUrl
+          ? {
+              reply_markup: {
+                inline_keyboard: [
+                  [
+                    {
+                      text: `View ${alert.category} pocket`,
+                      url: alert.miniAppUrl,
+                    },
+                  ],
+                ],
+              },
+            }
+          : {}),
+      };
+    });
   }
 
   private async evaluateTransactionRisk(

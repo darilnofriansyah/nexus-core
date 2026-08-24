@@ -25,10 +25,9 @@ export interface TransactionConfirmationPayloadRequestDto {
   warnings?: string[];
 }
 
-export interface TelegramInlineKeyboardButtonDto {
-  text: string;
-  callback_data: string;
-}
+export type TelegramInlineKeyboardButtonDto =
+  | { text: string; callback_data: string; url?: never }
+  | { text: string; url: string; callback_data?: never };
 
 export interface TelegramReplyMarkupDto {
   inline_keyboard: TelegramInlineKeyboardButtonDto[][];
