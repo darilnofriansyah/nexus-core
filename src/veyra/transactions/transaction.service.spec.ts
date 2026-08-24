@@ -102,16 +102,40 @@ function createService(
     }
     calls.push({ text, values });
     let rows = rowsByCall.shift() ?? [];
-    if (/UPDATE transactions/.test(text) && Array.isArray(rows) &&
-      rows[0] && typeof rows[0] === "object" && "category" in rows[0] &&
-      !("amount" in rows[0])) {
+    if (
+      /UPDATE transactions/.test(text) &&
+      Array.isArray(rows) &&
+      rows[0] &&
+      typeof rows[0] === "object" &&
+      "category" in rows[0] &&
+      !("amount" in rows[0])
+    ) {
       rows = rowsByCall.shift() ?? [];
     }
-    if (/UPDATE transactions/.test(text) && /status = 'confirmed'/.test(text) && /RETURNING/.test(text) &&
-      Array.isArray(rows) && rows.length === 0 && rowsByCall.length === 0 && lastTransaction) {
-      rows = [{ ...lastTransaction, category: values[0], pocket_id: values[1], status: "confirmed" }];
+    if (
+      /UPDATE transactions/.test(text) &&
+      /status = 'confirmed'/.test(text) &&
+      /RETURNING/.test(text) &&
+      Array.isArray(rows) &&
+      rows.length === 0 &&
+      rowsByCall.length === 0 &&
+      lastTransaction
+    ) {
+      rows = [
+        {
+          ...lastTransaction,
+          category: values[0],
+          pocket_id: values[1],
+          status: "confirmed",
+        },
+      ];
     }
-    if (Array.isArray(rows) && rows[0] && typeof rows[0] === "object" && "status" in rows[0]) {
+    if (
+      Array.isArray(rows) &&
+      rows[0] &&
+      typeof rows[0] === "object" &&
+      "status" in rows[0]
+    ) {
       lastTransaction = rows[0] as Record<string, unknown>;
     }
     if (rows instanceof Error) throw rows;
@@ -140,12 +164,14 @@ function createService(
   } as unknown as DatabaseService;
 
   const resolvedBudgetService = budgetService ?? defaultBudgetService();
-  const resolvedCategoryService = categoryService ??
+  const resolvedCategoryService =
+    categoryService ??
     ({
       listActive: async () => TRANSACTION_TEST_CATEGORIES,
       findActiveById: async (_userId: string, categoryId: string) =>
-        TRANSACTION_TEST_CATEGORIES.find((category) => category.id === categoryId) ??
-        (categoryId === "10" ? { id: "10", name: "Food" } : null),
+        TRANSACTION_TEST_CATEGORIES.find(
+          (category) => category.id === categoryId,
+        ) ?? (categoryId === "10" ? { id: "10", name: "Food" } : null),
     } as unknown as CategoryService);
   if (!("resolveExpenseAssignment" in resolvedBudgetService)) {
     Object.assign(resolvedBudgetService, {
@@ -175,10 +201,14 @@ function createService(
 }
 
 const TRANSACTION_TEST_CATEGORIES = [
-  ["budget-food", "Food"], ["budget-transport", "Transport"],
-  ["budget-groceries", "Groceries"], ["budget-bills", "Bills"],
-  ["budget-health", "Health & Beauty"], ["budget-shopping", "Shopping"],
-  ["budget-entertainment", "Entertainment"], ["budget-transfer", "Transfer"],
+  ["budget-food", "Food"],
+  ["budget-transport", "Transport"],
+  ["budget-groceries", "Groceries"],
+  ["budget-bills", "Bills"],
+  ["budget-health", "Health & Beauty"],
+  ["budget-shopping", "Shopping"],
+  ["budget-entertainment", "Entertainment"],
+  ["budget-transfer", "Transfer"],
   ["budget-other", "Other"],
 ].map(([id, name]) => ({ id, name }));
 
@@ -192,7 +222,10 @@ function createCategoryServiceWithCategories(
       findActiveById: async (_userId: string, categoryId: string) =>
         categories.find((category) => category.id === categoryId) ?? null,
     } as unknown as CategoryService,
-    budgetService: createResolvedBudgetService(pocketId, "Monthly Transactions"),
+    budgetService: createResolvedBudgetService(
+      pocketId,
+      "Monthly Transactions",
+    ),
   };
 }
 
@@ -261,7 +294,8 @@ function createBudgetService(
 }
 
 function createBudgetServiceWithCalls() {
-  const calls: Array<{ userId: string; pocketId?: string; category: string }> = [];
+  const calls: Array<{ userId: string; pocketId?: string; category: string }> =
+    [];
   return {
     calls,
     service: {
@@ -291,7 +325,12 @@ function createAwaitingPocketBudgetService() {
       category: "Uncategorized",
       needsCategoryReview: true,
       pockets: [
-        { id: "42", name: "Monthly Transactions", amount: null, isDefault: false },
+        {
+          id: "42",
+          name: "Monthly Transactions",
+          amount: null,
+          isDefault: false,
+        },
         { id: "43", name: "Cash", amount: null, isDefault: false },
       ],
     }),
@@ -1121,7 +1160,9 @@ test("saves Toys under default Monthly Transactions without Toys budget", async 
   );
 
   assert.equal(result.status, "confirmed");
-  const insert = calls.find(({ text }) => /INSERT INTO transactions/.test(text));
+  const insert = calls.find(({ text }) =>
+    /INSERT INTO transactions/.test(text),
+  );
   assert.match(insert?.text ?? "", /category,\s*pocket_id/);
   assert.ok(insert?.values.includes("42"));
   assert.match(
@@ -1144,12 +1185,18 @@ test("explicit pocket overrides default", async () => {
 });
 
 test("multiple pockets without default returns awaiting_pocket without INSERT", async () => {
-  const { calls, service } = createService([], createAwaitingPocketBudgetService());
+  const { calls, service } = createService(
+    [],
+    createAwaitingPocketBudgetService(),
+  );
 
   const result = await service.handleManualTransaction(manualExpense());
 
   assert.equal(result.status, "awaiting_pocket");
-  assert.equal(calls.some(({ text }) => /INSERT INTO transactions/.test(text)), false);
+  assert.equal(
+    calls.some(({ text }) => /INSERT INTO transactions/.test(text)),
+    false,
+  );
 });
 
 test("income keeps null category and null pocket", async () => {
@@ -1217,7 +1264,9 @@ test("extracts from text when llmResult is absent and reuses the existing save p
     "✅ Recorded: Rp25.000 at Kopi Tuku under Coffee.",
   );
   assert.deepEqual(result.notifications, []);
-  const insert = calls.find(({ text }) => /INSERT INTO transactions/.test(text));
+  const insert = calls.find(({ text }) =>
+    /INSERT INTO transactions/.test(text),
+  );
   assert.match(insert?.text ?? "", /INSERT INTO transactions/);
   assert.equal(insert?.values[9], "confirmed");
   assert.equal(insert?.values[10], 94);
@@ -2219,7 +2268,9 @@ test("confirming pending email fills missing pocket_id from default", async () =
   });
 
   assert.equal(result.status, "confirmed");
-  const update = transactionCalls.find(({ text }) => /UPDATE transactions/.test(text));
+  const update = transactionCalls.find(({ text }) =>
+    /UPDATE transactions/.test(text),
+  );
   assert.match(update?.text ?? "", /pocket_id/);
   assert.ok(update?.values.includes("42"));
 });
@@ -2244,7 +2295,9 @@ test("explicit review pocket overrides default", async () => {
   });
 
   assert.equal(assignmentCalls[0].pocketId, "77");
-  const insert = calls.find(({ text }) => /INSERT INTO transactions/.test(text));
+  const insert = calls.find(({ text }) =>
+    /INSERT INTO transactions/.test(text),
+  );
   assert.ok(insert?.values.includes("77"));
 });
 
@@ -2268,7 +2321,9 @@ test("pending email confirmation keeps its selected review pocket", async () => 
 
   assert.equal(result.status, "confirmed");
   assert.equal(assignmentCalls[0].pocketId, "77");
-  const update = transactionCalls.find(({ text }) => /UPDATE transactions/.test(text));
+  const update = transactionCalls.find(({ text }) =>
+    /UPDATE transactions/.test(text),
+  );
   assert.ok(update?.values.includes("77"));
 });
 
@@ -2837,8 +2892,13 @@ test("builds production category options from active user categories", async () 
     { id: "11", name: "Medicine" },
   ]);
   const { service } = createService(
-    [[transaction], [pendingTransaction]], dependencies.budgetService,
-    undefined, undefined, "1", undefined, dependencies.categoryService,
+    [[transaction], [pendingTransaction]],
+    dependencies.budgetService,
+    undefined,
+    undefined,
+    "1",
+    undefined,
+    dependencies.categoryService,
   );
 
   const result = await service.buildCategoryOptions({
@@ -2986,11 +3046,17 @@ test("handles cancel_transaction callback with Telegram edit payload", async () 
 
 test("handles change_categories callback with category buttons", async () => {
   const dependencies = createCategoryServiceWithCategories([
-    { id: "10", name: "Food" }, { id: "11", name: "Transport" },
+    { id: "10", name: "Food" },
+    { id: "11", name: "Transport" },
   ]);
   const { service } = createService(
-    [[{ ...transaction, id: "123", user_id: "1" }]], dependencies.budgetService,
-    undefined, undefined, "1", undefined, dependencies.categoryService,
+    [[{ ...transaction, id: "123", user_id: "1" }]],
+    dependencies.budgetService,
+    undefined,
+    undefined,
+    "1",
+    undefined,
+    dependencies.categoryService,
   );
 
   const result = await service.handleTransactionCallback({
@@ -3012,10 +3078,17 @@ test("handles change_categories callback with category buttons", async () => {
 });
 
 test("handles catid callback by setting category and confirming transaction", async () => {
-  const dependencies = createCategoryServiceWithCategories([{ id: "10", name: "Food" }]);
+  const dependencies = createCategoryServiceWithCategories([
+    { id: "10", name: "Food" },
+  ]);
   const { calls, service } = createService(
-    [[{ ...transaction, id: "123", user_id: "1" }], []], dependencies.budgetService,
-    undefined, undefined, "1", undefined, dependencies.categoryService,
+    [[{ ...transaction, id: "123", user_id: "1" }], []],
+    dependencies.budgetService,
+    undefined,
+    undefined,
+    "1",
+    undefined,
+    dependencies.categoryService,
   );
 
   const result = await service.handleTransactionCallback({
@@ -3063,7 +3136,9 @@ test("catid confirmation keeps the selected email review pocket", async () => {
 
   assert.equal(result.status, "ok");
   assert.equal(assignmentCalls[0].pocketId, "77");
-  const update = transactionCalls.find(({ text }) => /UPDATE transactions/.test(text));
+  const update = transactionCalls.find(({ text }) =>
+    /UPDATE transactions/.test(text),
+  );
   assert.ok(update?.values.includes("77"));
 });
 
@@ -5137,7 +5212,8 @@ function kromQrisRequest(): EmailTransactionHandleRequestDto {
       from: "no-reply@krom.id",
       subject: "Transaksi QRIS berhasil",
       date: "2026-06-22T10:00:00+07:00",
-      emailText: "Transaksi QRIS berhasil. Merchant: Kopi Tuku Jumlah: Rp25.000",
+      emailText:
+        "Transaksi QRIS berhasil. Merchant: Kopi Tuku Jumlah: Rp25.000",
     },
   };
 }
@@ -5155,7 +5231,9 @@ test("confirmed email expense writes default pocket_id", async () => {
     createResolvedBudgetService("42", "Main Pocket"),
   );
   const result = await service.handleEmailTransaction(kromQrisRequest());
-  const insert = calls.find(({ text }) => /INSERT INTO transactions/.test(text));
+  const insert = calls.find(({ text }) =>
+    /INSERT INTO transactions/.test(text),
+  );
 
   assert.ok(insert);
   assert.match(insert.text, /category,\s*pocket_id/);
@@ -5174,7 +5252,9 @@ test("confirmed email with unknown category uses Uncategorized", async () => {
 
   await service.handleEmailTransaction(kromQrisRequest());
 
-  const insert = calls.find(({ text }) => /INSERT INTO transactions/.test(text));
+  const insert = calls.find(({ text }) =>
+    /INSERT INTO transactions/.test(text),
+  );
   assert.ok(insert?.values.includes("Uncategorized"));
 });
 
@@ -5188,7 +5268,8 @@ test("email expense without resolvable default stays pending for pocket review",
   assert.equal(result.status, "needs_review");
   assert.equal(
     calls.some(
-      ({ text }) => /'confirmed'/.test(text) && /INSERT INTO transactions/.test(text),
+      ({ text }) =>
+        /'confirmed'/.test(text) && /INSERT INTO transactions/.test(text),
     ),
     false,
   );
@@ -7798,7 +7879,9 @@ test("production category options use active user categories", async () => {
   });
 
   assert.deepEqual(
-    result.replyMarkup?.inline_keyboard.flat().map(({ callback_data }) => callback_data),
+    result.replyMarkup?.inline_keyboard
+      .flat()
+      .map(({ callback_data }) => callback_data),
     ["catid:10:101", "catid:11:101"],
   );
 });
@@ -7831,7 +7914,15 @@ for (const transactionType of ["income", "transfer", "reversal"] as const) {
       { id: "10", name: "Food" },
     ]);
     const { service } = createService(
-      [[{ ...transaction, status: "confirmed", transaction_type: transactionType }]],
+      [
+        [
+          {
+            ...transaction,
+            status: "confirmed",
+            transaction_type: transactionType,
+          },
+        ],
+      ],
       dependencies.budgetService,
       undefined,
       undefined,
@@ -7858,7 +7949,15 @@ for (const transactionType of ["income", "transfer", "reversal"] as const) {
       { id: "10", name: "Food" },
     ]);
     const { calls, service } = createService(
-      [[{ ...transaction, status: "confirmed", transaction_type: transactionType }]],
+      [
+        [
+          {
+            ...transaction,
+            status: "confirmed",
+            transaction_type: transactionType,
+          },
+        ],
+      ],
       dependencies.budgetService,
       undefined,
       undefined,
@@ -7875,7 +7974,10 @@ for (const transactionType of ["income", "transfer", "reversal"] as const) {
     });
 
     assert.equal(result.status, "already_resolved");
-    assert.equal(calls.some(({ text }) => /UPDATE transactions/.test(text)), false);
+    assert.equal(
+      calls.some(({ text }) => /UPDATE transactions/.test(text)),
+      false,
+    );
     assert.deepEqual(watchdogCalls, []);
   });
 }
@@ -7930,7 +8032,9 @@ for (const [status, text] of [
     });
 
     const result = await service.handleTransactionCallback({
-      telegramUserId: "976684739", userId: 1, callbackData: "catid:10:123",
+      telegramUserId: "976684739",
+      userId: 1,
+      callbackData: "catid:10:123",
     });
 
     assert.equal(result.status, "error");
@@ -7959,7 +8063,10 @@ test("cross-user or archived category callback is rejected", async () => {
   });
 
   assert.equal(result.status, "unauthorized_category");
-  assert.equal(calls.some(({ text }) => /UPDATE transactions/.test(text)), false);
+  assert.equal(
+    calls.some(({ text }) => /UPDATE transactions/.test(text)),
+    false,
+  );
 });
 
 test("pending catid callback resolves pocket before confirmation", async () => {
@@ -7992,17 +8099,25 @@ test("pending catid callback resolves pocket before confirmation", async () => {
 });
 
 test("pending catid race loser returns already resolved without watchdog", async () => {
-  const dependencies = createCategoryServiceWithCategories([{ id: "10", name: "Food" }]);
+  const dependencies = createCategoryServiceWithCategories([
+    { id: "10", name: "Food" },
+  ]);
   const winner = { ...transaction, status: "confirmed", category: "Transport" };
   const { service } = createService(
     [[{ ...transaction, transaction_type: "expense" }], [], [winner]],
-    dependencies.budgetService, undefined, undefined, "1", undefined,
+    dependencies.budgetService,
+    undefined,
+    undefined,
+    "1",
+    undefined,
     dependencies.categoryService,
   );
   const watchdogCalls = spyOnWatchdog(service);
 
   const result = await service.setPendingTransactionCategory({
-    transactionId: "101", categoryId: "10", userId: "1",
+    transactionId: "101",
+    categoryId: "10",
+    userId: "1",
   });
 
   assert.equal(result.status, "already_resolved");

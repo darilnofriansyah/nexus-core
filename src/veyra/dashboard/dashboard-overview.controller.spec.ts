@@ -1,26 +1,26 @@
-import * as assert from 'node:assert/strict';
-import { test } from 'node:test';
-import { DashboardOverviewController } from './dashboard-overview.controller';
-import { DashboardOverviewService } from './dashboard-overview.service';
+import * as assert from "node:assert/strict";
+import { test } from "node:test";
+import { DashboardOverviewController } from "./dashboard-overview.controller";
+import { DashboardOverviewService } from "./dashboard-overview.service";
 import {
   DashboardOverviewRequestDto,
   DashboardOverviewResponseDto,
-} from './dto/dashboard-overview.dto';
+} from "./dto/dashboard-overview.dto";
 
-test('overview delegates the request and returns the service response', async () => {
+test("overview delegates the request and returns the service response", async () => {
   const request: DashboardOverviewRequestDto = {
-    telegramUserId: '976684739',
+    telegramUserId: "976684739",
     userId: 1,
-    asOfDate: '2026-07-25',
-    timezone: 'Asia/Jakarta',
+    asOfDate: "2026-07-25",
+    timezone: "Asia/Jakarta",
   };
   const response = {
-    user: { id: '1', telegramUserId: '976684739' },
+    user: { id: "1", telegramUserId: "976684739" },
     current: {
       period: {
-        label: 'current_cycle',
-        start: '2026-07-01',
-        end: '2026-08-01',
+        label: "current_cycle",
+        start: "2026-07-01",
+        end: "2026-08-01",
       },
       hasTransactions: false,
       totals: { income: 0, spent: 0, netCashflow: 0, dailyAverage: 0 },
@@ -34,9 +34,9 @@ test('overview delegates the request and returns the service response', async ()
     },
     previous: {
       period: {
-        label: 'previous_cycle',
-        start: '2026-06-01',
-        end: '2026-07-01',
+        label: "previous_cycle",
+        start: "2026-06-01",
+        end: "2026-07-01",
       },
       hasTransactions: false,
       totals: { income: 0, spent: 0, netCashflow: 0, dailyAverage: 0 },

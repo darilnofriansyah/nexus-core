@@ -1,22 +1,22 @@
 export type OverspendingAlertType =
-  | 'budget_75'
-  | 'budget_90'
-  | 'budget_100'
-  | 'budget_forecast_overrun'
-  | 'overspend_80'
-  | 'overspend_100'
-  | 'overspend_120';
+  | "budget_75"
+  | "budget_90"
+  | "budget_100"
+  | "budget_forecast_overrun"
+  | "overspend_80"
+  | "overspend_100"
+  | "overspend_120";
 
 export type OverspendingHandleStatus =
-  | 'no_alert'
-  | 'already_alerted'
-  | 'alert_required';
+  | "no_alert"
+  | "already_alerted"
+  | "alert_required";
 
-export type OverspendingRecordStatus = 'recorded' | 'already_recorded';
+export type OverspendingRecordStatus = "recorded" | "already_recorded";
 
 export interface OverspendingTelegramMessageDto {
   text: string;
-  parse_mode: 'HTML';
+  parse_mode: "HTML";
   disable_web_page_preview: true;
 }
 
@@ -65,11 +65,11 @@ export interface OverspendingHandleRequestDto {
 }
 
 export type BudgetWatchdogSkipReason =
-  | 'transaction_not_found'
-  | 'transaction_not_confirmed'
-  | 'transaction_not_expense'
-  | 'transaction_category_missing'
-  | 'budget_not_found';
+  | "transaction_not_found"
+  | "transaction_not_confirmed"
+  | "transaction_not_expense"
+  | "transaction_category_missing"
+  | "budget_not_found";
 
 export interface BudgetWatchdogTopDriverDto {
   category: string;

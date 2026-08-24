@@ -4,24 +4,24 @@ import {
   NotFoundException,
   Optional,
   ServiceUnavailableException,
-} from '@nestjs/common';
-import { readEnv } from '../../config/env';
-import { VeyraAiService } from '../../ai/veyra-ai.service';
-import { QueryResultRow } from 'pg';
-import { DatabaseService } from '../../database/database.service';
-import { CategoryService } from '../categories/category.service';
+} from "@nestjs/common";
+import { readEnv } from "../../config/env";
+import { VeyraAiService } from "../../ai/veyra-ai.service";
+import { QueryResultRow } from "pg";
+import { DatabaseService } from "../../database/database.service";
+import { CategoryService } from "../categories/category.service";
 import {
   CategoryArchiveRequestDto,
   CategoryCreateRequestDto,
   CategoryDto,
   CategoryListRequestDto,
   CategoryListResponseDto,
-} from '../categories/dto/category.dto';
+} from "../categories/dto/category.dto";
 import {
   BudgetRepository,
   PocketOverviewRow,
   PocketStatusRow,
-} from './budget.repository';
+} from "./budget.repository";
 import {
   ExpenseAssignment,
   PocketDefaultRequestDto,
@@ -29,23 +29,23 @@ import {
   PocketListRequestDto,
   PocketRenameRequestDto,
   ResolveExpenseAssignmentRequest,
-} from './dto/pocket.dto';
+} from "./dto/pocket.dto";
 import {
   BudgetPeriodType,
   BudgetUpsertRequestDto,
   BudgetUpsertResponseDto,
-} from './dto/budget-upsert.dto';
+} from "./dto/budget-upsert.dto";
 import {
   BudgetCycle,
   BudgetStatusChildBreakdownDto,
   BudgetStatusRequestDto,
   BudgetStatusResponseDto,
-} from './dto/budget-status.dto';
+} from "./dto/budget-status.dto";
 import {
   BudgetCategoriesRequestDto,
   BudgetCategoriesResponseDto,
   BudgetCategoryDto,
-} from './dto/budget-categories.dto';
+} from "./dto/budget-categories.dto";
 import {
   BudgetWatchdogAlertDto,
   BudgetWatchdogResponseDto,
@@ -58,11 +58,11 @@ import {
   OverspendingHandleResponseDto,
   OverspendingRecordRequestDto,
   OverspendingRecordResponseDto,
-} from './dto/overspending-check.dto';
+} from "./dto/overspending-check.dto";
 import {
   BudgetForecastResult,
   calculateBudgetForecast,
-} from './budget-forecast';
+} from "./budget-forecast";
 
 interface CycleStartRow extends QueryResultRow {
   cycle_start_day: number | string;
@@ -113,16 +113,16 @@ interface WatchdogTransactionRow extends QueryResultRow {
 }
 
 type BudgetHandleIntent =
-  | 'budget_status'
-  | 'budget_overview'
-  | 'set_budget'
-  | 'set_sub_budget'
-  | 'delete_budget'
-  | 'delete_sub_budget'
-  | 'reset'
-  | 'unknown';
+  | "budget_status"
+  | "budget_overview"
+  | "set_budget"
+  | "set_sub_budget"
+  | "delete_budget"
+  | "delete_sub_budget"
+  | "reset"
+  | "unknown";
 
-type BudgetHandleStateName = 'idle' | 'budget_conversation_state';
+type BudgetHandleStateName = "idle" | "budget_conversation_state";
 
 interface BudgetHandlePayload {
   intent?: BudgetHandleIntent;
@@ -145,7 +145,7 @@ interface BudgetHandleStateStore {
 
 interface BudgetHandleTelegramMessage {
   text: string;
-  parse_mode: 'HTML';
+  parse_mode: "HTML";
   disable_web_page_preview: true;
 }
 
@@ -211,18 +211,18 @@ export class BudgetService {
       : await this.repository.findDefaultPocket(userId);
 
     if (pocketId && !pocket) {
-      throw new NotFoundException('Pocket not found');
+      throw new NotFoundException("Pocket not found");
     }
     if (!pocket) {
       return {
-        status: 'awaiting_pocket',
+        status: "awaiting_pocket",
         category: category.category,
         needsCategoryReview: category.needsReview,
         pockets: await this.repository.listPockets(userId),
       };
     }
     return {
-      status: 'resolved',
+      status: "resolved",
       category: category.category,
       needsCategoryReview: category.needsReview,
       pocketId: pocket.id,
@@ -236,7 +236,7 @@ export class BudgetService {
     const userId = this.requireUserId(request.userId);
     await this.ensureFinancialSetup(userId);
     return {
-      status: 'ok',
+      status: "ok",
       categories: await this.categoryService.listActive(userId),
     };
   }
@@ -251,38 +251,37 @@ export class BudgetService {
 
   async archiveUserCategory(
     request: CategoryArchiveRequestDto,
-  ): Promise<{ status: 'archived' }> {
+  ): Promise<{ status: "archived" }> {
     const userId = this.requireUserId(request.userId);
     await this.ensureFinancialSetup(userId);
     if (!(await this.categoryService.archive({ ...request, userId }))) {
-      throw new NotFoundException('Category not found');
+      throw new NotFoundException("Category not found");
     }
-    return { status: 'archived' };
+    return { status: "archived" };
   }
 
   async listPockets(
     request: PocketListRequestDto,
-  ): Promise<{ status: 'ok'; pockets: PocketDto[] }> {
+  ): Promise<{ status: "ok"; pockets: PocketDto[] }> {
     const telegramUserId = this.requireUserId(request.userId);
-    const userId = await this.repository.findActiveUserIdByTelegramId(
-      telegramUserId,
-    );
-    if (!userId) throw new NotFoundException('Telegram user not found');
+    const userId =
+      await this.repository.findActiveUserIdByTelegramId(telegramUserId);
+    if (!userId) throw new NotFoundException("Telegram user not found");
     await this.repository.ensureDefaultPocket(userId);
-    return { status: 'ok', pockets: await this.repository.listPockets(userId) };
+    return { status: "ok", pockets: await this.repository.listPockets(userId) };
   }
 
   async renamePocket(request: PocketRenameRequestDto): Promise<PocketDto> {
     const userId = await this.resolveWriteUserId(request);
     const name = this.cleanString(request.name);
-    if (!name) throw new BadRequestException('name is required');
+    if (!name) throw new BadRequestException("name is required");
     await this.ensureFinancialSetup(userId);
     const pocket = await this.repository.renamePocket(
       userId,
       request.pocketId,
       name,
     );
-    if (!pocket) throw new NotFoundException('Pocket not found');
+    if (!pocket) throw new NotFoundException("Pocket not found");
     return pocket;
   }
 
@@ -293,7 +292,7 @@ export class BudgetService {
       userId,
       request.pocketId,
     );
-    if (!pocket) throw new NotFoundException('Pocket not found');
+    if (!pocket) throw new NotFoundException("Pocket not found");
     return pocket;
   }
 
@@ -301,7 +300,7 @@ export class BudgetService {
     return {
       implemented: false,
       nextStep:
-        'Move budget intent parsing and validation here before database writes.',
+        "Move budget intent parsing and validation here before database writes.",
     };
   }
 
@@ -314,11 +313,11 @@ export class BudgetService {
     const lookup = pocketId ?? category;
 
     if (!userId) {
-      throw new BadRequestException('userId or telegramUserId is required');
+      throw new BadRequestException("userId or telegramUserId is required");
     }
 
     if (!lookup) {
-      throw new BadRequestException('pocketId or category is required');
+      throw new BadRequestException("pocketId or category is required");
     }
 
     const cycleStartDay = await this.getCycleStartDay(userId);
@@ -336,7 +335,7 @@ export class BudgetService {
     });
 
     if (!row) {
-      throw new NotFoundException('Budget not found for user and category');
+      throw new NotFoundException("Budget not found for user and category");
     }
 
     return this.mapBudgetStatusRow(row, cycle);
@@ -345,10 +344,10 @@ export class BudgetService {
   async getBudgetCategories(
     request: BudgetCategoriesRequestDto,
   ): Promise<BudgetCategoriesResponseDto> {
-    const userId = this.cleanString(String(request.userId ?? ''));
+    const userId = this.cleanString(String(request.userId ?? ""));
 
     if (!userId) {
-      throw new BadRequestException('userId is required');
+      throw new BadRequestException("userId is required");
     }
 
     const result = await this.database.query<BudgetCategoryRow>(
@@ -373,7 +372,7 @@ export class BudgetService {
     );
 
     return {
-      status: 'ok',
+      status: "ok",
       categories: result.rows.map((row) => this.mapBudgetCategoryRow(row)),
     };
   }
@@ -385,22 +384,22 @@ export class BudgetService {
     const category = this.cleanString(request.category);
     const amount = this.toNumber(request.amount);
     const parentCategory = this.cleanString(request.parentCategory);
-    const periodType = request.periodType ?? 'monthly';
+    const periodType = request.periodType ?? "monthly";
 
     if (!userId) {
-      throw new BadRequestException('userId is required');
+      throw new BadRequestException("userId is required");
     }
 
     if (!category) {
-      throw new BadRequestException('category is required');
+      throw new BadRequestException("category is required");
     }
 
     if (amount <= 0) {
-      throw new BadRequestException('amount must be positive');
+      throw new BadRequestException("amount must be positive");
     }
 
-    if (periodType !== 'monthly') {
-      throw new BadRequestException('periodType must be monthly');
+    if (periodType !== "monthly") {
+      throw new BadRequestException("periodType must be monthly");
     }
 
     const parentBudget = parentCategory
@@ -493,7 +492,7 @@ export class BudgetService {
     const row = result.rows[0];
 
     if (!row) {
-      throw new Error('Budget upsert did not return a row');
+      throw new Error("Budget upsert did not return a row");
     }
 
     return this.mapBudgetUpsertRow(row);
@@ -502,16 +501,16 @@ export class BudgetService {
   async checkOverspending(
     request: OverspendingCheckRequestDto,
   ): Promise<OverspendingCheckResponseDto> {
-    const userId = this.cleanString(String(request.userId ?? ''));
+    const userId = this.cleanString(String(request.userId ?? ""));
     const category = this.cleanString(request.category);
     const pocketId = this.cleanString(request.pocketId);
 
     if (!userId) {
-      throw new BadRequestException('userId is required');
+      throw new BadRequestException("userId is required");
     }
 
     if (!category && !pocketId) {
-      throw new BadRequestException('pocketId or category is required');
+      throw new BadRequestException("pocketId or category is required");
     }
 
     const status = pocketId
@@ -566,25 +565,25 @@ export class BudgetService {
   async handleOverspending(
     request: OverspendingHandleRequestDto,
   ): Promise<OverspendingHandleResponseDto> {
-    const userId = this.cleanString(String(request.userId ?? ''));
+    const userId = this.cleanString(String(request.userId ?? ""));
     const category = this.cleanString(request.category ?? undefined);
     const pocketId = this.cleanString(request.pocketId ?? undefined);
 
     if (!userId) {
-      throw new BadRequestException('userId is required');
+      throw new BadRequestException("userId is required");
     }
 
     if (request.transactionId !== undefined && request.transactionId !== null) {
       const watchdog = await this.evaluateTransaction({
         userId,
         transactionId: request.transactionId,
-        reason: 'overspending_check',
+        reason: "overspending_check",
       });
       const alert = watchdog.alerts[0];
 
       return {
         ok: true,
-        status: watchdog.hasAlert ? 'alert_required' : 'no_alert',
+        status: watchdog.hasAlert ? "alert_required" : "no_alert",
         shouldAlert: watchdog.hasAlert,
         alreadyAlerted: false,
         message: watchdog.message ?? null,
@@ -599,18 +598,26 @@ export class BudgetService {
                 spentPercent: alert.usedPercent,
                 remainingAmount: alert.remainingAmount,
               }
-            : { category: category ?? '' }),
+            : { category: category ?? "" }),
         },
       };
     }
 
     if (!category && !pocketId) {
-      throw new BadRequestException('pocketId or category is required');
+      throw new BadRequestException("pocketId or category is required");
     }
 
     const status = pocketId
-      ? await this.getBudgetStatus({ userId, pocketId, asOfDate: request.asOfDate ?? undefined })
-      : await this.getDirectBudgetStatus(userId, category as string, this.parseReferenceDate(request.asOfDate ?? undefined));
+      ? await this.getBudgetStatus({
+          userId,
+          pocketId,
+          asOfDate: request.asOfDate ?? undefined,
+        })
+      : await this.getDirectBudgetStatus(
+          userId,
+          category as string,
+          this.parseReferenceDate(request.asOfDate ?? undefined),
+        );
     const alertType = this.resolveOverspendingAlertType(status.spent_percent);
     const baseData = this.buildOverspendingBaseData(
       status,
@@ -621,7 +628,7 @@ export class BudgetService {
     if (!alertType) {
       return {
         ok: true,
-        status: 'no_alert',
+        status: "no_alert",
         shouldAlert: false,
         alreadyAlerted: false,
         message: null,
@@ -643,7 +650,7 @@ export class BudgetService {
     if (alreadyAlerted) {
       return {
         ok: true,
-        status: 'already_alerted',
+        status: "already_alerted",
         shouldAlert: false,
         alreadyAlerted: true,
         message: null,
@@ -660,7 +667,7 @@ export class BudgetService {
 
     return {
       ok: true,
-      status: 'alert_required',
+      status: "alert_required",
       shouldAlert: true,
       alreadyAlerted: false,
       message: {
@@ -671,7 +678,7 @@ export class BudgetService {
           budgetAmount: status.budget_amount,
           remainingAmount: status.remaining_amount,
         }),
-        parse_mode: 'HTML',
+        parse_mode: "HTML",
         disable_web_page_preview: true,
       },
       data: {
@@ -693,7 +700,7 @@ export class BudgetService {
     if (exists) {
       return {
         ok: true,
-        status: 'already_recorded',
+        status: "already_recorded",
         data: alertRecord,
       };
     }
@@ -702,7 +709,7 @@ export class BudgetService {
 
     return {
       ok: true,
-      status: 'recorded',
+      status: "recorded",
       data: inserted ?? alertRecord,
     };
   }
@@ -713,15 +720,15 @@ export class BudgetService {
     timezone?: string | null;
     reason?: string | null;
   }): Promise<BudgetWatchdogResponseDto> {
-    const userId = this.cleanString(String(request.userId ?? ''));
-    const transactionId = this.cleanString(String(request.transactionId ?? ''));
+    const userId = this.cleanString(String(request.userId ?? ""));
+    const transactionId = this.cleanString(String(request.transactionId ?? ""));
 
     if (!userId) {
-      throw new BadRequestException('userId is required');
+      throw new BadRequestException("userId is required");
     }
 
     if (!transactionId) {
-      throw new BadRequestException('transactionId is required');
+      throw new BadRequestException("transactionId is required");
     }
 
     const transaction = await this.findWatchdogTransaction(
@@ -730,19 +737,19 @@ export class BudgetService {
     );
 
     if (!transaction) {
-      return this.skippedWatchdog('transaction_not_found');
+      return this.skippedWatchdog("transaction_not_found");
     }
 
-    if (transaction.status !== 'confirmed') {
-      return this.skippedWatchdog('transaction_not_confirmed');
+    if (transaction.status !== "confirmed") {
+      return this.skippedWatchdog("transaction_not_confirmed");
     }
 
-    if (transaction.transaction_type !== 'expense') {
-      return this.skippedWatchdog('transaction_not_expense');
+    if (transaction.transaction_type !== "expense") {
+      return this.skippedWatchdog("transaction_not_expense");
     }
 
     if (!transaction.category) {
-      return this.skippedWatchdog('transaction_category_missing');
+      return this.skippedWatchdog("transaction_category_missing");
     }
 
     const referenceDateString = this.transactionLocalDate(
@@ -758,19 +765,35 @@ export class BudgetService {
           pocketId: String(transaction.pocket_id),
           asOfDate: referenceDateString,
         });
-        const child = parent.child_breakdown.find((item) => item.category.toLowerCase() === transaction.category?.toLowerCase());
+        const child = parent.child_breakdown.find(
+          (item) =>
+            item.category.toLowerCase() === transaction.category?.toLowerCase(),
+        );
         statuses = [parent];
-        if (child) statuses.push({ ...parent, budget_id: child.budget_id, category: child.category, parent_budget_id: parent.budget_id, budget_amount: child.budget_amount, spent_amount: child.spent_amount, remaining_amount: child.remaining_amount, spent_percent: child.spent_percent, child_breakdown: [] });
+        if (child)
+          statuses.push({
+            ...parent,
+            budget_id: child.budget_id,
+            category: child.category,
+            parent_budget_id: parent.budget_id,
+            budget_amount: child.budget_amount,
+            spent_amount: child.spent_amount,
+            remaining_amount: child.remaining_amount,
+            spent_percent: child.spent_percent,
+            child_breakdown: [],
+          });
       } else {
-        statuses = [await this.getDirectBudgetStatus(
-          userId,
-          transaction.category,
-          this.parseReferenceDate(referenceDateString),
-        )];
+        statuses = [
+          await this.getDirectBudgetStatus(
+            userId,
+            transaction.category,
+            this.parseReferenceDate(referenceDateString),
+          ),
+        ];
       }
     } catch (error) {
       if (error instanceof NotFoundException) {
-        return this.skippedWatchdog('budget_not_found');
+        return this.skippedWatchdog("budget_not_found");
       }
 
       throw error;
@@ -808,7 +831,7 @@ export class BudgetService {
           forecast,
           alertRecord,
         );
-        if (alertType === 'budget_forecast_overrun') {
+        if (alertType === "budget_forecast_overrun") {
           alerts.push(alert);
           continue;
         }
@@ -826,7 +849,7 @@ export class BudgetService {
         alerts.length > 0
           ? {
               text: this.buildWatchdogTelegramText(alerts),
-              parse_mode: 'HTML',
+              parse_mode: "HTML",
               disable_web_page_preview: true,
             }
           : null,
@@ -842,44 +865,47 @@ export class BudgetService {
     if (this.isResetText(request.text)) {
       await stateStore.resetState({ userId });
       return this.buildHandleResponse({
-        nextState: 'idle',
+        nextState: "idle",
         payload: {},
-        text: 'Budget action cancelled.',
-        data: { intent: 'reset' },
+        text: "Budget action cancelled.",
+        data: { intent: "reset" },
       });
     }
 
     const llmResult =
       request.llmResult ?? (await this.parseBudgetIntent(request));
-    const payload = this.mergeBudgetHandlePayload(request.statePayload, llmResult);
+    const payload = this.mergeBudgetHandlePayload(
+      request.statePayload,
+      llmResult,
+    );
     const intent = this.resolveBudgetHandleIntent(payload, request.text);
 
-    if (intent === 'reset') {
+    if (intent === "reset") {
       await stateStore.resetState({ userId });
       return this.buildHandleResponse({
-        nextState: 'idle',
+        nextState: "idle",
         payload: {},
-        text: 'Budget action cancelled.',
+        text: "Budget action cancelled.",
         data: { intent },
       });
     }
 
-    if (intent === 'unknown') {
+    if (intent === "unknown") {
       await stateStore.resetState({ userId });
       return this.buildHandleResponse({
-        nextState: 'idle',
+        nextState: "idle",
         payload: {},
-        text: 'What do you want to do: show or set a budget?',
+        text: "What do you want to do: show or set a budget?",
         data: { intent },
       });
     }
 
-    if (intent === 'delete_budget' || intent === 'delete_sub_budget') {
+    if (intent === "delete_budget" || intent === "delete_sub_budget") {
       await stateStore.resetState({ userId });
       return this.buildHandleResponse({
-        nextState: 'idle',
+        nextState: "idle",
         payload: {},
-        text: 'Delete not wired yet. Budget unchanged.',
+        text: "Delete not wired yet. Budget unchanged.",
         data: {
           intent,
           category: payload.category ?? null,
@@ -898,12 +924,12 @@ export class BudgetService {
       );
       await stateStore.upsertState({
         userId,
-        stateName: 'budget_conversation_state',
+        stateName: "budget_conversation_state",
         stateData: pendingPayload,
       });
 
       return this.buildHandleResponse({
-        nextState: 'budget_conversation_state',
+        nextState: "budget_conversation_state",
         payload: pendingPayload,
         text: this.buildBudgetFollowUpQuestion(missingField, pendingPayload),
         data: {
@@ -915,23 +941,23 @@ export class BudgetService {
       });
     }
 
-    if (intent === 'budget_overview') {
+    if (intent === "budget_overview") {
       const messages = await this.getBudgetOverviewMessages(String(userId));
       await stateStore.resetState({ userId });
 
       return this.buildHandleResponse({
-        nextState: 'idle',
+        nextState: "idle",
         payload: {},
-        text: messages[0] ?? '',
+        text: messages[0] ?? "",
         data: {
           intent,
           messages,
-          message: messages[0] ?? '',
+          message: messages[0] ?? "",
         },
       });
     }
 
-    if (intent === 'budget_status') {
+    if (intent === "budget_status") {
       const status = await this.getBudgetStatus({
         userId: String(userId),
         telegramUserId: request.telegramUserId,
@@ -940,7 +966,7 @@ export class BudgetService {
       await stateStore.resetState({ userId });
 
       return this.buildHandleResponse({
-        nextState: 'idle',
+        nextState: "idle",
         payload: {},
         text: this.buildBudgetStatusTelegramHtml(status),
         data: {
@@ -956,13 +982,13 @@ export class BudgetService {
       category: payload.category as string,
       amount: payload.amount as number,
       parentCategory:
-        intent === 'set_sub_budget' ? payload.parent_category : undefined,
-      periodType: 'monthly',
+        intent === "set_sub_budget" ? payload.parent_category : undefined,
+      periodType: "monthly",
     });
     await stateStore.resetState({ userId });
 
     return this.buildHandleResponse({
-      nextState: 'idle',
+      nextState: "idle",
       payload: {},
       text: this.buildBudgetUpsertTelegramHtml(upsert),
       data: {
@@ -1052,7 +1078,7 @@ export class BudgetService {
           : String(row.parent_budget_id),
       parent_category: row.parent_category ?? null,
       period_type: row.period_type,
-      action: row.inserted ? 'created' : 'updated',
+      action: row.inserted ? "created" : "updated",
     };
   }
 
@@ -1060,15 +1086,15 @@ export class BudgetService {
     spentPercent: number,
   ): OverspendingAlertType | null {
     if (spentPercent >= 120) {
-      return 'overspend_120';
+      return "overspend_120";
     }
 
     if (spentPercent >= 100) {
-      return 'overspend_100';
+      return "overspend_100";
     }
 
     if (spentPercent >= 80) {
-      return 'overspend_80';
+      return "overspend_80";
     }
 
     return null;
@@ -1112,7 +1138,7 @@ export class BudgetService {
   }
 
   private skippedWatchdog(
-    reason: NonNullable<BudgetWatchdogResponseDto['reason']>,
+    reason: NonNullable<BudgetWatchdogResponseDto["reason"]>,
   ): BudgetWatchdogResponseDto {
     return {
       checked: false,
@@ -1133,19 +1159,19 @@ export class BudgetService {
     const alerts: OverspendingAlertType[] = [];
 
     if (status.spent_percent >= 75) {
-      alerts.push('budget_75');
+      alerts.push("budget_75");
     }
 
     if (status.spent_percent >= 90) {
-      alerts.push('budget_90');
+      alerts.push("budget_90");
     }
 
     if (status.spent_percent >= 100) {
-      alerts.push('budget_100');
+      alerts.push("budget_100");
     }
 
     if ((forecast?.projectedOverrun ?? 0) > 0) {
-      alerts.push('budget_forecast_overrun');
+      alerts.push("budget_forecast_overrun");
     }
 
     return alerts;
@@ -1168,7 +1194,7 @@ export class BudgetService {
       projectedOverrun: forecast?.projectedOverrun ?? 0,
     };
 
-    if (type !== 'budget_forecast_overrun' || !forecast) return base;
+    if (type !== "budget_forecast_overrun" || !forecast) return base;
 
     const topDriver = this.forecastTopDriver(status);
     return {
@@ -1184,11 +1210,11 @@ export class BudgetService {
     const alert = alerts[0];
 
     if (!alert) {
-      return '';
+      return "";
     }
 
     return [
-      '<b>Budget warning.</b>',
+      "<b>Budget warning.</b>",
       `${this.escapeTelegramHtml(alert.category)} is now ${alert.usedPercent}% used.`,
       `Remaining: ${this.formatTelegramCurrency(alert.remainingAmount)}.`,
       `Safe daily spend: ${this.formatTelegramCurrency(alert.safeDailySpend)}.`,
@@ -1197,7 +1223,7 @@ export class BudgetService {
         : null,
     ]
       .filter((line): line is string => Boolean(line))
-      .join('\n');
+      .join("\n");
   }
 
   private forecastTopDriver(
@@ -1219,8 +1245,8 @@ export class BudgetService {
 
     try {
       const url = new URL(configured);
-      if (url.protocol !== 'https:') return null;
-      url.searchParams.set('startapp', `pocket_${budgetId}`);
+      if (url.protocol !== "https:") return null;
+      url.searchParams.set("startapp", `pocket_${budgetId}`);
       return url.toString();
     } catch {
       return null;
@@ -1237,27 +1263,27 @@ export class BudgetService {
       `${this.formatTelegramCurrency(status.spent_amount)} spent of ${this.formatTelegramCurrency(status.budget_amount)}.`,
       `Safe daily spend: ${this.formatTelegramCurrency(forecast.safeDailySpend)}.`,
       `Top driver: ${this.escapeTelegramHtml(topDriver.category)} (${this.formatTelegramCurrency(topDriver.amount)}).`,
-    ].join('\n');
+    ].join("\n");
   }
 
   private transactionLocalDate(
     value: string | Date | null,
     timezone: string | null | undefined,
   ): string {
-    const date = value instanceof Date ? value : new Date(value ?? '');
+    const date = value instanceof Date ? value : new Date(value ?? "");
     if (Number.isNaN(date.getTime())) {
-      throw new BadRequestException('transaction date must be valid');
+      throw new BadRequestException("transaction date must be valid");
     }
 
     try {
-      return new Intl.DateTimeFormat('en-CA', {
-        timeZone: this.cleanString(timezone ?? undefined) ?? 'Asia/Jakarta',
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
+      return new Intl.DateTimeFormat("en-CA", {
+        timeZone: this.cleanString(timezone ?? undefined) ?? "Asia/Jakarta",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
       }).format(date);
     } catch {
-      throw new BadRequestException('timezone must be valid');
+      throw new BadRequestException("timezone must be valid");
     }
   }
 
@@ -1320,7 +1346,7 @@ export class BudgetService {
     const row = result.rows[0];
 
     if (!row) {
-      throw new NotFoundException('Budget not found for user and category');
+      throw new NotFoundException("Budget not found for user and category");
     }
 
     return this.mapBudgetStatusRow(row, cycle);
@@ -1335,23 +1361,23 @@ export class BudgetService {
     remainingAmount: number;
   }): string {
     const severity = {
-      budget_75: 'Budget warning',
-      budget_90: 'Budget warning',
-      budget_100: 'Budget reached',
-      budget_forecast_overrun: 'Budget forecast warning',
-      overspend_80: 'Budget warning',
-      overspend_100: 'Budget reached',
-      overspend_120: 'Budget exceeded',
+      budget_75: "Budget warning",
+      budget_90: "Budget warning",
+      budget_100: "Budget reached",
+      budget_forecast_overrun: "Budget forecast warning",
+      overspend_80: "Budget warning",
+      overspend_100: "Budget reached",
+      overspend_120: "Budget exceeded",
     }[input.alertType];
 
     return [
       `<b>${severity}</b>`,
-      '',
+      "",
       `Category: <b>${this.escapeTelegramHtml(input.category)}</b>`,
       `Spent: ${this.formatCurrency(input.spentAmount)} (${input.spentPercent}%)`,
       `Budget: ${this.formatCurrency(input.budgetAmount)}`,
       `Remaining: ${this.formatCurrency(input.remainingAmount)}`,
-    ].join('\n');
+    ].join("\n");
   }
 
   private buildOverspendingTelegramText(input: {
@@ -1362,20 +1388,20 @@ export class BudgetService {
     remainingAmount: number;
   }): string {
     return [
-      '⚠️ <b>Budget Warning</b>',
-      '',
+      "⚠️ <b>Budget Warning</b>",
+      "",
       `${this.escapeTelegramHtml(input.category)} has reached ${input.spentPercent}%.`,
       `Spent: ${this.formatTelegramCurrency(input.spentAmount)}`,
       `Budget: ${this.formatTelegramCurrency(input.budgetAmount)}`,
       `Remaining: ${this.formatTelegramCurrency(input.remainingAmount)}`,
-    ].join('\n');
+    ].join("\n");
   }
 
   private buildOverspendingBaseData(
     status: BudgetStatusResponseDto,
     userId: string,
     transactionId: string | number | null | undefined,
-  ): OverspendingHandleResponseDto['data'] {
+  ): OverspendingHandleResponseDto["data"] {
     return {
       transactionId,
       userId,
@@ -1415,9 +1441,9 @@ export class BudgetService {
 
     if (
       previous.pending &&
-      next.intent === 'unknown' &&
+      next.intent === "unknown" &&
       previous.intent &&
-      previous.intent !== 'unknown' &&
+      previous.intent !== "unknown" &&
       this.hasBudgetHandleProgress(next)
     ) {
       merged.intent = previous.intent;
@@ -1433,12 +1459,14 @@ export class BudgetService {
 
     if (!text) {
       throw new BadRequestException(
-        'text is required when llmResult is absent',
+        "text is required when llmResult is absent",
       );
     }
 
     if (!this.veyraAiService) {
-      throw new ServiceUnavailableException('AI budget intent parsing is unavailable');
+      throw new ServiceUnavailableException(
+        "AI budget intent parsing is unavailable",
+      );
     }
 
     return this.veyraAiService.parseBudgetIntent({
@@ -1482,13 +1510,13 @@ export class BudgetService {
     payload: BudgetHandlePayload,
     text?: string,
   ): BudgetHandleIntent {
-    const intent = payload.intent ?? 'unknown';
+    const intent = payload.intent ?? "unknown";
 
     if (
-      intent === 'set_budget' &&
+      intent === "set_budget" &&
       (payload.parent_category || this.hasParentRelationshipText(text))
     ) {
-      return 'set_sub_budget';
+      return "set_sub_budget";
     }
 
     return intent;
@@ -1514,14 +1542,14 @@ export class BudgetService {
       | BudgetHandleIntent
       | undefined;
     const supported: BudgetHandleIntent[] = [
-      'budget_status',
-      'budget_overview',
-      'set_budget',
-      'set_sub_budget',
-      'delete_budget',
-      'delete_sub_budget',
-      'reset',
-      'unknown',
+      "budget_status",
+      "budget_overview",
+      "set_budget",
+      "set_sub_budget",
+      "delete_budget",
+      "delete_sub_budget",
+      "reset",
+      "unknown",
     ];
 
     return intent && supported.includes(intent) ? intent : undefined;
@@ -1530,26 +1558,26 @@ export class BudgetService {
   private firstMissingBudgetHandleField(
     intent: BudgetHandleIntent,
     payload: BudgetHandlePayload,
-  ): 'category' | 'parent_category' | 'amount' | null {
-    if (intent === 'budget_overview') {
+  ): "category" | "parent_category" | "amount" | null {
+    if (intent === "budget_overview") {
       return null;
     }
 
-    if (intent === 'budget_status') {
-      return payload.category ? null : 'category';
+    if (intent === "budget_status") {
+      return payload.category ? null : "category";
     }
 
-    if (intent === 'set_budget' || intent === 'set_sub_budget') {
+    if (intent === "set_budget" || intent === "set_sub_budget") {
       if (!payload.category) {
-        return 'category';
+        return "category";
       }
 
-      if (intent === 'set_sub_budget' && !payload.parent_category) {
-        return 'parent_category';
+      if (intent === "set_sub_budget" && !payload.parent_category) {
+        return "parent_category";
       }
 
       if (!payload.amount || payload.amount <= 0) {
-        return 'amount';
+        return "amount";
       }
     }
 
@@ -1558,7 +1586,7 @@ export class BudgetService {
 
   private async getBudgetOverviewMessages(userId: string): Promise<string[]> {
     if (!this.cleanString(userId)) {
-      throw new BadRequestException('userId is required');
+      throw new BadRequestException("userId is required");
     }
 
     const cycleStartDay = await this.getCycleStartDay(userId);
@@ -1571,7 +1599,7 @@ export class BudgetService {
     const budgets = rows.map((row) => this.mapBudgetOverviewRow(row));
 
     if (budgets.length === 0) {
-      return ['No active budgets yet. Set one when you are ready.'];
+      return ["No active budgets yet. Set one when you are ready."];
     }
 
     return this.chunkBudgetOverviewGroups(
@@ -1638,17 +1666,17 @@ export class BudgetService {
         spent_amount: budget.spent_amount,
       });
       const childLines = children.map((child, index) => {
-        const prefix = index === children.length - 1 ? '└' : '├';
-        return `${prefix} ${this.formatBudgetOverviewLine(child, '—')}`;
+        const prefix = index === children.length - 1 ? "└" : "├";
+        return `${prefix} ${this.formatBudgetOverviewLine(child, "—")}`;
       });
 
-      return [parentLine, ...childLines].join('\n');
+      return [parentLine, ...childLines].join("\n");
     });
   }
 
   private formatBudgetOverviewLine(
-    budget: Pick<BudgetOverviewItem, 'category' | 'amount' | 'spent_amount'>,
-    separator = '-',
+    budget: Pick<BudgetOverviewItem, "category" | "amount" | "spent_amount">,
+    separator = "-",
   ): string {
     return `${this.escapeTelegramHtml(budget.category)} ${separator} ${this.formatTelegramCurrency(
       budget.spent_amount,
@@ -1656,7 +1684,7 @@ export class BudgetService {
   }
 
   private chunkBudgetOverviewGroups(groups: string[]): string[] {
-    const header = '📊 Budget Overview';
+    const header = "📊 Budget Overview";
     const messages: string[] = [];
     let current = header;
 
@@ -1698,7 +1726,7 @@ export class BudgetService {
     const messages: string[] = [];
     let current = header;
 
-    for (const line of group.split('\n')) {
+    for (const line of group.split("\n")) {
       const candidate = `${current}\n${line}`;
 
       if (candidate.length <= this.budgetOverviewMaxMessageLength) {
@@ -1734,23 +1762,23 @@ export class BudgetService {
     missingField: string,
     payload: BudgetHandlePayload,
   ): string {
-    if (missingField === 'amount' && payload.category) {
+    if (missingField === "amount" && payload.category) {
       return `How much for ${this.escapeTelegramHtml(payload.category)}?`;
     }
 
-    if (missingField === 'parent_category' && payload.category) {
+    if (missingField === "parent_category" && payload.category) {
       return `Under which parent budget should ${this.escapeTelegramHtml(payload.category)} sit?`;
     }
 
-    return 'Which budget category?';
+    return "Which budget category?";
   }
 
   private buildBudgetStatusTelegramHtml(
     status: BudgetStatusResponseDto,
   ): string {
     const lines = [
-      'Budget status.',
-      '',
+      "Budget status.",
+      "",
       `Category: ${this.escapeTelegramHtml(status.category)}`,
       `Budget: ${this.formatTelegramCurrency(status.budget_amount)}`,
       `Spent: ${this.formatTelegramCurrency(status.spent_amount)}`,
@@ -1759,7 +1787,7 @@ export class BudgetService {
     ];
 
     if (status.child_breakdown.length > 0) {
-      lines.push('', 'Children:');
+      lines.push("", "Children:");
       status.child_breakdown.forEach((child) => {
         lines.push(
           `- ${this.escapeTelegramHtml(child.category)}: ${this.formatTelegramCurrency(
@@ -1769,15 +1797,15 @@ export class BudgetService {
       });
     }
 
-    return lines.join('\n');
+    return lines.join("\n");
   }
 
   private buildBudgetUpsertTelegramHtml(
     upsert: BudgetUpsertResponseDto,
   ): string {
     const lines = [
-      'Budget updated.',
-      '',
+      "Budget updated.",
+      "",
       `Category: ${this.escapeTelegramHtml(upsert.category)}`,
       `Amount: ${this.formatTelegramCurrency(upsert.amount)}`,
     ];
@@ -1786,7 +1814,7 @@ export class BudgetService {
       lines.push(`Parent: ${this.escapeTelegramHtml(upsert.parent_category)}`);
     }
 
-    return lines.join('\n');
+    return lines.join("\n");
   }
 
   private buildHandleResponse(input: {
@@ -1803,7 +1831,7 @@ export class BudgetService {
       },
       message: {
         text: input.text,
-        parse_mode: 'HTML',
+        parse_mode: "HTML",
         disable_web_page_preview: true,
       },
       data: input.data,
@@ -1814,7 +1842,7 @@ export class BudgetService {
     const text = value?.trim().toLowerCase();
     return Boolean(
       text &&
-      ['reset', 'cancel', 'exit', 'stop', 'batal', 'keluar'].includes(text),
+      ["reset", "cancel", "exit", "stop", "batal", "keluar"].includes(text),
     );
   }
 
@@ -1824,7 +1852,7 @@ export class BudgetService {
   }
 
   private cleanStringValue(value: unknown): string | undefined {
-    if (typeof value !== 'string') {
+    if (typeof value !== "string") {
       return undefined;
     }
 
@@ -1832,11 +1860,11 @@ export class BudgetService {
   }
 
   private formatTelegramCurrency(amount: number): string {
-    const formatted = new Intl.NumberFormat('id-ID', {
+    const formatted = new Intl.NumberFormat("id-ID", {
       maximumFractionDigits: 0,
     }).format(Math.abs(amount));
 
-    return `${amount < 0 ? '-' : ''}Rp${formatted}`;
+    return `${amount < 0 ? "-" : ""}Rp${formatted}`;
   }
 
   private async hasBudgetAlert(input: {
@@ -1866,27 +1894,27 @@ export class BudgetService {
   private normalizeOverspendingAlertRecord(
     request: OverspendingRecordRequestDto,
   ): OverspendingAlertRecordDto {
-    const userId = this.cleanString(String(request.userId ?? ''));
-    const budgetId = this.cleanString(String(request.budgetId ?? ''));
+    const userId = this.cleanString(String(request.userId ?? ""));
+    const budgetId = this.cleanString(String(request.budgetId ?? ""));
     const alertType = request.alertType;
     const periodKey = this.cleanString(request.periodKey);
 
     if (!userId) {
-      throw new BadRequestException('userId is required');
+      throw new BadRequestException("userId is required");
     }
 
     if (!budgetId) {
-      throw new BadRequestException('budgetId is required');
+      throw new BadRequestException("budgetId is required");
     }
 
     if (!this.isOverspendingAlertType(alertType)) {
       throw new BadRequestException(
-        'alertType must be overspend_80, overspend_100, or overspend_120',
+        "alertType must be overspend_80, overspend_100, or overspend_120",
       );
     }
 
     if (!periodKey || !/^\d{4}-\d{2}-\d{2}$/.test(periodKey)) {
-      throw new BadRequestException('periodKey must be YYYY-MM-DD');
+      throw new BadRequestException("periodKey must be YYYY-MM-DD");
     }
 
     return {
@@ -1948,13 +1976,13 @@ export class BudgetService {
     alertType: unknown,
   ): alertType is OverspendingAlertType {
     return (
-      alertType === 'budget_75' ||
-      alertType === 'budget_90' ||
-      alertType === 'budget_100' ||
-      alertType === 'budget_forecast_overrun' ||
-      alertType === 'overspend_80' ||
-      alertType === 'overspend_100' ||
-      alertType === 'overspend_120'
+      alertType === "budget_75" ||
+      alertType === "budget_90" ||
+      alertType === "budget_100" ||
+      alertType === "budget_forecast_overrun" ||
+      alertType === "overspend_80" ||
+      alertType === "overspend_100" ||
+      alertType === "overspend_120"
     );
   }
 
@@ -1973,18 +2001,18 @@ export class BudgetService {
   }
 
   private formatCurrency(amount: number): string {
-    return new Intl.NumberFormat('id-ID', {
+    return new Intl.NumberFormat("id-ID", {
       maximumFractionDigits: 0,
-      style: 'currency',
-      currency: 'IDR',
+      style: "currency",
+      currency: "IDR",
     }).format(amount);
   }
 
   private escapeTelegramHtml(value: string): string {
     return value
-      .replaceAll('&', '&amp;')
-      .replaceAll('<', '&lt;')
-      .replaceAll('>', '&gt;');
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;");
   }
 
   private async findOrCreateParentBudget(
@@ -2025,7 +2053,7 @@ export class BudgetService {
     const parentBudget = result.rows[0];
 
     if (!parentBudget) {
-      throw new Error('Parent budget upsert did not return a row');
+      throw new Error("Parent budget upsert did not return a row");
     }
 
     return parentBudget;
@@ -2045,7 +2073,7 @@ export class BudgetService {
     const cycleStartDay = result.rows[0]?.cycle_start_day;
 
     if (cycleStartDay === undefined) {
-      throw new NotFoundException('Telegram user not found');
+      throw new NotFoundException("Telegram user not found");
     }
 
     return this.normalizeCycleStartDay(cycleStartDay);
@@ -2073,7 +2101,7 @@ export class BudgetService {
       : new Date(asOfDate);
 
     if (Number.isNaN(date.getTime())) {
-      throw new BadRequestException('asOfDate must be a valid date');
+      throw new BadRequestException("asOfDate must be a valid date");
     }
 
     return date;
@@ -2135,7 +2163,7 @@ export class BudgetService {
       return value.filter(this.isRecord);
     }
 
-    if (typeof value !== 'string') {
+    if (typeof value !== "string") {
       return [];
     }
 
@@ -2148,12 +2176,12 @@ export class BudgetService {
   }
 
   private isRecord(value: unknown): value is Record<string, unknown> {
-    return typeof value === 'object' && value !== null && !Array.isArray(value);
+    return typeof value === "object" && value !== null && !Array.isArray(value);
   }
 
   private requireUserId(value: string | number): string {
-    const userId = this.cleanString(String(value ?? ''));
-    if (!userId) throw new BadRequestException('userId is required');
+    const userId = this.cleanString(String(value ?? ""));
+    if (!userId) throw new BadRequestException("userId is required");
     return userId;
   }
 
@@ -2161,14 +2189,20 @@ export class BudgetService {
     userId?: string | number;
     telegramUserId?: string | number;
   }): Promise<string> {
-    const userId = this.cleanString(String(request.userId ?? ''));
-    const telegramUserId = this.cleanString(String(request.telegramUserId ?? ''));
+    const userId = this.cleanString(String(request.userId ?? ""));
+    const telegramUserId = this.cleanString(
+      String(request.telegramUserId ?? ""),
+    );
     if (Boolean(userId) === Boolean(telegramUserId)) {
-      throw new BadRequestException('Provide exactly one userId or telegramUserId');
+      throw new BadRequestException(
+        "Provide exactly one userId or telegramUserId",
+      );
     }
     if (userId) return userId;
-    const resolved = await this.repository.findActiveUserIdByTelegramId(telegramUserId as string);
-    if (!resolved) throw new NotFoundException('Telegram user not found');
+    const resolved = await this.repository.findActiveUserIdByTelegramId(
+      telegramUserId as string,
+    );
+    if (!resolved) throw new NotFoundException("Telegram user not found");
     return resolved;
   }
 

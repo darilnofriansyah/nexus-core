@@ -1200,8 +1200,10 @@ export class TransactionService {
             },
             confidence: validated.resolution.confidence,
             rawPayload: validated.rawPayload,
-            pocketId: assignment?.status === "resolved" ? assignment.pocketId : null,
-            pocketName: assignment?.status === "resolved" ? assignment.pocketName : null,
+            pocketId:
+              assignment?.status === "resolved" ? assignment.pocketId : null,
+            pocketName:
+              assignment?.status === "resolved" ? assignment.pocketName : null,
           })
         : await this.saveEmailReviewTransaction({
             userId: validated.userId,
@@ -1213,8 +1215,10 @@ export class TransactionService {
             },
             confidence: validated.resolution.confidence,
             rawPayload: validated.rawPayload,
-            pocketId: assignment?.status === "resolved" ? assignment.pocketId : null,
-            pocketName: assignment?.status === "resolved" ? assignment.pocketName : null,
+            pocketId:
+              assignment?.status === "resolved" ? assignment.pocketId : null,
+            pocketName:
+              assignment?.status === "resolved" ? assignment.pocketName : null,
           });
 
     const telegramText = this.buildEmailReviewTelegramText({
@@ -4607,7 +4611,11 @@ export class TransactionService {
       });
     }
 
-    if (parsed.action === "catid" && parsed.transactionId && parsed.categoryId) {
+    if (
+      parsed.action === "catid" &&
+      parsed.transactionId &&
+      parsed.categoryId
+    ) {
       const result = await this.setPendingTransactionCategory({
         transactionId: String(parsed.transactionId),
         categoryId: String(parsed.categoryId),
@@ -7436,7 +7444,10 @@ export class TransactionService {
           {
             text: this.telegramSafeButtonLabel(option.label),
             callback_data: option.categoryId
-              ? this.categorySelectCallbackData(option.categoryId, transactionId)
+              ? this.categorySelectCallbackData(
+                  option.categoryId,
+                  transactionId,
+                )
               : `tx_set_category:${pendingTransactionId}:${this.categorySlug(
                   option.category,
                 )}`,
@@ -7592,7 +7603,9 @@ export class TransactionService {
         [category.name, String(transaction.id), String(transaction.user_id)],
       );
       const confirmedTransaction = { ...transaction, category: category.name };
-      const watchdog = await this.evaluateTransactionWatchdog(String(transaction.id));
+      const watchdog = await this.evaluateTransactionWatchdog(
+        String(transaction.id),
+      );
       const summary = this.transactionSummary(confirmedTransaction);
       const editMessage = this.transactionEditMessage(
         String(transaction.id),
@@ -7609,7 +7622,9 @@ export class TransactionService {
         editMessage: {
           ...editMessage,
           text: this.appendWatchdogMessage(editMessage.text, watchdog),
-          parseMode: watchdog.watchdog?.hasAlert ? "HTML" : editMessage.parseMode,
+          parseMode: watchdog.watchdog?.hasAlert
+            ? "HTML"
+            : editMessage.parseMode,
         },
         notifications: watchdog.notifications,
       };
@@ -7686,10 +7701,13 @@ export class TransactionService {
       confirmedTransaction = transitioned;
     } else {
       const assignment =
-        this.cleanString(transaction.transaction_type)?.toLowerCase() === "expense"
+        this.cleanString(transaction.transaction_type)?.toLowerCase() ===
+        "expense"
           ? await this.requireBudgetService().resolveExpenseAssignment({
               userId: input.userId,
-              pocketId: transaction.pocket_id ? String(transaction.pocket_id) : null,
+              pocketId: transaction.pocket_id
+                ? String(transaction.pocket_id)
+                : null,
               category: category.name,
             })
           : null;
@@ -7731,8 +7749,13 @@ export class TransactionService {
           String(transaction.id),
           String(transaction.user_id),
         );
-        if (!current || this.cleanString(current.status)?.toLowerCase() === "pending") {
-          throw new BadRequestException("transaction category transition failed");
+        if (
+          !current ||
+          this.cleanString(current.status)?.toLowerCase() === "pending"
+        ) {
+          throw new BadRequestException(
+            "transaction category transition failed",
+          );
         }
         return {
           status: "already_resolved",

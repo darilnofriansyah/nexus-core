@@ -1,7 +1,7 @@
-import { NormalizedTransactionType } from './normalize-transaction.dto';
+import { NormalizedTransactionType } from "./normalize-transaction.dto";
 
-export type TransactionCallbackMode = 'production' | 'experimental';
-export type TransactionConfirmationPayloadFormat = 'plain' | 'html';
+export type TransactionCallbackMode = "production" | "experimental";
+export type TransactionConfirmationPayloadFormat = "plain" | "html";
 
 export interface TransactionConfirmationPayloadRequestDto {
   pendingTransactionId?: string;
@@ -45,7 +45,7 @@ export interface TransactionConfirmationSummaryDto {
 
 export interface TransactionConfirmationPayloadResponseDto {
   text: string;
-  parseMode: 'HTML' | null;
+  parseMode: "HTML" | null;
   replyMarkup: TelegramReplyMarkupDto;
   summary: TransactionConfirmationSummaryDto;
   warnings: string[];

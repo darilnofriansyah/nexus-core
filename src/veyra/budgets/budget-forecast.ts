@@ -46,10 +46,7 @@ export function calculateBudgetForecast(
   const projectedSpend = Math.round(
     (input.spentAmount / elapsedDays) * cycleDays,
   );
-  const remainingAmount = Math.max(
-    0,
-    input.budgetAmount - input.spentAmount,
-  );
+  const remainingAmount = Math.max(0, input.budgetAmount - input.spentAmount);
 
   return {
     elapsedDays,

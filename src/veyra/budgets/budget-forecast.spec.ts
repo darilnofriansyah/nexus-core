@@ -1,15 +1,15 @@
-import * as assert from 'node:assert/strict';
-import { test } from 'node:test';
-import { calculateBudgetForecast } from './budget-forecast';
+import * as assert from "node:assert/strict";
+import { test } from "node:test";
+import { calculateBudgetForecast } from "./budget-forecast";
 
-test('projects cycle spend from the inclusive reference day', () => {
+test("projects cycle spend from the inclusive reference day", () => {
   assert.deepEqual(
     calculateBudgetForecast({
       spentAmount: 500_000,
       budgetAmount: 1_500_000,
-      cycleStart: '2026-07-01',
-      cycleEnd: '2026-08-01',
-      asOfDate: '2026-07-10',
+      cycleStart: "2026-07-01",
+      cycleEnd: "2026-08-01",
+      asOfDate: "2026-07-10",
     }),
     {
       elapsedDays: 10,
@@ -23,14 +23,14 @@ test('projects cycle spend from the inclusive reference day', () => {
   );
 });
 
-test('uses one remaining day on the final cycle day', () => {
+test("uses one remaining day on the final cycle day", () => {
   assert.deepEqual(
     calculateBudgetForecast({
       spentAmount: 1_600_000,
       budgetAmount: 1_500_000,
-      cycleStart: '2026-07-01',
-      cycleEnd: '2026-08-01',
-      asOfDate: '2026-07-31',
+      cycleStart: "2026-07-01",
+      cycleEnd: "2026-08-01",
+      asOfDate: "2026-07-31",
     }),
     {
       elapsedDays: 31,
@@ -44,14 +44,14 @@ test('uses one remaining day on the final cycle day', () => {
   );
 });
 
-test('rejects invalid ranges and non-positive budgets', () => {
+test("rejects invalid ranges and non-positive budgets", () => {
   assert.equal(
     calculateBudgetForecast({
       spentAmount: 10,
       budgetAmount: 0,
-      cycleStart: '2026-07-01',
-      cycleEnd: '2026-08-01',
-      asOfDate: '2026-07-10',
+      cycleStart: "2026-07-01",
+      cycleEnd: "2026-08-01",
+      asOfDate: "2026-07-10",
     }),
     null,
   );
@@ -59,9 +59,9 @@ test('rejects invalid ranges and non-positive budgets', () => {
     calculateBudgetForecast({
       spentAmount: 10,
       budgetAmount: 100,
-      cycleStart: '2026-07-01',
-      cycleEnd: '2026-08-01',
-      asOfDate: '2026-08-01',
+      cycleStart: "2026-07-01",
+      cycleEnd: "2026-08-01",
+      asOfDate: "2026-08-01",
     }),
     null,
   );

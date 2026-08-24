@@ -1,19 +1,19 @@
-import * as assert from 'node:assert/strict';
-import { mock, test } from 'node:test';
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import * as assert from "node:assert/strict";
+import { mock, test } from "node:test";
+import { BadRequestException, NotFoundException } from "@nestjs/common";
 import {
   DashboardBudget,
   DashboardCreditCardSummary,
   DashboardOverviewRepository,
   DashboardTransaction,
   DashboardUser,
-} from './dashboard-overview.repository';
-import { DashboardOverviewService } from './dashboard-overview.service';
+} from "./dashboard-overview.repository";
+import { DashboardOverviewService } from "./dashboard-overview.service";
 
 class FakeDashboardRepository {
   user: DashboardUser | null = {
-    id: '1',
-    telegramUserId: '976684739',
+    id: "1",
+    telegramUserId: "976684739",
     cycleStartDay: 1,
   };
   transactions: DashboardTransaction[] = [];
@@ -69,9 +69,9 @@ function transaction(
   id: string,
   date: string,
   amount: number,
-  type: 'income' | 'expense' = 'expense',
-  category: string | null = 'Food',
-  merchant: string | null = 'Merchant',
+  type: "income" | "expense" = "expense",
+  category: string | null = "Food",
+  merchant: string | null = "Merchant",
   pocketId: string | null = null,
 ): DashboardTransaction {
   return {
@@ -86,12 +86,12 @@ function transaction(
   };
 }
 
-test('requires at least one valid identifier', async () => {
+test("requires at least one valid identifier", async () => {
   const { service } = createService();
 
   await assert.rejects(() => service.getOverview({}), BadRequestException);
   await assert.rejects(
-    () => service.getOverview({ userId: 'abc' }),
+    () => service.getOverview({ userId: "abc" }),
     BadRequestException,
   );
   await assert.rejects(
@@ -100,22 +100,22 @@ test('requires at least one valid identifier', async () => {
   );
 });
 
-test('normalizes either identifier to strings before lookup', async () => {
+test("normalizes either identifier to strings before lookup", async () => {
   const { repository, service } = createService();
 
   await service.getOverview({
     telegramUserId: 976684739,
-    asOfDate: '2026-07-25',
+    asOfDate: "2026-07-25",
   });
-  await service.getOverview({ userId: 1, asOfDate: '2026-07-25' });
+  await service.getOverview({ userId: 1, asOfDate: "2026-07-25" });
 
   assert.deepEqual(repository.findUserCalls, [
-    { userId: null, telegramUserId: '976684739' },
-    { userId: '1', telegramUserId: null },
+    { userId: null, telegramUserId: "976684739" },
+    { userId: "1", telegramUserId: null },
   ]);
 });
 
-test('returns not found when supplied identifiers do not resolve one user', async () => {
+test("returns not found when supplied identifiers do not resolve one user", async () => {
   const { repository, service } = createService();
   repository.user = null;
 
@@ -124,13 +124,13 @@ test('returns not found when supplied identifiers do not resolve one user', asyn
       service.getOverview({
         userId: 1,
         telegramUserId: 999,
-        asOfDate: '2026-07-25',
+        asOfDate: "2026-07-25",
       }),
     NotFoundException,
   );
 });
 
-test('returns not found when Telegram user lookup is missing or inactive', async () => {
+test("returns not found when Telegram user lookup is missing or inactive", async () => {
   const { repository, service } = createService();
   repository.user = null;
 
@@ -138,105 +138,105 @@ test('returns not found when Telegram user lookup is missing or inactive', async
     () =>
       service.getOverview({
         telegramUserId: 976684739,
-        asOfDate: '2026-07-25',
+        asOfDate: "2026-07-25",
       }),
     NotFoundException,
   );
 });
 
-test('rejects invalid dates and timezones', async () => {
+test("rejects invalid dates and timezones", async () => {
   const { service } = createService();
 
   await assert.rejects(
-    () => service.getOverview({ userId: 1, asOfDate: '2026-02-30' }),
+    () => service.getOverview({ userId: 1, asOfDate: "2026-02-30" }),
     BadRequestException,
   );
   await assert.rejects(
     () =>
       service.getOverview({
         userId: 1,
-        asOfDate: '2026-07-25',
-        timezone: 'Mars/Olympus',
+        asOfDate: "2026-07-25",
+        timezone: "Mars/Olympus",
       }),
     BadRequestException,
   );
 });
 
-test('defaults the date to today in Asia/Jakarta', async () => {
+test("defaults the date to today in Asia/Jakarta", async () => {
   mock.timers.enable({
-    apis: ['Date'],
-    now: new Date('2026-07-24T18:00:00.000Z'),
+    apis: ["Date"],
+    now: new Date("2026-07-24T18:00:00.000Z"),
   });
 
   try {
     const { repository, service } = createService();
     repository.user = {
-      id: '1',
-      telegramUserId: '976684739',
+      id: "1",
+      telegramUserId: "976684739",
       cycleStartDay: 25,
     };
 
     const result = await service.getOverview({ userId: 1 });
 
-    assert.equal(result.current.period.start, '2026-07-25');
-    assert.equal(repository.transactionCalls[0].end, '2026-07-26');
-    assert.equal(repository.transactionCalls[0].timezone, 'Asia/Jakarta');
+    assert.equal(result.current.period.start, "2026-07-25");
+    assert.equal(repository.transactionCalls[0].end, "2026-07-26");
+    assert.equal(repository.transactionCalls[0].timezone, "Asia/Jakarta");
   } finally {
     mock.timers.reset();
   }
 });
 
-test('calculates current and previous boundaries for cycle start day 31', async () => {
+test("calculates current and previous boundaries for cycle start day 31", async () => {
   const { repository, service } = createService();
   repository.user = {
-    id: '1',
-    telegramUserId: '976684739',
+    id: "1",
+    telegramUserId: "976684739",
     cycleStartDay: 31,
   };
 
   const result = await service.getOverview({
     userId: 1,
-    asOfDate: '2026-03-30',
-    timezone: 'Asia/Jakarta',
+    asOfDate: "2026-03-30",
+    timezone: "Asia/Jakarta",
   });
 
   assert.deepEqual(result.current.period, {
-    label: 'current_cycle',
-    start: '2026-02-28',
-    end: '2026-03-31',
+    label: "current_cycle",
+    start: "2026-02-28",
+    end: "2026-03-31",
   });
   assert.deepEqual(result.previous.period, {
-    label: 'previous_cycle',
-    start: '2026-01-31',
-    end: '2026-02-28',
+    label: "previous_cycle",
+    start: "2026-01-31",
+    end: "2026-02-28",
   });
   assert.deepEqual(repository.transactionCalls, [
     {
-      userId: '1',
-      start: '2025-12-31',
-      end: '2026-03-31',
-      timezone: 'Asia/Jakarta',
+      userId: "1",
+      start: "2025-12-31",
+      end: "2026-03-31",
+      timezone: "Asia/Jakarta",
     },
   ]);
 });
 
-test('current comparison uses the same elapsed days from the previous cycle', async () => {
+test("current comparison uses the same elapsed days from the previous cycle", async () => {
   const { repository, service } = createService();
   repository.user = {
-    id: '1',
-    telegramUserId: '976684739',
+    id: "1",
+    telegramUserId: "976684739",
     cycleStartDay: 15,
   };
   repository.transactions = [
-    transaction('1', '2026-07-20', 50),
-    transaction('2', '2026-06-25', 100),
-    transaction('3', '2026-06-30', 200),
-    transaction('4', '2026-05-20', 400),
+    transaction("1", "2026-07-20", 50),
+    transaction("2", "2026-06-25", 100),
+    transaction("3", "2026-06-30", 200),
+    transaction("4", "2026-05-20", 400),
   ];
 
   const result = await service.getOverview({
     userId: 1,
-    asOfDate: '2026-07-25',
+    asOfDate: "2026-07-25",
   });
 
   assert.equal(result.current.totals.spent, 50);
@@ -246,22 +246,22 @@ test('current comparison uses the same elapsed days from the previous cycle', as
   assert.equal(result.previous.comparison.spent, 400);
 });
 
-test('maps combined credit-card summaries for current and previous cycles', async () => {
+test("maps combined credit-card summaries for current and previous cycles", async () => {
   const { repository, service } = createService();
   repository.user = {
-    id: '1',
-    telegramUserId: '976684739',
+    id: "1",
+    telegramUserId: "976684739",
     cycleStartDay: 15,
   };
   repository.creditCardSummaries = [
     {
-      cycleStart: '2026-07-15',
+      cycleStart: "2026-07-15",
       limit: 10000000,
       used: 2500000,
       statementBalance: 0,
     },
     {
-      cycleStart: '2026-06-15',
+      cycleStart: "2026-06-15",
       limit: 10000000,
       used: 7500000,
       statementBalance: 7500000,
@@ -270,11 +270,11 @@ test('maps combined credit-card summaries for current and previous cycles', asyn
 
   const result = await service.getOverview({
     userId: 1,
-    asOfDate: '2026-07-25',
+    asOfDate: "2026-07-25",
   });
 
   assert.deepEqual(repository.creditCardCalls, [
-    { userId: '1', cycleStarts: ['2026-07-15', '2026-06-15'] },
+    { userId: "1", cycleStarts: ["2026-07-15", "2026-06-15"] },
   ]);
   assert.deepEqual(result.current.creditCard, {
     limit: 10000000,
@@ -288,11 +288,11 @@ test('maps combined credit-card summaries for current and previous cycles', asyn
   });
 });
 
-test('uses zero credit-card summary when cycle has no valid summary', async () => {
+test("uses zero credit-card summary when cycle has no valid summary", async () => {
   const { repository, service } = createService();
   repository.creditCardSummaries = [
     {
-      cycleStart: '2026-07-01',
+      cycleStart: "2026-07-01",
       limit: -1,
       used: Number.NaN,
       statementBalance: Number.MAX_SAFE_INTEGER + 1,
@@ -301,7 +301,7 @@ test('uses zero credit-card summary when cycle has no valid summary', async () =
 
   const result = await service.getOverview({
     userId: 1,
-    asOfDate: '2026-07-25',
+    asOfDate: "2026-07-25",
   });
 
   assert.deepEqual(result.current.creditCard, {
@@ -316,41 +316,41 @@ test('uses zero credit-card summary when cycle has no valid summary', async () =
   });
 });
 
-test('maps cashflow, daily spending, categories, recent transactions, and parent budgets', async () => {
+test("maps cashflow, daily spending, categories, recent transactions, and parent budgets", async () => {
   const { repository, service } = createService();
   repository.transactions = [
-    transaction('4', '2026-07-24', 25000, 'expense', 'Food', 'TUKU'),
-    transaction('3', '2026-07-15', 725000, 'expense', 'food', 'Market'),
-    transaction('2', '2026-07-10', 1000000, 'expense', 'Transport', 'MRT'),
-    transaction('1', '2026-07-05', 10000000, 'income', null, null),
+    transaction("4", "2026-07-24", 25000, "expense", "Food", "TUKU"),
+    transaction("3", "2026-07-15", 725000, "expense", "food", "Market"),
+    transaction("2", "2026-07-10", 1000000, "expense", "Transport", "MRT"),
+    transaction("1", "2026-07-05", 10000000, "income", null, null),
   ];
   repository.budgets = [
-    { id: '10', parentId: null, category: 'Living', amount: 0 },
-    { id: '11', parentId: '10', category: 'Food', amount: 1500000 },
-    { id: '12', parentId: '10', category: 'Transport', amount: 2000000 },
-    { id: '20', parentId: null, category: 'Shopping', amount: 1000000 },
+    { id: "10", parentId: null, category: "Living", amount: 0 },
+    { id: "11", parentId: "10", category: "Food", amount: 1500000 },
+    { id: "12", parentId: "10", category: "Transport", amount: 2000000 },
+    { id: "20", parentId: null, category: "Shopping", amount: 1000000 },
   ];
 
   const result = await service.getOverview({
-    telegramUserId: '976684739',
-    asOfDate: '2026-07-25',
+    telegramUserId: "976684739",
+    asOfDate: "2026-07-25",
   });
 
   assert.deepEqual(result.user, {
-    id: '1',
-    telegramUserId: '976684739',
+    id: "1",
+    telegramUserId: "976684739",
   });
   assert.deepEqual(Object.keys(result.current), [
-    'period',
-    'hasTransactions',
-    'totals',
-    'comparison',
-    'dailySpend',
-    'categories',
-    'budgets',
-    'recentTransactions',
-    'creditCard',
-    'attention',
+    "period",
+    "hasTransactions",
+    "totals",
+    "comparison",
+    "dailySpend",
+    "categories",
+    "budgets",
+    "recentTransactions",
+    "creditCard",
+    "attention",
   ]);
   assert.equal(result.current.hasTransactions, true);
   assert.deepEqual(result.current.totals, {
@@ -360,19 +360,19 @@ test('maps cashflow, daily spending, categories, recent transactions, and parent
     dailyAverage: 70000,
   });
   assert.deepEqual(result.current.dailySpend, [
-    { date: '2026-07-10', amount: 1000000 },
-    { date: '2026-07-15', amount: 725000 },
-    { date: '2026-07-24', amount: 25000 },
+    { date: "2026-07-10", amount: 1000000 },
+    { date: "2026-07-15", amount: 725000 },
+    { date: "2026-07-24", amount: 25000 },
   ]);
   assert.deepEqual(result.current.categories, [
     {
-      category: 'Transport',
+      category: "Transport",
       amount: 1000000,
       percent: 57,
       transactionCount: 1,
     },
     {
-      category: 'Food',
+      category: "Food",
       amount: 750000,
       percent: 43,
       transactionCount: 2,
@@ -380,105 +380,105 @@ test('maps cashflow, daily spending, categories, recent transactions, and parent
   ]);
   assert.deepEqual(result.current.budgets, [
     {
-      category: 'Living',
+      category: "Living",
       limit: 3500000,
       spent: 1750000,
       percent: 50,
-      status: 'on-track',
+      status: "on-track",
     },
     {
-      category: 'Shopping',
+      category: "Shopping",
       limit: 1000000,
       spent: 0,
       percent: 0,
-      status: 'on-track',
+      status: "on-track",
     },
   ]);
   assert.deepEqual(result.current.recentTransactions[0], {
-    id: '4',
-    date: '2026-07-24',
-    merchant: 'TUKU',
-    category: 'Food',
+    id: "4",
+    date: "2026-07-24",
+    merchant: "TUKU",
+    category: "Food",
     amount: 25000,
-    type: 'expense',
+    type: "expense",
   });
   assert.deepEqual(result.current.recentTransactions[3], {
-    id: '1',
-    date: '2026-07-05',
+    id: "1",
+    date: "2026-07-05",
     merchant: null,
     category: null,
     amount: 10000000,
-    type: 'income',
+    type: "income",
   });
 });
 
-test('returns five categories plus an Others rollup', async () => {
+test("returns five categories plus an Others rollup", async () => {
   const { repository, service } = createService();
   repository.transactions = [
-    transaction('1', '2026-07-01', 600, 'expense', 'A'),
-    transaction('2', '2026-07-02', 500, 'expense', 'B'),
-    transaction('3', '2026-07-03', 400, 'expense', 'C'),
-    transaction('4', '2026-07-04', 300, 'expense', 'D'),
-    transaction('5', '2026-07-05', 200, 'expense', 'E'),
-    transaction('6', '2026-07-06', 100, 'expense', 'F'),
-    transaction('7', '2026-07-07', 50, 'expense', 'G'),
+    transaction("1", "2026-07-01", 600, "expense", "A"),
+    transaction("2", "2026-07-02", 500, "expense", "B"),
+    transaction("3", "2026-07-03", 400, "expense", "C"),
+    transaction("4", "2026-07-04", 300, "expense", "D"),
+    transaction("5", "2026-07-05", 200, "expense", "E"),
+    transaction("6", "2026-07-06", 100, "expense", "F"),
+    transaction("7", "2026-07-07", 50, "expense", "G"),
   ];
 
   const result = await service.getOverview({
     userId: 1,
-    asOfDate: '2026-07-25',
+    asOfDate: "2026-07-25",
   });
 
   assert.equal(result.current.categories.length, 6);
   assert.deepEqual(result.current.categories[5], {
-    category: 'Others',
+    category: "Others",
     amount: 150,
     percent: 7,
     transactionCount: 2,
   });
 });
 
-test('returns only the five latest transactions', async () => {
+test("returns only the five latest transactions", async () => {
   const { repository, service } = createService();
   repository.transactions = [
-    transaction('6', '2026-07-06', 6),
-    transaction('5', '2026-07-05', 5),
-    transaction('4', '2026-07-04', 4),
-    transaction('3', '2026-07-03', 3),
-    transaction('2', '2026-07-02', 2),
-    transaction('1', '2026-07-01', 1),
+    transaction("6", "2026-07-06", 6),
+    transaction("5", "2026-07-05", 5),
+    transaction("4", "2026-07-04", 4),
+    transaction("3", "2026-07-03", 3),
+    transaction("2", "2026-07-02", 2),
+    transaction("1", "2026-07-01", 1),
   ];
 
   const result = await service.getOverview({
     userId: 1,
-    asOfDate: '2026-07-25',
+    asOfDate: "2026-07-25",
   });
 
   assert.deepEqual(
     result.current.recentTransactions.map(({ id }) => id),
-    ['6', '5', '4', '3', '2'],
+    ["6", "5", "4", "3", "2"],
   );
 });
 
-test('applies budget status thresholds and returns four highest priorities', async () => {
+test("applies budget status thresholds and returns four highest priorities", async () => {
   const { repository, service } = createService();
   repository.budgets = [
-    { id: '1', parentId: null, category: 'Below', amount: 100 },
-    { id: '2', parentId: null, category: 'Eighty', amount: 100 },
-    { id: '3', parentId: null, category: 'Hundred', amount: 100 },
-    { id: '4', parentId: null, category: 'Over', amount: 100 },
-    { id: '5', parentId: null, category: 'Unused', amount: 100 },
+    { id: "1", parentId: null, category: "Below", amount: 100 },
+    { id: "2", parentId: null, category: "Eighty", amount: 100 },
+    { id: "3", parentId: null, category: "Hundred", amount: 100 },
+    { id: "4", parentId: null, category: "Over", amount: 100 },
+    { id: "5", parentId: null, category: "Unused", amount: 100 },
   ];
   repository.transactions = [
-    transaction('1', '2026-07-01', 79, 'expense', 'Below'),
-    transaction('2', '2026-07-02', 80, 'expense', 'Eighty'),
-    transaction('3', '2026-07-03', 100, 'expense', 'Hundred'),
-    transaction('4', '2026-07-04', 101, 'expense', 'Over'),
+    transaction("1", "2026-07-01", 79, "expense", "Below"),
+    transaction("2", "2026-07-02", 80, "expense", "Eighty"),
+    transaction("3", "2026-07-03", 100, "expense", "Hundred"),
+    transaction("4", "2026-07-04", 101, "expense", "Over"),
   ];
 
   const result = await service.getOverview({
     userId: 1,
-    asOfDate: '2026-07-25',
+    asOfDate: "2026-07-25",
   });
 
   assert.deepEqual(
@@ -488,45 +488,53 @@ test('applies budget status thresholds and returns four highest priorities', asy
       status,
     })),
     [
-      { category: 'Over', percent: 101, status: 'over' },
-      { category: 'Hundred', percent: 100, status: 'warning' },
-      { category: 'Eighty', percent: 80, status: 'warning' },
-      { category: 'Below', percent: 79, status: 'on-track' },
+      { category: "Over", percent: 101, status: "over" },
+      { category: "Hundred", percent: 100, status: "warning" },
+      { category: "Eighty", percent: 80, status: "warning" },
+      { category: "Below", percent: 79, status: "on-track" },
     ],
   );
 });
 
-test('uses a positive parent amount before child budget totals', async () => {
+test("uses a positive parent amount before child budget totals", async () => {
   const { repository, service } = createService();
   repository.budgets = [
-    { id: '42', parentId: null, category: 'Food', amount: 2_000_000 },
-    { id: '84', parentId: '42', category: 'Dining', amount: 500_000 },
-    { id: '85', parentId: '42', category: 'Groceries', amount: 700_000 },
+    { id: "42", parentId: null, category: "Food", amount: 2_000_000 },
+    { id: "84", parentId: "42", category: "Dining", amount: 500_000 },
+    { id: "85", parentId: "42", category: "Groceries", amount: 700_000 },
   ];
 
   const result = await service.getOverview({
     userId: 1,
-    asOfDate: '2026-08-20',
+    asOfDate: "2026-08-20",
   });
 
   assert.equal(result.current.budgets[0]?.limit, 2_000_000);
 });
 
-test('returns live pocket forecast attention ordered by overrun', async () => {
+test("returns live pocket forecast attention ordered by overrun", async () => {
   const { repository, service } = createService();
   repository.budgets = [
-    { id: '42', parentId: null, category: 'Food', amount: 1_500_000 },
-    { id: '43', parentId: null, category: 'Transport', amount: 500_000 },
+    { id: "42", parentId: null, category: "Food", amount: 1_500_000 },
+    { id: "43", parentId: null, category: "Transport", amount: 500_000 },
   ];
   repository.transactions = [
-    transaction('1', '2026-08-20', 1_000_000, 'expense', 'Dining', 'TUKU', '42'),
-    transaction('2', '2026-08-20', 400_000, 'expense', 'Ride', 'Gojek', '43'),
+    transaction(
+      "1",
+      "2026-08-20",
+      1_000_000,
+      "expense",
+      "Dining",
+      "TUKU",
+      "42",
+    ),
+    transaction("2", "2026-08-20", 400_000, "expense", "Ride", "Gojek", "43"),
   ];
 
   const result = await service.getOverview({
     userId: 1,
-    asOfDate: '2026-08-20',
-    timezone: 'Asia/Jakarta',
+    asOfDate: "2026-08-20",
+    timezone: "Asia/Jakarta",
   });
 
   assert.deepEqual(
@@ -535,84 +543,84 @@ test('returns live pocket forecast attention ordered by overrun', async () => {
       projectedOverrun,
     })),
     [
-      { pocketId: '43', projectedOverrun: 120000 },
-      { pocketId: '42', projectedOverrun: 50000 },
+      { pocketId: "43", projectedOverrun: 120000 },
+      { pocketId: "42", projectedOverrun: 50000 },
     ],
   );
   assert.deepEqual(result.current.attention[1]?.topDriver, {
-    category: 'Dining',
+    category: "Dining",
     amount: 1000000,
   });
 });
 
-test('omits attention after a pocket projection resolves', async () => {
+test("omits attention after a pocket projection resolves", async () => {
   const { repository, service } = createService();
   repository.budgets = [
-    { id: '42', parentId: null, category: 'Food', amount: 1_500_000 },
+    { id: "42", parentId: null, category: "Food", amount: 1_500_000 },
   ];
   repository.transactions = [
-    transaction('1', '2026-08-20', 500_000, 'expense', 'Dining', 'TUKU', '42'),
+    transaction("1", "2026-08-20", 500_000, "expense", "Dining", "TUKU", "42"),
   ];
 
   const result = await service.getOverview({
     userId: 1,
-    asOfDate: '2026-08-20',
+    asOfDate: "2026-08-20",
   });
 
   assert.deepEqual(result.current.attention, []);
 });
 
-test('invalid forecast inputs preserve the rest of the dashboard', async () => {
+test("invalid forecast inputs preserve the rest of the dashboard", async () => {
   const { repository, service } = createService();
   repository.budgets = [
-    { id: '42', parentId: null, category: 'Food', amount: Number.NaN },
+    { id: "42", parentId: null, category: "Food", amount: Number.NaN },
   ];
   repository.transactions = [
-    transaction('1', '2026-08-20', 25000, 'expense', 'Dining', 'TUKU', '42'),
+    transaction("1", "2026-08-20", 25000, "expense", "Dining", "TUKU", "42"),
   ];
 
   const result = await service.getOverview({
     userId: 1,
-    asOfDate: '2026-08-20',
+    asOfDate: "2026-08-20",
   });
 
   assert.equal(result.current.totals.spent, 25000);
   assert.deepEqual(result.current.attention, []);
 });
 
-test('explicit pocket assignment wins before legacy category fallback', async () => {
+test("explicit pocket assignment wins before legacy category fallback", async () => {
   const { repository, service } = createService();
   repository.budgets = [
-    { id: '42', parentId: null, category: 'Food Pocket', amount: 1_000_000 },
-    { id: '84', parentId: '42', category: 'Dining', amount: 500_000 },
-    { id: '43', parentId: null, category: 'Travel Pocket', amount: 1_000_000 },
-    { id: '85', parentId: '43', category: 'dining', amount: 500_000 },
+    { id: "42", parentId: null, category: "Food Pocket", amount: 1_000_000 },
+    { id: "84", parentId: "42", category: "Dining", amount: 500_000 },
+    { id: "43", parentId: null, category: "Travel Pocket", amount: 1_000_000 },
+    { id: "85", parentId: "43", category: "dining", amount: 500_000 },
   ];
   repository.transactions = [
-    transaction('1', '2026-08-20', 100, 'expense', 'Dining', 'TUKU', '42'),
-    transaction('2', '2026-08-20', 50, 'expense', 'Dining', 'Legacy', null),
+    transaction("1", "2026-08-20", 100, "expense", "Dining", "TUKU", "42"),
+    transaction("2", "2026-08-20", 50, "expense", "Dining", "Legacy", null),
   ];
 
   const result = await service.getOverview({
     userId: 1,
-    asOfDate: '2026-08-20',
+    asOfDate: "2026-08-20",
   });
 
   assert.deepEqual(
     result.current.budgets.map(({ category, spent }) => ({ category, spent })),
     [
-      { category: 'Food Pocket', spent: 150 },
-      { category: 'Travel Pocket', spent: 50 },
+      { category: "Food Pocket", spent: 150 },
+      { category: "Travel Pocket", spent: 50 },
     ],
   );
 });
 
-test('returns complete zero and empty sections for a valid inactive user', async () => {
+test("returns complete zero and empty sections for a valid inactive user", async () => {
   const { service } = createService();
 
   const result = await service.getOverview({
     userId: 1,
-    asOfDate: '2026-07-25',
+    asOfDate: "2026-07-25",
   });
 
   assert.equal(result.current.hasTransactions, false);

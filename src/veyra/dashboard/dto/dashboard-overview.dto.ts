@@ -11,7 +11,7 @@ export interface DashboardOverviewUserDto {
 }
 
 export interface DashboardPeriodDto {
-  label: 'current_cycle' | 'previous_cycle';
+  label: "current_cycle" | "previous_cycle";
   start: string;
   end: string;
 }
@@ -35,7 +35,7 @@ export interface DashboardCategoryDto {
   transactionCount: number;
 }
 
-export type DashboardBudgetStatus = 'on-track' | 'warning' | 'over';
+export type DashboardBudgetStatus = "on-track" | "warning" | "over";
 
 export interface DashboardBudgetDto {
   category: string;
@@ -51,7 +51,7 @@ export interface DashboardRecentTransactionDto {
   merchant: string | null;
   category: string | null;
   amount: number;
-  type: 'income' | 'expense';
+  type: "income" | "expense";
 }
 
 export interface DashboardCreditCardDto {
@@ -73,7 +73,7 @@ export interface DashboardPeriodOverviewDto {
 }
 
 export interface DashboardAttentionDto {
-  type: 'budget_forecast_overrun';
+  type: "budget_forecast_overrun";
   pocketId: string;
   pocketName: string;
   limit: number;
@@ -87,8 +87,7 @@ export interface DashboardAttentionDto {
   };
 }
 
-export interface DashboardCurrentPeriodOverviewDto
-  extends DashboardPeriodOverviewDto {
+export interface DashboardCurrentPeriodOverviewDto extends DashboardPeriodOverviewDto {
   attention: DashboardAttentionDto[];
 }
 

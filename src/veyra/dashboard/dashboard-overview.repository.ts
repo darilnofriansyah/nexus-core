@@ -1,6 +1,6 @@
-import { Injectable } from '@nestjs/common';
-import { QueryResultRow } from 'pg';
-import { DatabaseService } from '../../database/database.service';
+import { Injectable } from "@nestjs/common";
+import { QueryResultRow } from "pg";
+import { DatabaseService } from "../../database/database.service";
 
 export interface DashboardUser {
   id: string;
@@ -8,7 +8,7 @@ export interface DashboardUser {
   cycleStartDay: number;
 }
 
-export type DashboardTransactionType = 'income' | 'expense';
+export type DashboardTransactionType = "income" | "expense";
 
 export interface DashboardTransaction {
   id: string;

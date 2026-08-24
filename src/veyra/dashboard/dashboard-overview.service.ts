@@ -3,7 +3,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
-} from '@nestjs/common';
+} from "@nestjs/common";
 import {
   DashboardAttentionDto,
   DashboardBudgetStatus,
@@ -15,14 +15,14 @@ import {
   DashboardPeriodDto,
   DashboardPeriodOverviewDto,
   DashboardTotalsDto,
-} from './dto/dashboard-overview.dto';
+} from "./dto/dashboard-overview.dto";
 import {
   DashboardBudget,
   DashboardCreditCardSummary,
   DashboardOverviewRepository,
   DashboardTransaction,
-} from './dashboard-overview.repository';
-import { calculateBudgetForecast } from '../budgets/budget-forecast';
+} from "./dashboard-overview.repository";
+import { calculateBudgetForecast } from "../budgets/budget-forecast";
 
 interface Month {
   year: number;
@@ -52,14 +52,14 @@ export class DashboardOverviewService {
   async getOverview(
     request: DashboardOverviewRequestDto,
   ): Promise<DashboardOverviewResponseDto> {
-    const userId = this.identifier(request.userId, 'userId');
+    const userId = this.identifier(request.userId, "userId");
     const telegramUserId = this.identifier(
       request.telegramUserId,
-      'telegramUserId',
+      "telegramUserId",
     );
 
     if (!userId && !telegramUserId) {
-      throw new BadRequestException('telegramUserId or userId is required');
+      throw new BadRequestException("telegramUserId or userId is required");
     }
 
     const timezone = this.timezone(request.timezone);
@@ -67,7 +67,7 @@ export class DashboardOverviewService {
     const user = await this.repository.findUser(userId, telegramUserId);
 
     if (!user) {
-      throw new NotFoundException('Telegram user not found');
+      throw new NotFoundException("Telegram user not found");
     }
 
     const cycles = this.cycles(asOfDate, user.cycleStartDay);
@@ -217,8 +217,8 @@ export class DashboardOverviewService {
     transactions: DashboardTransaction[],
     days: number,
   ): DashboardTotalsDto {
-    const income = this.sum(transactions, 'income');
-    const spent = this.sum(transactions, 'expense');
+    const income = this.sum(transactions, "income");
+    const spent = this.sum(transactions, "expense");
 
     return {
       income,
@@ -254,7 +254,7 @@ export class DashboardOverviewService {
     const totals = new Map<string, number>();
 
     for (const transaction of transactions) {
-      if (transaction.type === 'expense') {
+      if (transaction.type === "expense") {
         totals.set(
           transaction.date,
           (totals.get(transaction.date) ?? 0) + transaction.amount,
@@ -270,14 +270,14 @@ export class DashboardOverviewService {
   private categories(
     transactions: DashboardTransaction[],
   ): DashboardCategoryDto[] {
-    const expenses = transactions.filter(({ type }) => type === 'expense');
+    const expenses = transactions.filter(({ type }) => type === "expense");
     const totals = new Map<
       string,
       { category: string; amount: number; transactionCount: number }
     >();
 
     for (const transaction of expenses) {
-      const category = transaction.category?.trim() || 'Uncategorized';
+      const category = transaction.category?.trim() || "Uncategorized";
       const key = category.toLocaleLowerCase();
       const current = totals.get(key) ?? {
         category,
@@ -300,7 +300,7 @@ export class DashboardOverviewService {
 
     if (remaining.length) {
       visible.push({
-        category: 'Others',
+        category: "Others",
         amount: remaining.reduce((sum, item) => sum + item.amount, 0),
         transactionCount: remaining.reduce(
           (sum, item) => sum + item.transactionCount,
@@ -319,12 +319,14 @@ export class DashboardOverviewService {
     budgets: DashboardBudget[],
     transactions: DashboardTransaction[],
   ): DashboardPocketSnapshot[] {
-    const expenses = transactions.filter(({ type }) => type === 'expense');
+    const expenses = transactions.filter(({ type }) => type === "expense");
 
     return budgets
       .filter(({ parentId }) => parentId === null)
       .map((budget) => {
-        const children = budgets.filter(({ parentId }) => parentId === budget.id);
+        const children = budgets.filter(
+          ({ parentId }) => parentId === budget.id,
+        );
         const legacyCategories = new Set(
           (children.length ? children : [budget]).map(({ category }) =>
             category.trim().toLocaleLowerCase(),
@@ -372,7 +374,7 @@ export class DashboardOverviewService {
           if (!forecast || forecast.projectedOverrun === 0) return null;
 
           return {
-            type: 'budget_forecast_overrun' as const,
+            type: "budget_forecast_overrun" as const,
             pocketId: snapshot.id,
             pocketName: snapshot.name,
             limit: snapshot.limit,
@@ -391,7 +393,7 @@ export class DashboardOverviewService {
         );
     } catch (error) {
       this.logger.warn(
-        'Dashboard forecast attention calculation failed',
+        "Dashboard forecast attention calculation failed",
         error instanceof Error ? error.message : undefined,
       );
       return [];
@@ -405,7 +407,7 @@ export class DashboardOverviewService {
     const totals = new Map<string, { category: string; amount: number }>();
 
     for (const transaction of snapshot.expenses) {
-      const category = transaction.category?.trim() || 'Uncategorized';
+      const category = transaction.category?.trim() || "Uncategorized";
       const key = category.toLocaleLowerCase();
       const current = totals.get(key) ?? { category, amount: 0 };
       current.amount += transaction.amount;
@@ -423,13 +425,13 @@ export class DashboardOverviewService {
 
   private budgetStatus(percent: number): DashboardBudgetStatus {
     if (percent > 100) {
-      return 'over';
+      return "over";
     }
-    return percent >= 80 ? 'warning' : 'on-track';
+    return percent >= 80 ? "warning" : "on-track";
   }
 
   private cycles(asOfDate: string, cycleStartDay: number): CycleSet {
-    const [year, month] = asOfDate.split('-').map(Number);
+    const [year, month] = asOfDate.split("-").map(Number);
     const thisMonth = { year, month };
     const currentMonth =
       asOfDate >= this.monthBoundary(thisMonth, cycleStartDay)
@@ -439,10 +441,10 @@ export class DashboardOverviewService {
     const beforePreviousMonth = this.shiftMonth(currentMonth, -2);
 
     return {
-      current: this.period('current_cycle', currentMonth, cycleStartDay),
-      previous: this.period('previous_cycle', previousMonth, cycleStartDay),
+      current: this.period("current_cycle", currentMonth, cycleStartDay),
+      previous: this.period("previous_cycle", previousMonth, cycleStartDay),
       beforePrevious: this.period(
-        'previous_cycle',
+        "previous_cycle",
         beforePreviousMonth,
         cycleStartDay,
       ),
@@ -450,7 +452,7 @@ export class DashboardOverviewService {
   }
 
   private period(
-    label: DashboardPeriodDto['label'],
+    label: DashboardPeriodDto["label"],
     month: Month,
     cycleStartDay: number,
   ): DashboardPeriodDto {
@@ -485,7 +487,7 @@ export class DashboardOverviewService {
 
   private sum(
     transactions: DashboardTransaction[],
-    type: DashboardTransaction['type'],
+    type: DashboardTransaction["type"],
   ): number {
     return transactions
       .filter((transaction) => transaction.type === type)
@@ -507,18 +509,18 @@ export class DashboardOverviewService {
   private timezone(value: unknown): string {
     const timezone =
       value === null || value === undefined
-        ? 'Asia/Jakarta'
+        ? "Asia/Jakarta"
         : String(value).trim();
 
     if (!timezone) {
-      throw new BadRequestException('timezone must be valid');
+      throw new BadRequestException("timezone must be valid");
     }
 
     try {
-      new Intl.DateTimeFormat('en-CA', { timeZone: timezone }).format();
+      new Intl.DateTimeFormat("en-CA", { timeZone: timezone }).format();
       return timezone;
     } catch {
-      throw new BadRequestException('timezone must be valid');
+      throw new BadRequestException("timezone must be valid");
     }
   }
 
@@ -530,33 +532,33 @@ export class DashboardOverviewService {
     const date = String(value).trim();
     const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
     if (!match) {
-      throw new BadRequestException('asOfDate must be YYYY-MM-DD');
+      throw new BadRequestException("asOfDate must be YYYY-MM-DD");
     }
 
     const parsed = new Date(
       Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])),
     );
     if (this.formatDate(parsed) !== date) {
-      throw new BadRequestException('asOfDate must be a valid date');
+      throw new BadRequestException("asOfDate must be a valid date");
     }
     return date;
   }
 
   private localDate(date: Date, timezone: string): string {
-    const parts = new Intl.DateTimeFormat('en-CA', {
+    const parts = new Intl.DateTimeFormat("en-CA", {
       timeZone: timezone,
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
     }).formatToParts(date);
     const part = (type: Intl.DateTimeFormatPartTypes) =>
-      parts.find((item) => item.type === type)?.value ?? '';
+      parts.find((item) => item.type === type)?.value ?? "";
 
-    return `${part('year')}-${part('month')}-${part('day')}`;
+    return `${part("year")}-${part("month")}-${part("day")}`;
   }
 
   private addDays(date: string, days: number): string {
-    const [year, month, day] = date.split('-').map(Number);
+    const [year, month, day] = date.split("-").map(Number);
     return this.formatDate(new Date(Date.UTC(year, month - 1, day + days)));
   }
 
