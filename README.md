@@ -350,6 +350,22 @@ Example response:
         "amount": 25000,
         "type": "expense"
       }
+    ],
+    "attention": [
+      {
+        "type": "budget_forecast_overrun",
+        "pocketId": "42",
+        "pocketName": "Food",
+        "limit": 1500000,
+        "spent": 750000,
+        "projectedSpend": 1920000,
+        "projectedOverrun": 420000,
+        "safeDailySpend": 50000,
+        "topDriver": {
+          "category": "Dining",
+          "amount": 610000
+        }
+      }
     ]
   },
   "previous": {
@@ -391,7 +407,25 @@ complete cycle before that. Only confirmed income and expense transactions are
 included. `current.creditCard` and `previous.creditCard` each contain one
 combined summary for their cycle. When no summary exists, they return
 `{ "limit": 0, "used": 0, "statementBalance": 0 }`. A valid user without
-activity receives zero totals and empty arrays.
+activity receives zero totals and empty arrays. `current.attention` contains
+all live `budget_forecast_overrun` items, ordered by descending
+`projectedOverrun`; the Mini App displays three and exposes `View all at-risk
+pockets`. Opening a pocket does not dismiss the warning. `previous` has no
+`attention` property, and `budget_alerts` delivery history does not control
+dashboard visibility: attention is recalculated from the live current-cycle
+projection whenever this endpoint is loaded.
+
+The Mini App handoff uses the configured base URL and a navigation-only start
+parameter:
+
+```txt
+VEYRA_MINI_APP_BASE_URL=https://t.me/<bot>/<app>
+startapp=pocket_<budgetId>
+```
+
+The Mini App server validates Telegram `initData`, resolves the Telegram
+identity, and relies on Core pocket ownership checks for the requested pocket.
+The start parameter contains no user ID or financial data.
 
 Curl:
 
@@ -2192,6 +2226,64 @@ not sort notifications or recover the base message by parsing the legacy
 aggregated `message` or `telegram.text` fields; those fields remain for
 rollback compatibility.
 
+Forecast notifications use the existing `budget_alert` item with this exact
+contract:
+
+```json
+{
+  "type": "budget_alert",
+  "alertType": "budget_forecast_overrun",
+  "budgetId": "42",
+  "priority": 2,
+  "severity": "warning",
+  "message": "Food may exceed its budget by Rp420.000 this cycle.\nRp750.000 spent of Rp1.500.000.\nSafe daily spend: Rp50.000.\nTop driver: Dining (Rp610.000).",
+  "reply_markup": {
+    "inline_keyboard": [
+      [
+        {
+          "text": "View Food pocket",
+          "url": "https://t.me/veyra/app?startapp=pocket_42"
+        }
+      ]
+    ]
+  },
+  "alertRecord": {
+    "userId": "1",
+    "budgetId": "42",
+    "alertType": "budget_forecast_overrun",
+    "thresholdPercent": 0,
+    "periodKey": "2026-08-01"
+  }
+}
+```
+
+Current non-forecast threshold alerts retain their existing persistence
+behavior. `budget_forecast_overrun` is returned without inserting its
+`budget_alerts` row; n8n records it only after Telegram delivery succeeds.
+
+For the existing transaction HTTP Request, n8n maps a forecast notification to
+Telegram as follows, then posts the same `alertRecord` to the record endpoint:
+
+```json
+{
+  "chat_id": "={{$json.chatId}}",
+  "text": "={{$json.notification.message}}",
+  "parse_mode": "HTML",
+  "disable_web_page_preview": true,
+  "reply_markup": "={{$json.notification.reply_markup}}"
+}
+```
+
+```json
+{
+  "userId": "={{$json.notification.alertRecord.userId}}",
+  "budgetId": "={{$json.notification.alertRecord.budgetId}}",
+  "alertType": "={{$json.notification.alertRecord.alertType}}",
+  "thresholdPercent": "={{$json.notification.alertRecord.thresholdPercent}}",
+  "periodKey": "={{$json.notification.alertRecord.periodKey}}"
+}
+```
+
 Example pending high-risk review:
 
 ```json
@@ -2870,7 +2962,26 @@ Body:
 }
 ```
 
-If Telegram delivery fails, do not call `record`. This replaces only the direct-category spending, threshold, duplicate-check, alert text calculation, and durable delivered-alert recording; keep scheduling, transaction triggers, Telegram sending, delivery retry, and orchestration in n8n.
+For transaction watchdog notifications, the exact n8n responsibilities are:
+
+```text
+Existing transaction HTTP Request
+→ split/iterate notifications
+→ Telegram Reliable Sender using message + reply_markup
+→ IF alertRecord exists
+→ POST /api/veyra/budgets/overspending/record with alertRecord
+```
+
+Telegram send failure skips recording. A record failure retries only the record
+request, not the Telegram send. This is at-least-once delivery: a process crash
+after Telegram succeeds but before recording can produce one duplicate when
+the complete workflow is replayed; exactly-once delivery is deferred until a
+durable delivery/outbox protocol is justified.
+
+This replaces only the direct-category spending, threshold, duplicate-check,
+alert text calculation, and durable delivered-alert recording; keep
+scheduling, transaction triggers, Telegram sending, delivery retry, and
+orchestration in n8n.
 
 Recommended Veyra transaction normalize node settings:
 
