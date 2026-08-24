@@ -221,6 +221,7 @@ interface InsertedImportRow extends QueryResultRow {
 interface TransactionRow extends QueryResultRow {
   id: string | number;
   user_id: string | number;
+  timezone?: string | null;
   transaction_type?: string | null;
   amount: string | number;
   merchant: string | null;
@@ -5441,6 +5442,7 @@ export class TransactionService {
       const budgetWatchdog = await this.budgetService?.evaluateTransaction({
         userId: transaction.user_id,
         transactionId: transaction.id,
+        timezone: transaction.timezone,
       });
       const budgetNotifications = this.toBudgetNotifications(budgetWatchdog);
       const burnRateFacts = await this.evaluateBurnRateRiskFacts(transaction);
@@ -6964,6 +6966,7 @@ export class TransactionService {
       `
         SELECT id,
                user_id,
+               (SELECT timezone FROM telegram_users WHERE id = transactions.user_id) AS timezone,
                transaction_type,
                amount,
                merchant,

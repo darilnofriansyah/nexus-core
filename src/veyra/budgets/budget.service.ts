@@ -1170,7 +1170,10 @@ export class BudgetService {
       alerts.push("budget_100");
     }
 
-    if ((forecast?.projectedOverrun ?? 0) > 0) {
+    if (
+      status.parent_budget_id === null &&
+      (forecast?.projectedOverrun ?? 0) > 0
+    ) {
       alerts.push("budget_forecast_overrun");
     }
 

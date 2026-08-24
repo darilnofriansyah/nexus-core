@@ -2433,6 +2433,109 @@ test("watchdog evaluates Dining against parent then matching child", async (t) =
   );
 });
 
+test("watchdog keeps explicit-pocket child thresholds without a child forecast", async () => {
+  const { service } = createService([
+    [
+      {
+        id: 123,
+        user_id: 1,
+        transaction_type: "expense",
+        category: "Dining",
+        status: "confirmed",
+        transaction_date: "2026-08-20T12:00:00.000Z",
+        pocket_id: "42",
+      },
+    ],
+    [{ cycle_start_day: 1 }],
+    [
+      {
+        budget_id: "42",
+        category: "Food",
+        parent_budget_id: null,
+        budget_amount: "2000000",
+        spent_amount: "100000",
+        child_breakdown: [
+          {
+            budget_id: "84",
+            category: "Dining",
+            budget_amount: "1000000",
+            spent_amount: "750000",
+          },
+        ],
+      },
+    ],
+    [{ exists: false }],
+    [
+      {
+        budget_id: "84",
+        alert_type: "budget_75",
+        threshold_percent: 75,
+        period_key: "2026-08-01",
+      },
+    ],
+    [{ exists: false }],
+  ]);
+
+  const result = await service.evaluateTransaction({
+    userId: 1,
+    transactionId: 123,
+    timezone: "Asia/Jakarta",
+  });
+
+  assert.deepEqual(
+    result.alerts.map(({ type, budgetId }) => ({ type, budgetId })),
+    [{ type: "budget_75", budgetId: "84" }],
+  );
+});
+
+test("watchdog keeps legacy child-category thresholds without a child forecast", async () => {
+  const { service } = createService([
+    [
+      {
+        id: 123,
+        user_id: 1,
+        transaction_type: "expense",
+        category: "Dining",
+        status: "confirmed",
+        transaction_date: "2026-08-20T12:00:00.000Z",
+        pocket_id: null,
+      },
+    ],
+    [{ cycle_start_day: 1 }],
+    [
+      {
+        budget_id: "84",
+        category: "Dining",
+        parent_budget_id: "42",
+        budget_amount: "1000000",
+        spent_amount: "750000",
+        child_breakdown: [],
+      },
+    ],
+    [{ exists: false }],
+    [
+      {
+        budget_id: "84",
+        alert_type: "budget_75",
+        threshold_percent: 75,
+        period_key: "2026-08-01",
+      },
+    ],
+    [{ exists: false }],
+  ]);
+
+  const result = await service.evaluateTransaction({
+    userId: 1,
+    transactionId: 123,
+    timezone: "Asia/Jakarta",
+  });
+
+  assert.deepEqual(
+    result.alerts.map(({ type, budgetId }) => ({ type, budgetId })),
+    [{ type: "budget_75", budgetId: "84" }],
+  );
+});
+
 test("watchdog evaluates Uncategorized against its assigned parent only", async (t) => {
   t.mock.timers.enable({
     apis: ["Date"],

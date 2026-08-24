@@ -10,6 +10,7 @@ import {
 } from "@nestjs/common";
 import { VeyraAiService } from "../../ai/veyra-ai.service";
 import { DatabaseService } from "../../database/database.service";
+import { BudgetRepository } from "../budgets/budget.repository";
 import { BudgetService } from "../budgets/budget.service";
 import { CategoryService } from "../categories/category.service";
 import {
@@ -8302,6 +8303,92 @@ test("forecast notification keeps facts without an unconfigured Mini App link", 
   assert.equal(notification?.budgetId, "12");
   assert.deepEqual(notification?.alertRecord, alertRecord);
   assert.equal(notification?.reply_markup, undefined);
+});
+
+test("watchdog uses the stored user timezone at a financial-cycle boundary", async () => {
+  const calls: Array<{ text: string; values: unknown[] }> = [];
+  const transactionDate = "2026-07-31T17:30:00.000Z";
+  const database = {
+    query: async (text: string, values: unknown[] = []) => {
+      calls.push({ text, values });
+
+      if (
+        /FROM transactions[\s\S]*WHERE (?:transactions\.)?id::text = \$1/.test(
+          text,
+        )
+      ) {
+        return {
+          rows: [
+            {
+              id: "101",
+              user_id: "1",
+              transaction_type: "expense",
+              amount: "50000",
+              merchant: "TUKU",
+              merchant_normalized: "TUKU",
+              category: "Food",
+              pocket_id: "42",
+              transaction_date: transactionDate,
+              status: "confirmed",
+              ...(/SELECT timezone FROM telegram_users/.test(text)
+                ? { timezone: "America/Los_Angeles" }
+                : {}),
+            },
+          ],
+        };
+      }
+
+      if (/SELECT cycle_start_day/.test(text)) {
+        return { rows: [{ cycle_start_day: 1 }] };
+      }
+
+      if (/WITH matched_user AS[\s\S]*pocket AS/.test(text)) {
+        return {
+          rows: [
+            {
+              budget_id: "42",
+              category: "Food",
+              parent_budget_id: null,
+              budget_amount: "1500000",
+              spent_amount: "1600000",
+              child_breakdown: [],
+            },
+          ],
+        };
+      }
+
+      if (/SELECT EXISTS/.test(text)) {
+        return { rows: [{ exists: values[2] !== "budget_forecast_overrun" }] };
+      }
+
+      if (/WITH category_budget AS/.test(text)) {
+        return { rows: [] };
+      }
+
+      throw new Error(`Unexpected query: ${text}`);
+    },
+  } as unknown as DatabaseService;
+  const categoryService = {} as CategoryService;
+  const budgetService = new BudgetService(
+    database,
+    categoryService,
+    new BudgetRepository(database),
+  );
+  const service = new TransactionService(database, budgetService);
+
+  const result = await service.evaluateTransactionWatchdog("101");
+  const forecast = result.watchdog?.alerts.find(
+    ({ type }) => type === "budget_forecast_overrun",
+  );
+  const statusQuery = calls.find(({ text }) =>
+    /WITH matched_user AS[\s\S]*pocket AS/.test(text),
+  );
+
+  assert.equal(forecast?.alertRecord?.periodKey, "2026-07-01");
+  assert.deepEqual(statusQuery?.values.slice(2, 4), [
+    "2026-07-01",
+    "2026-08-01",
+  ]);
 });
 
 test("risk review keeps an assigned top-level pocket without a matching child", async (t) => {
