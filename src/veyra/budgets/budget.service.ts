@@ -5,6 +5,7 @@ import {
   Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { readEnv } from '../../config/env';
 import { VeyraAiService } from '../../ai/veyra-ai.service';
 import { QueryResultRow } from 'pg';
 import { DatabaseService } from '../../database/database.service';
@@ -48,6 +49,7 @@ import {
 import {
   BudgetWatchdogAlertDto,
   BudgetWatchdogResponseDto,
+  BudgetWatchdogTopDriverDto,
   OverspendingAlertRecordDto,
   OverspendingAlertType,
   OverspendingCheckRequestDto,
@@ -57,6 +59,10 @@ import {
   OverspendingRecordRequestDto,
   OverspendingRecordResponseDto,
 } from './dto/overspending-check.dto';
+import {
+  BudgetForecastResult,
+  calculateBudgetForecast,
+} from './budget-forecast';
 
 interface CycleStartRow extends QueryResultRow {
   cycle_start_day: number | string;
@@ -739,17 +745,28 @@ export class BudgetService {
       return this.skippedWatchdog('transaction_category_missing');
     }
 
+    const referenceDateString = this.transactionLocalDate(
+      transaction.transaction_date,
+      request.timezone,
+    );
     let statuses: BudgetStatusResponseDto[];
 
     try {
-      const referenceDate = this.parseReferenceDate(this.toReferenceDateString(transaction.transaction_date));
       if (transaction.pocket_id) {
-        const parent = await this.getBudgetStatus({ userId, pocketId: String(transaction.pocket_id), asOfDate: this.toReferenceDateString(transaction.transaction_date) });
+        const parent = await this.getBudgetStatus({
+          userId,
+          pocketId: String(transaction.pocket_id),
+          asOfDate: referenceDateString,
+        });
         const child = parent.child_breakdown.find((item) => item.category.toLowerCase() === transaction.category?.toLowerCase());
         statuses = [parent];
         if (child) statuses.push({ ...parent, budget_id: child.budget_id, category: child.category, parent_budget_id: parent.budget_id, budget_amount: child.budget_amount, spent_amount: child.spent_amount, remaining_amount: child.remaining_amount, spent_percent: child.spent_percent, child_breakdown: [] });
       } else {
-        statuses = [await this.getDirectBudgetStatus(userId, transaction.category, referenceDate)];
+        statuses = [await this.getDirectBudgetStatus(
+          userId,
+          transaction.category,
+          this.parseReferenceDate(referenceDateString),
+        )];
       }
     } catch (error) {
       if (error instanceof NotFoundException) {
@@ -761,21 +778,44 @@ export class BudgetService {
 
     const alerts: BudgetWatchdogAlertDto[] = [];
 
-    for (const status of statuses) for (const alertType of this.resolveBudgetWatchdogAlertTypes(status)) {
-      const periodKey = this.periodKeyFromCycleStart(status.cycle_start);
-      const alertRecord = this.buildOverspendingAlertRecord({
-        userId,
-        budgetId: status.budget_id,
-        alertType,
-        thresholdPercent: this.thresholdPercentForAlertType(alertType),
-        periodKey,
+    for (const status of statuses) {
+      const forecast = calculateBudgetForecast({
+        spentAmount: status.spent_amount,
+        budgetAmount: status.budget_amount,
+        cycleStart: status.cycle_start,
+        cycleEnd: status.cycle_end,
+        asOfDate: referenceDateString,
       });
 
-      if (await this.hasBudgetAlert(alertRecord)) continue;
+      for (const alertType of this.resolveBudgetWatchdogAlertTypes(
+        status,
+        forecast,
+      )) {
+        const periodKey = this.periodKeyFromCycleStart(status.cycle_start);
+        const alertRecord = this.buildOverspendingAlertRecord({
+          userId,
+          budgetId: status.budget_id,
+          alertType,
+          thresholdPercent: this.thresholdPercentForAlertType(alertType),
+          periodKey,
+        });
 
-      const inserted = await this.insertBudgetAlert(alertRecord);
-      if (!inserted) continue;
-      alerts.push(this.buildWatchdogAlert(status, alertType));
+        if (await this.hasBudgetAlert(alertRecord)) continue;
+
+        const alert = this.buildWatchdogAlert(
+          status,
+          alertType,
+          forecast,
+          alertRecord,
+        );
+        if (alertType === 'budget_forecast_overrun') {
+          alerts.push(alert);
+          continue;
+        }
+
+        const inserted = await this.insertBudgetAlert(alertRecord);
+        if (inserted) alerts.push(alert);
+      }
     }
 
     return {
@@ -1084,6 +1124,7 @@ export class BudgetService {
 
   private resolveBudgetWatchdogAlertTypes(
     status: BudgetStatusResponseDto,
+    forecast: BudgetForecastResult | null,
   ): OverspendingAlertType[] {
     if (status.budget_amount <= 0) {
       return [];
@@ -1103,7 +1144,7 @@ export class BudgetService {
       alerts.push('budget_100');
     }
 
-    if (this.projectedCycleSpend(status) > status.budget_amount) {
+    if ((forecast?.projectedOverrun ?? 0) > 0) {
       alerts.push('budget_forecast_overrun');
     }
 
@@ -1113,18 +1154,29 @@ export class BudgetService {
   private buildWatchdogAlert(
     status: BudgetStatusResponseDto,
     type: OverspendingAlertType,
+    forecast: BudgetForecastResult | null,
+    alertRecord: OverspendingAlertRecordDto,
   ): BudgetWatchdogAlertDto {
-    const projectedCycleSpend = this.projectedCycleSpend(status);
-
-    return {
+    const base = {
       type,
       budgetId: status.budget_id,
       category: status.category,
       usedPercent: status.spent_percent,
       remainingAmount: status.remaining_amount,
-      safeDailySpend: this.safeDailySpend(status),
-      projectedCycleSpend,
-      projectedOverrun: Math.max(0, projectedCycleSpend - status.budget_amount),
+      safeDailySpend: forecast?.safeDailySpend ?? 0,
+      projectedCycleSpend: forecast?.projectedSpend ?? 0,
+      projectedOverrun: forecast?.projectedOverrun ?? 0,
+    };
+
+    if (type !== 'budget_forecast_overrun' || !forecast) return base;
+
+    const topDriver = this.forecastTopDriver(status);
+    return {
+      ...base,
+      topDriver,
+      telegramText: this.buildForecastTelegramText(status, forecast, topDriver),
+      miniAppUrl: this.forecastMiniAppUrl(status.budget_id),
+      alertRecord,
     };
   }
 
@@ -1148,39 +1200,65 @@ export class BudgetService {
       .join('\n');
   }
 
-  private safeDailySpend(status: BudgetStatusResponseDto): number {
-    const daysRemaining = Math.max(
-      1,
-      this.daysBetween(
-        new Date(),
-        new Date(`${status.cycle_end}T00:00:00.000Z`),
-      ),
-    );
-
-    return Math.max(0, Math.floor(status.remaining_amount / daysRemaining));
+  private forecastTopDriver(
+    status: BudgetStatusResponseDto,
+  ): BudgetWatchdogTopDriverDto {
+    const child = [...status.child_breakdown].sort(
+      (left, right) =>
+        right.spent_amount - left.spent_amount ||
+        left.category.localeCompare(right.category),
+    )[0];
+    return child
+      ? { category: child.category, amount: child.spent_amount }
+      : { category: status.category, amount: status.spent_amount };
   }
 
-  private projectedCycleSpend(status: BudgetStatusResponseDto): number {
-    const cycleStart = new Date(`${status.cycle_start}T00:00:00.000Z`);
-    const cycleEnd = new Date(`${status.cycle_end}T00:00:00.000Z`);
-    const elapsedDays = Math.max(1, this.daysBetween(cycleStart, new Date()));
-    const cycleDays = Math.max(1, this.daysBetween(cycleStart, cycleEnd));
+  private forecastMiniAppUrl(budgetId: string): string | null {
+    const configured = readEnv().veyraMiniAppBaseUrl?.trim();
+    if (!configured) return null;
 
-    return Math.round((status.spent_amount / elapsedDays) * cycleDays);
+    try {
+      const url = new URL(configured);
+      if (url.protocol !== 'https:') return null;
+      url.searchParams.set('startapp', `pocket_${budgetId}`);
+      return url.toString();
+    } catch {
+      return null;
+    }
   }
 
-  private daysBetween(start: Date, end: Date): number {
-    return Math.ceil((end.getTime() - start.getTime()) / 86_400_000);
+  private buildForecastTelegramText(
+    status: BudgetStatusResponseDto,
+    forecast: BudgetForecastResult,
+    topDriver: BudgetWatchdogTopDriverDto,
+  ): string {
+    return [
+      `${this.escapeTelegramHtml(status.category)} may exceed its budget by ${this.formatTelegramCurrency(forecast.projectedOverrun)} this cycle.`,
+      `${this.formatTelegramCurrency(status.spent_amount)} spent of ${this.formatTelegramCurrency(status.budget_amount)}.`,
+      `Safe daily spend: ${this.formatTelegramCurrency(forecast.safeDailySpend)}.`,
+      `Top driver: ${this.escapeTelegramHtml(topDriver.category)} (${this.formatTelegramCurrency(topDriver.amount)}).`,
+    ].join('\n');
   }
 
-  private toReferenceDateString(
+  private transactionLocalDate(
     value: string | Date | null,
-  ): string | undefined {
-    if (!value) {
-      return undefined;
+    timezone: string | null | undefined,
+  ): string {
+    const date = value instanceof Date ? value : new Date(value ?? '');
+    if (Number.isNaN(date.getTime())) {
+      throw new BadRequestException('transaction date must be valid');
     }
 
-    return value instanceof Date ? value.toISOString() : value;
+    try {
+      return new Intl.DateTimeFormat('en-CA', {
+        timeZone: this.cleanString(timezone ?? undefined) ?? 'Asia/Jakarta',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).format(date);
+    } catch {
+      throw new BadRequestException('timezone must be valid');
+    }
   }
 
   periodKeyFromCycleStart(cycleStart: string): string {

@@ -5,6 +5,7 @@ export interface CoreApiEnv {
   coreApiKey?: string;
   openAiApiKey?: string;
   openAiTimeoutMs: number;
+  veyraMiniAppBaseUrl?: string;
 }
 
 export function readEnv(): CoreApiEnv {
@@ -15,5 +16,6 @@ export function readEnv(): CoreApiEnv {
     coreApiKey: process.env.CORE_API_KEY,
     openAiApiKey: process.env.OPENAI_API_KEY,
     openAiTimeoutMs: Number(process.env.OPENAI_TIMEOUT_MS ?? 20000),
+    veyraMiniAppBaseUrl: process.env.VEYRA_MINI_APP_BASE_URL,
   };
 }

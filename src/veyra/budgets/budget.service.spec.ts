@@ -1905,7 +1905,7 @@ test('overspending handle returns no_alert without checking alert records below 
   });
 });
 
-test('overspending handle fetches transaction and records Telegram-ready watchdog alert', async () => {
+test('overspending handle records threshold alerts while returning forecast alerts', async () => {
   mock.timers.enable({
     apis: ['Date'],
     now: new Date('2026-07-05T02:00:00.000Z'),
@@ -1941,15 +1941,6 @@ test('overspending handle fetches transaction and records Telegram-ready watchdo
           period_key: '2026-06-25',
         },
       ],
-      [{ exists: false }],
-      [
-        {
-          budget_id: 12,
-          alert_type: 'budget_forecast_overrun',
-          threshold_percent: 0,
-          period_key: '2026-06-25',
-        },
-      ],
     ]);
 
     const result = await service.handleOverspending({
@@ -1959,7 +1950,7 @@ test('overspending handle fetches transaction and records Telegram-ready watchdo
       asOfDate: '2026-06-25',
     });
 
-    assert.equal(calls.length, 7);
+    assert.equal(calls.length, 6);
     assert.deepEqual(calls[0].values, ['123', '1']);
     assert.deepEqual(calls[3].values, ['1', '12', 'budget_75', '2026-06-25']);
     assert.match(calls[4].text, /INSERT INTO budget_alerts/);
@@ -1967,16 +1958,9 @@ test('overspending handle fetches transaction and records Telegram-ready watchdo
       calls[4].text,
       /INSERT INTO budget_alerts\s*\(\s*user_id/,
     );
-    assert.deepEqual(calls[5].values, [
-      '1',
-      '12',
-      'budget_forecast_overrun',
-      '2026-06-25',
-    ]);
-    assert.match(calls[6].text, /INSERT INTO budget_alerts/);
-    assert.doesNotMatch(
-      calls[6].text,
-      /INSERT INTO budget_alerts\s*\(\s*user_id/,
+    assert.equal(
+      calls.filter(({ text }) => /INSERT INTO budget_alerts/.test(text)).length,
+      1,
     );
     assert.equal(result.status, 'alert_required');
     assert.equal(result.shouldAlert, true);
@@ -1992,6 +1976,72 @@ test('overspending handle fetches transaction and records Telegram-ready watchdo
     });
   } finally {
     mock.timers.reset();
+  }
+});
+
+test('watchdog returns forecast facts without recording before delivery', async () => {
+  const previousUrl = process.env.VEYRA_MINI_APP_BASE_URL;
+  process.env.VEYRA_MINI_APP_BASE_URL = 'https://t.me/veyra/app';
+
+  try {
+    const { calls, service } = createService([
+      [{ id: 123, user_id: 1, transaction_type: 'expense', category: 'Dining', status: 'confirmed', transaction_date: '2026-08-20T12:00:00.000Z', pocket_id: '42' }],
+      [{ cycle_start_day: 1 }],
+      [{ budget_id: '42', category: 'Food', parent_budget_id: null, budget_amount: '1500000', spent_amount: '1000000', child_breakdown: [{ budget_id: '84', category: 'Dining', budget_amount: '1000000', spent_amount: '600000' }] }],
+      [{ exists: false }],
+    ]);
+
+    const result = await service.evaluateTransaction({ userId: 1, transactionId: 123, timezone: 'Asia/Jakarta' });
+    const alert = result.alerts[0];
+
+    assert.equal(calls.length, 4);
+    assert.equal(calls.some(({ text }) => /INSERT INTO budget_alerts/.test(text)), false);
+    assert.deepEqual(alert, {
+      type: 'budget_forecast_overrun', budgetId: '42', category: 'Food', usedPercent: 66.67,
+      remainingAmount: 500000, safeDailySpend: 45454, projectedCycleSpend: 1550000, projectedOverrun: 50000,
+      topDriver: { category: 'Dining', amount: 600000 },
+      telegramText: ['Food may exceed its budget by Rp50.000 this cycle.', 'Rp1.000.000 spent of Rp1.500.000.', 'Safe daily spend: Rp45.454.', 'Top driver: Dining (Rp600.000).'].join('\n'),
+      miniAppUrl: 'https://t.me/veyra/app?startapp=pocket_42',
+      alertRecord: { userId: '1', budgetId: '42', alertType: 'budget_forecast_overrun', thresholdPercent: 0, periodKey: '2026-08-01' },
+    });
+  } finally {
+    if (previousUrl === undefined) delete process.env.VEYRA_MINI_APP_BASE_URL;
+    else process.env.VEYRA_MINI_APP_BASE_URL = previousUrl;
+  }
+});
+
+test('watchdog suppresses an already recorded forecast', async () => {
+  const { service } = createService([
+    [{ id: 123, user_id: 1, transaction_type: 'expense', category: 'Food', status: 'confirmed', transaction_date: '2026-08-20T12:00:00.000Z', pocket_id: '42' }],
+    [{ cycle_start_day: 1 }],
+    [{ budget_id: '42', category: 'Food', parent_budget_id: null, budget_amount: '1500000', spent_amount: '1000000', child_breakdown: [] }],
+    [{ exists: true }],
+  ]);
+
+  const result = await service.evaluateTransaction({ userId: 1, transactionId: 123, timezone: 'Asia/Jakarta' });
+
+  assert.deepEqual(result.alerts, []);
+  assert.equal(result.hasAlert, false);
+});
+
+test('watchdog keeps forecast text when Mini App URL is missing', async () => {
+  const previousUrl = process.env.VEYRA_MINI_APP_BASE_URL;
+  delete process.env.VEYRA_MINI_APP_BASE_URL;
+
+  try {
+    const { service } = createService([
+      [{ id: 123, user_id: 1, transaction_type: 'expense', category: 'Food', status: 'confirmed', transaction_date: '2026-08-20T12:00:00.000Z', pocket_id: '42' }],
+      [{ cycle_start_day: 1 }],
+      [{ budget_id: '42', category: 'Food', parent_budget_id: null, budget_amount: '1500000', spent_amount: '1000000', child_breakdown: [] }],
+      [{ exists: false }],
+    ]);
+
+    const result = await service.evaluateTransaction({ userId: 1, transactionId: 123, timezone: 'Asia/Jakarta' });
+
+    assert.match(result.alerts[0]?.telegramText ?? '', /may exceed/);
+    assert.equal(result.alerts[0]?.miniAppUrl, null);
+  } finally {
+    if (previousUrl !== undefined) process.env.VEYRA_MINI_APP_BASE_URL = previousUrl;
   }
 });
 

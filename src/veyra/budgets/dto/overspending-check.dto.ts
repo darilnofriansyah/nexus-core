@@ -71,6 +71,11 @@ export type BudgetWatchdogSkipReason =
   | 'transaction_category_missing'
   | 'budget_not_found';
 
+export interface BudgetWatchdogTopDriverDto {
+  category: string;
+  amount: number;
+}
+
 export interface BudgetWatchdogAlertDto {
   type: OverspendingAlertType;
   budgetId: string;
@@ -80,6 +85,10 @@ export interface BudgetWatchdogAlertDto {
   safeDailySpend: number;
   projectedCycleSpend: number;
   projectedOverrun: number;
+  topDriver?: BudgetWatchdogTopDriverDto;
+  telegramText?: string;
+  miniAppUrl?: string | null;
+  alertRecord?: OverspendingAlertRecordDto;
 }
 
 export interface BudgetWatchdogResponseDto {
