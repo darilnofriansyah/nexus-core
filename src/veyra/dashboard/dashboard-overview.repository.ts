@@ -16,6 +16,7 @@ export interface DashboardTransaction {
   amount: number;
   merchant: string | null;
   category: string | null;
+  pocketId: string | null;
   date: string;
   timestamp: string;
 }
@@ -46,6 +47,7 @@ interface TransactionRow extends QueryResultRow {
   amount: string | number;
   merchant: string | null;
   category: string | null;
+  pocket_id: string | number | null;
   transaction_day: string;
   transaction_date: string | Date;
 }
@@ -108,6 +110,7 @@ export class DashboardOverviewRepository {
           amount,
           COALESCE(merchant_normalized, merchant) AS merchant,
           category,
+          pocket_id,
           to_char(transaction_date AT TIME ZONE $4, 'YYYY-MM-DD') AS transaction_day,
           transaction_date
         FROM transactions
@@ -127,6 +130,7 @@ export class DashboardOverviewRepository {
       amount: Math.round(Number(row.amount)),
       merchant: row.merchant,
       category: row.category,
+      pocketId: row.pocket_id === null ? null : String(row.pocket_id),
       date: row.transaction_day,
       timestamp:
         row.transaction_date instanceof Date

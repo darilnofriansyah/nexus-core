@@ -28,6 +28,7 @@ test('overview delegates the request and returns the service response', async ()
       dailySpend: [],
       categories: [],
       budgets: [],
+      attention: [],
       creditCard: { limit: 0, used: 0, statementBalance: 0 },
       recentTransactions: [],
     },

@@ -72,6 +72,7 @@ function transaction(
   type: 'income' | 'expense' = 'expense',
   category: string | null = 'Food',
   merchant: string | null = 'Merchant',
+  pocketId: string | null = null,
 ): DashboardTransaction {
   return {
     id,
@@ -80,6 +81,7 @@ function transaction(
     type,
     category,
     merchant,
+    pocketId,
     timestamp: `${date}T03:00:00.000Z`,
   };
 }
@@ -323,7 +325,7 @@ test('maps cashflow, daily spending, categories, recent transactions, and parent
     transaction('1', '2026-07-05', 10000000, 'income', null, null),
   ];
   repository.budgets = [
-    { id: '10', parentId: null, category: 'Living', amount: 9999999 },
+    { id: '10', parentId: null, category: 'Living', amount: 0 },
     { id: '11', parentId: '10', category: 'Food', amount: 1500000 },
     { id: '12', parentId: '10', category: 'Transport', amount: 2000000 },
     { id: '20', parentId: null, category: 'Shopping', amount: 1000000 },
@@ -348,6 +350,7 @@ test('maps cashflow, daily spending, categories, recent transactions, and parent
     'budgets',
     'recentTransactions',
     'creditCard',
+    'attention',
   ]);
   assert.equal(result.current.hasTransactions, true);
   assert.deepEqual(result.current.totals, {
@@ -493,6 +496,117 @@ test('applies budget status thresholds and returns four highest priorities', asy
   );
 });
 
+test('uses a positive parent amount before child budget totals', async () => {
+  const { repository, service } = createService();
+  repository.budgets = [
+    { id: '42', parentId: null, category: 'Food', amount: 2_000_000 },
+    { id: '84', parentId: '42', category: 'Dining', amount: 500_000 },
+    { id: '85', parentId: '42', category: 'Groceries', amount: 700_000 },
+  ];
+
+  const result = await service.getOverview({
+    userId: 1,
+    asOfDate: '2026-08-20',
+  });
+
+  assert.equal(result.current.budgets[0]?.limit, 2_000_000);
+});
+
+test('returns live pocket forecast attention ordered by overrun', async () => {
+  const { repository, service } = createService();
+  repository.budgets = [
+    { id: '42', parentId: null, category: 'Food', amount: 1_500_000 },
+    { id: '43', parentId: null, category: 'Transport', amount: 500_000 },
+  ];
+  repository.transactions = [
+    transaction('1', '2026-08-20', 1_000_000, 'expense', 'Dining', 'TUKU', '42'),
+    transaction('2', '2026-08-20', 400_000, 'expense', 'Ride', 'Gojek', '43'),
+  ];
+
+  const result = await service.getOverview({
+    userId: 1,
+    asOfDate: '2026-08-20',
+    timezone: 'Asia/Jakarta',
+  });
+
+  assert.deepEqual(
+    result.current.attention.map(({ pocketId, projectedOverrun }) => ({
+      pocketId,
+      projectedOverrun,
+    })),
+    [
+      { pocketId: '43', projectedOverrun: 120000 },
+      { pocketId: '42', projectedOverrun: 50000 },
+    ],
+  );
+  assert.deepEqual(result.current.attention[1]?.topDriver, {
+    category: 'Dining',
+    amount: 1000000,
+  });
+});
+
+test('omits attention after a pocket projection resolves', async () => {
+  const { repository, service } = createService();
+  repository.budgets = [
+    { id: '42', parentId: null, category: 'Food', amount: 1_500_000 },
+  ];
+  repository.transactions = [
+    transaction('1', '2026-08-20', 500_000, 'expense', 'Dining', 'TUKU', '42'),
+  ];
+
+  const result = await service.getOverview({
+    userId: 1,
+    asOfDate: '2026-08-20',
+  });
+
+  assert.deepEqual(result.current.attention, []);
+});
+
+test('invalid forecast inputs preserve the rest of the dashboard', async () => {
+  const { repository, service } = createService();
+  repository.budgets = [
+    { id: '42', parentId: null, category: 'Food', amount: Number.NaN },
+  ];
+  repository.transactions = [
+    transaction('1', '2026-08-20', 25000, 'expense', 'Dining', 'TUKU', '42'),
+  ];
+
+  const result = await service.getOverview({
+    userId: 1,
+    asOfDate: '2026-08-20',
+  });
+
+  assert.equal(result.current.totals.spent, 25000);
+  assert.deepEqual(result.current.attention, []);
+});
+
+test('explicit pocket assignment wins before legacy category fallback', async () => {
+  const { repository, service } = createService();
+  repository.budgets = [
+    { id: '42', parentId: null, category: 'Food Pocket', amount: 1_000_000 },
+    { id: '84', parentId: '42', category: 'Dining', amount: 500_000 },
+    { id: '43', parentId: null, category: 'Travel Pocket', amount: 1_000_000 },
+    { id: '85', parentId: '43', category: 'dining', amount: 500_000 },
+  ];
+  repository.transactions = [
+    transaction('1', '2026-08-20', 100, 'expense', 'Dining', 'TUKU', '42'),
+    transaction('2', '2026-08-20', 50, 'expense', 'Dining', 'Legacy', null),
+  ];
+
+  const result = await service.getOverview({
+    userId: 1,
+    asOfDate: '2026-08-20',
+  });
+
+  assert.deepEqual(
+    result.current.budgets.map(({ category, spent }) => ({ category, spent })),
+    [
+      { category: 'Food Pocket', spent: 150 },
+      { category: 'Travel Pocket', spent: 50 },
+    ],
+  );
+});
+
 test('returns complete zero and empty sections for a valid inactive user', async () => {
   const { service } = createService();
 
@@ -512,6 +626,7 @@ test('returns complete zero and empty sections for a valid inactive user', async
   assert.deepEqual(result.current.dailySpend, []);
   assert.deepEqual(result.current.categories, []);
   assert.deepEqual(result.current.budgets, []);
+  assert.deepEqual(result.current.attention, []);
   assert.deepEqual(result.current.recentTransactions, []);
   assert.deepEqual(result.current.creditCard, {
     limit: 0,

@@ -1,15 +1,17 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import {
-  DashboardBudgetDto,
+  DashboardAttentionDto,
   DashboardBudgetStatus,
   DashboardCategoryDto,
   DashboardCreditCardDto,
   DashboardOverviewRequestDto,
   DashboardOverviewResponseDto,
+  DashboardCurrentPeriodOverviewDto,
   DashboardPeriodDto,
   DashboardPeriodOverviewDto,
   DashboardTotalsDto,
@@ -20,6 +22,7 @@ import {
   DashboardOverviewRepository,
   DashboardTransaction,
 } from './dashboard-overview.repository';
+import { calculateBudgetForecast } from '../budgets/budget-forecast';
 
 interface Month {
   year: number;
@@ -32,8 +35,18 @@ interface CycleSet {
   beforePrevious: DashboardPeriodDto;
 }
 
+interface DashboardPocketSnapshot {
+  id: string;
+  name: string;
+  limit: number;
+  spent: number;
+  expenses: DashboardTransaction[];
+}
+
 @Injectable()
 export class DashboardOverviewService {
+  private readonly logger = new Logger(DashboardOverviewService.name);
+
   constructor(private readonly repository: DashboardOverviewRepository) {}
 
   async getOverview(
@@ -81,6 +94,7 @@ export class DashboardOverviewService {
         transactions,
         budgets,
         creditCardSummaries,
+        asOfDate,
       ),
       previous: this.previousOverview(
         cycles,
@@ -97,22 +111,34 @@ export class DashboardOverviewService {
     transactions: DashboardTransaction[],
     budgets: DashboardBudget[],
     creditCardSummaries: DashboardCreditCardSummary[],
-  ): DashboardPeriodOverviewDto {
+    asOfDate: string,
+  ): DashboardCurrentPeriodOverviewDto {
     const elapsedDays = this.daysBetween(cycles.current.start, currentEnd);
     const comparisonEnd = this.earlier(
       this.addDays(cycles.previous.start, elapsedDays),
       cycles.previous.end,
     );
 
-    return this.overview(
+    const currentTransactions = this.inPeriod(
+      transactions,
+      cycles.current.start,
+      currentEnd,
+    );
+    const snapshots = this.pocketSnapshots(budgets, currentTransactions);
+    const overview = this.overview(
       cycles.current,
-      this.inPeriod(transactions, cycles.current.start, currentEnd),
+      currentTransactions,
       this.inPeriod(transactions, cycles.previous.start, comparisonEnd),
       elapsedDays,
       this.daysBetween(cycles.previous.start, comparisonEnd),
-      budgets,
+      snapshots,
       this.creditCard(creditCardSummaries, cycles.current.start),
     );
+
+    return {
+      ...overview,
+      attention: this.attention(snapshots, cycles.current, asOfDate),
+    };
   }
 
   private previousOverview(
@@ -121,9 +147,15 @@ export class DashboardOverviewService {
     budgets: DashboardBudget[],
     creditCardSummaries: DashboardCreditCardSummary[],
   ): DashboardPeriodOverviewDto {
+    const previousTransactions = this.inPeriod(
+      transactions,
+      cycles.previous.start,
+      cycles.previous.end,
+    );
+
     return this.overview(
       cycles.previous,
-      this.inPeriod(transactions, cycles.previous.start, cycles.previous.end),
+      previousTransactions,
       this.inPeriod(
         transactions,
         cycles.beforePrevious.start,
@@ -131,7 +163,7 @@ export class DashboardOverviewService {
       ),
       this.daysBetween(cycles.previous.start, cycles.previous.end),
       this.daysBetween(cycles.beforePrevious.start, cycles.beforePrevious.end),
-      budgets,
+      this.pocketSnapshots(budgets, previousTransactions),
       this.creditCard(creditCardSummaries, cycles.previous.start),
     );
   }
@@ -142,7 +174,7 @@ export class DashboardOverviewService {
     comparisonTransactions: DashboardTransaction[],
     days: number,
     comparisonDays: number,
-    budgets: DashboardBudget[],
+    snapshots: DashboardPocketSnapshot[],
     creditCard: DashboardCreditCardDto,
   ): DashboardPeriodOverviewDto {
     return {
@@ -152,7 +184,23 @@ export class DashboardOverviewService {
       comparison: this.totals(comparisonTransactions, comparisonDays),
       dailySpend: this.dailySpend(transactions),
       categories: this.categories(transactions),
-      budgets: this.budgets(budgets, transactions),
+      budgets: snapshots
+        .map(({ name, limit, spent }) => {
+          const percent =
+            limit === 0 ? 0 : Math.round((spent / limit) * 10000) / 100;
+          return {
+            category: name,
+            limit,
+            spent,
+            percent,
+            status: this.budgetStatus(percent),
+          };
+        })
+        .sort(
+          (left, right) =>
+            right.spent - left.spent || right.percent - left.percent,
+        )
+        .slice(0, 4),
       recentTransactions: transactions.slice(0, 5).map((transaction) => ({
         id: transaction.id,
         date: transaction.date,
@@ -267,49 +315,110 @@ export class DashboardOverviewService {
     }));
   }
 
-  private budgets(
+  private pocketSnapshots(
     budgets: DashboardBudget[],
     transactions: DashboardTransaction[],
-  ): DashboardBudgetDto[] {
+  ): DashboardPocketSnapshot[] {
     const expenses = transactions.filter(({ type }) => type === 'expense');
 
     return budgets
       .filter(({ parentId }) => parentId === null)
-      .map((budget) => this.budget(budget, budgets, expenses))
-      .sort(
-        (left, right) =>
-          right.spent - left.spent || right.percent - left.percent,
-      )
-      .slice(0, 4);
+      .map((budget) => {
+        const children = budgets.filter(({ parentId }) => parentId === budget.id);
+        const legacyCategories = new Set(
+          (children.length ? children : [budget]).map(({ category }) =>
+            category.trim().toLocaleLowerCase(),
+          ),
+        );
+        const scopedExpenses = expenses.filter(
+          (transaction) =>
+            transaction.pocketId === budget.id ||
+            (transaction.pocketId === null &&
+              transaction.category !== null &&
+              legacyCategories.has(
+                transaction.category.trim().toLocaleLowerCase(),
+              )),
+        );
+        const limit =
+          budget.amount > 0
+            ? budget.amount
+            : children.reduce((sum, child) => sum + child.amount, 0);
+
+        return {
+          id: budget.id,
+          name: budget.category,
+          limit,
+          spent: scopedExpenses.reduce((sum, item) => sum + item.amount, 0),
+          expenses: scopedExpenses,
+        };
+      });
   }
 
-  private budget(
-    budget: DashboardBudget,
-    budgets: DashboardBudget[],
-    expenses: DashboardTransaction[],
-  ): DashboardBudgetDto {
-    const children = budgets.filter(({ parentId }) => parentId === budget.id);
-    const scope = children.length ? children : [budget];
-    const categories = new Set(
-      scope.map(({ category }) => category.toLocaleLowerCase()),
-    );
-    const limit = scope.reduce((sum, item) => sum + item.amount, 0);
-    const spent = expenses
-      .filter(
-        ({ category }) =>
-          category !== null &&
-          categories.has(category.trim().toLocaleLowerCase()),
-      )
-      .reduce((sum, item) => sum + item.amount, 0);
-    const percent = limit === 0 ? 0 : Math.round((spent / limit) * 10000) / 100;
+  private attention(
+    snapshots: DashboardPocketSnapshot[],
+    period: DashboardPeriodDto,
+    asOfDate: string,
+  ): DashboardAttentionDto[] {
+    try {
+      return snapshots
+        .map((snapshot) => {
+          const forecast = calculateBudgetForecast({
+            spentAmount: snapshot.spent,
+            budgetAmount: snapshot.limit,
+            cycleStart: period.start,
+            cycleEnd: period.end,
+            asOfDate,
+          });
+          if (!forecast || forecast.projectedOverrun === 0) return null;
 
-    return {
-      category: budget.category,
-      limit,
-      spent,
-      percent,
-      status: this.budgetStatus(percent),
-    };
+          return {
+            type: 'budget_forecast_overrun' as const,
+            pocketId: snapshot.id,
+            pocketName: snapshot.name,
+            limit: snapshot.limit,
+            spent: snapshot.spent,
+            projectedSpend: forecast.projectedSpend,
+            projectedOverrun: forecast.projectedOverrun,
+            safeDailySpend: forecast.safeDailySpend,
+            topDriver: this.topDriver(snapshot),
+          };
+        })
+        .filter((item): item is DashboardAttentionDto => item !== null)
+        .sort(
+          (left, right) =>
+            right.projectedOverrun - left.projectedOverrun ||
+            left.pocketName.localeCompare(right.pocketName),
+        );
+    } catch (error) {
+      this.logger.warn(
+        'Dashboard forecast attention calculation failed',
+        error instanceof Error ? error.message : undefined,
+      );
+      return [];
+    }
+  }
+
+  private topDriver(snapshot: DashboardPocketSnapshot): {
+    category: string;
+    amount: number;
+  } {
+    const totals = new Map<string, { category: string; amount: number }>();
+
+    for (const transaction of snapshot.expenses) {
+      const category = transaction.category?.trim() || 'Uncategorized';
+      const key = category.toLocaleLowerCase();
+      const current = totals.get(key) ?? { category, amount: 0 };
+      current.amount += transaction.amount;
+      totals.set(key, current);
+    }
+
+    return (
+      [...totals.values()].sort(
+        (left, right) =>
+          right.amount - left.amount ||
+          left.category.localeCompare(right.category),
+      )[0] ?? { category: snapshot.name, amount: snapshot.spent }
+    );
   }
 
   private budgetStatus(percent: number): DashboardBudgetStatus {

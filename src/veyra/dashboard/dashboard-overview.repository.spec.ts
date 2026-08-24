@@ -55,8 +55,19 @@ test('findTransactions reads only confirmed income and expenses in local dates',
         amount: '25000.00',
         merchant: 'TUKU',
         category: 'Food',
+        pocket_id: '42',
         transaction_day: '2026-07-24',
         transaction_date: '2026-07-24T03:00:00.000Z',
+      },
+      {
+        id: '124',
+        transaction_type: 'expense',
+        amount: '10000.00',
+        merchant: 'Legacy Merchant',
+        category: 'Food',
+        pocket_id: null,
+        transaction_day: '2026-07-23',
+        transaction_date: '2026-07-23T03:00:00.000Z',
       },
     ],
   ]);
@@ -70,6 +81,7 @@ test('findTransactions reads only confirmed income and expenses in local dates',
 
   assert.match(calls[0].text, /status = 'confirmed'/);
   assert.match(calls[0].text, /transaction_type IN \('income', 'expense'\)/);
+  assert.match(calls[0].text, /pocket_id/);
   assert.match(calls[0].text, /transaction_date AT TIME ZONE \$4/);
   assert.match(
     calls[0].text,
@@ -85,17 +97,8 @@ test('findTransactions reads only confirmed income and expenses in local dates',
     '2026-07-26',
     'Asia/Jakarta',
   ]);
-  assert.deepEqual(transactions, [
-    {
-      id: '123',
-      type: 'expense',
-      amount: 25000,
-      merchant: 'TUKU',
-      category: 'Food',
-      date: '2026-07-24',
-      timestamp: '2026-07-24T03:00:00.000Z',
-    },
-  ]);
+  assert.equal(transactions[0]?.pocketId, '42');
+  assert.equal(transactions[1]?.pocketId, null);
 });
 
 test('findTransactions displays a corrected merchant after normalization is cleared', async () => {

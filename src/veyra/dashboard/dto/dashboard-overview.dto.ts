@@ -72,8 +72,28 @@ export interface DashboardPeriodOverviewDto {
   creditCard: DashboardCreditCardDto;
 }
 
+export interface DashboardAttentionDto {
+  type: 'budget_forecast_overrun';
+  pocketId: string;
+  pocketName: string;
+  limit: number;
+  spent: number;
+  projectedSpend: number;
+  projectedOverrun: number;
+  safeDailySpend: number;
+  topDriver: {
+    category: string;
+    amount: number;
+  };
+}
+
+export interface DashboardCurrentPeriodOverviewDto
+  extends DashboardPeriodOverviewDto {
+  attention: DashboardAttentionDto[];
+}
+
 export interface DashboardOverviewResponseDto {
   user: DashboardOverviewUserDto;
-  current: DashboardPeriodOverviewDto;
+  current: DashboardCurrentPeriodOverviewDto;
   previous: DashboardPeriodOverviewDto;
 }
