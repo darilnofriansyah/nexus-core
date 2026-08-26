@@ -7,6 +7,9 @@ const tsconfigRootDir = dirname(fileURLToPath(import.meta.url));
 
 export default [
   {
+    ignores: ['src/generated/prisma/**'],
+  },
+  {
     files: ['src/**/*.ts'],
     languageOptions: {
       parser: tsParser,
