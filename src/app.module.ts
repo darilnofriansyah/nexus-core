@@ -3,11 +3,12 @@ import { APP_GUARD } from '@nestjs/core';
 import { AegisModule } from './aegis/aegis.module';
 import { ApiKeyGuard } from './common/guards/api-key.guard';
 import { DatabaseModule } from './database/database.module';
+import { PrismaModule } from './database/prisma.module';
 import { HealthController } from './health/health.controller';
 import { VeyraModule } from './veyra/veyra.module';
 
 @Module({
-  imports: [DatabaseModule, AegisModule, VeyraModule],
+  imports: [DatabaseModule, PrismaModule, AegisModule, VeyraModule],
   controllers: [HealthController],
   providers: [
     {
