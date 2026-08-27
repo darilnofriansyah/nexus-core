@@ -7,7 +7,10 @@ import {
   type RovelleAsset,
 } from "../../generated/prisma/client";
 import type { CreateAssetReservationRequestDto } from "./dto/asset.dto";
-import { AssetRepository } from "./asset.repository";
+import {
+  AssetRepository,
+  type ReservedAssetFenceResult,
+} from "./asset.repository";
 import { AssetService } from "./asset.service";
 import type {
   R2ObjectMetadata,
@@ -55,7 +58,11 @@ const getUrl: R2PresignedRequest = {
 
 class StubAssetRepository implements Pick<
   AssetRepository,
-  "episodeExists" | "createReserved" | "findById" | "markAvailable"
+  | "episodeExists"
+  | "createReserved"
+  | "findById"
+  | "markAvailable"
+  | "withReservedAsset"
 > {
   episodeExistsResult = true;
   asset: RovelleAsset | null = reservedAsset;
@@ -90,6 +97,17 @@ class StubAssetRepository implements Pick<
     return this.asset;
   }
 
+  async withReservedAsset<T>(
+    _id: string,
+    callback: (asset: RovelleAsset) => Promise<T>,
+  ): Promise<ReservedAssetFenceResult<T>> {
+    if (!this.asset) return { kind: "missing" };
+    if (this.asset.status !== RovelleAssetStatus.RESERVED) {
+      return { kind: "not_reserved", asset: this.asset };
+    }
+    return { kind: "reserved", value: await callback(this.asset) };
+  }
+
   async markAvailable(
     _id: string,
     metadata: { byteSize: bigint; etag: string | null },
@@ -106,6 +124,53 @@ class StubAssetRepository implements Pick<
       etag: metadata.etag,
     };
     return this.asset;
+  }
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
+class CoordinatedAssetRepository extends StubAssetRepository {
+  readonly fenceStarted = deferred<void>();
+  readonly releaseFence = deferred<void>();
+  private fenceInUse = false;
+  private firstFind = true;
+
+  override async findById(_id: string): Promise<RovelleAsset | null> {
+    const snapshot = this.asset;
+    if (!this.fenceInUse && this.firstFind) {
+      this.firstFind = false;
+      this.fenceStarted.resolve(undefined);
+      await this.releaseFence.promise;
+    }
+    return snapshot;
+  }
+
+  override async withReservedAsset<T>(
+    _id: string,
+    callback: (asset: RovelleAsset) => Promise<T>,
+  ): Promise<ReservedAssetFenceResult<T>> {
+    this.fenceInUse = true;
+    const snapshot = this.asset;
+    this.fenceStarted.resolve(undefined);
+    await this.releaseFence.promise;
+
+    if (!this.asset) return { kind: "missing" };
+    if (this.asset.status !== RovelleAssetStatus.RESERVED) {
+      return { kind: "not_reserved", asset: this.asset };
+    }
+    return {
+      kind: "reserved",
+      value: await callback(snapshot ?? this.asset),
+    };
   }
 }
 
@@ -343,9 +408,26 @@ test("createReadUrl returns a GET descriptor without exposing the storage key", 
   const result = await service.createReadUrl(ASSET_ID);
 
   assert.deepEqual(storage.getCalls, [availableAsset.storageKey]);
-  assert.deepEqual(result.read, getUrl);
+  assert.deepEqual(result.download, getUrl);
   assert.equal(result.asset.status, RovelleAssetStatus.AVAILABLE);
   assert.equal("storageKey" in result.asset, false);
+});
+
+test("createUploadUrl does not sign after a concurrent confirmation", async () => {
+  const repository = new CoordinatedAssetRepository();
+  const storage = new StubR2Storage();
+  const service = new AssetService(
+    repository as unknown as AssetRepository,
+    storage as unknown as R2StorageService,
+  );
+
+  const pending = service.createUploadUrl(ASSET_ID);
+  await repository.fenceStarted.promise;
+  await service.confirmUpload(ASSET_ID);
+  repository.releaseFence.resolve(undefined);
+
+  await assert.rejects(() => pending, BadRequestException);
+  assert.equal(storage.putCalls.length, 0);
 });
 
 test("asset operations reject a missing asset", async () => {

@@ -92,9 +92,13 @@ export function normalizeAssetReservationRequest(
 }
 
 export function buildAssetStorageKey(assetId: string): string {
+  assertAssetId(assetId);
+
+  return `ringmaster/assets/${assetId}`;
+}
+
+export function assertAssetId(assetId: string): void {
   if (typeof assetId !== 'string' || !UUID_PATTERN.test(assetId)) {
     throw new BadRequestException('assetId must be a valid UUID');
   }
-
-  return `ringmaster/assets/${assetId}`;
 }

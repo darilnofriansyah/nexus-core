@@ -31,5 +31,5 @@ export interface AssetReservationDto {
 
 export interface AssetReadUrlDto {
   asset: AssetDto;
-  read: R2PresignedRequest;
+  download: R2PresignedRequest;
 }

@@ -78,17 +78,20 @@ describe('Rovelle asset mapping', () => {
       headers: { 'content-type': 'text/plain' },
       expiresAt: '2026-08-27T00:15:00.000Z',
     };
-    const read = {
+    const download = {
       method: 'GET' as const,
       url: 'https://signed.example/get',
       headers: {},
       expiresAt: '2026-08-27T00:15:00.000Z',
     };
     const reservation: AssetReservationDto = { asset: toAssetDto(asset), upload };
-    const readResponse: AssetReadUrlDto = { asset: toAssetDto(asset), read };
+    const readResponse: AssetReadUrlDto = {
+      asset: toAssetDto(asset),
+      download,
+    };
 
     assert.equal(reservation.upload.method, 'PUT');
-    assert.equal(readResponse.read.method, 'GET');
+    assert.equal(readResponse.download.method, 'GET');
     assert.equal('storageKey' in reservation.asset, false);
     assert.equal('storageKey' in readResponse.asset, false);
   });

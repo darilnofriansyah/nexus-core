@@ -6,6 +6,11 @@ import {
 } from "../../generated/prisma/client";
 import { PrismaService } from "../../database/prisma.service";
 
+export type ReservedAssetFenceResult<T> =
+  | { kind: "missing" }
+  | { kind: "not_reserved"; asset: RovelleAsset }
+  | { kind: "reserved"; value: T };
+
 @Injectable()
 export class AssetRepository {
   constructor(private readonly prisma: PrismaService) {}
@@ -62,5 +67,33 @@ export class AssetRepository {
     });
 
     return this.findById(id);
+  }
+
+  async withReservedAsset<T>(
+    id: string,
+    callback: (asset: RovelleAsset) => Promise<T>,
+  ): Promise<ReservedAssetFenceResult<T>> {
+    return this.prisma.client.$transaction(async (tx) => {
+      const locked = await tx.rovelleAsset.updateMany({
+        where: {
+          id,
+          status: RovelleAssetStatus.RESERVED,
+        },
+        data: { status: RovelleAssetStatus.RESERVED },
+      });
+      const asset = await tx.rovelleAsset.findUnique({
+        where: { id },
+      });
+
+      if (!asset) return { kind: "missing" };
+      if (locked.count !== 1 || asset.status !== RovelleAssetStatus.RESERVED) {
+        return { kind: "not_reserved", asset };
+      }
+
+      return {
+        kind: "reserved",
+        value: await callback(asset),
+      };
+    });
   }
 }

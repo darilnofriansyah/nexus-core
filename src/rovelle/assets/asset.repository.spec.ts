@@ -7,6 +7,7 @@ import {
   type RovelleAsset,
 } from "../../generated/prisma/client";
 import { AssetRepository } from "./asset.repository";
+import type { ReservedAssetFenceResult } from "./asset.repository";
 
 type RepositoryCall = {
   operation: string;
@@ -165,4 +166,51 @@ test("markAvailable reloads the current asset after a conditional update miss", 
     current,
   );
   assert.equal(calls.at(-1)?.operation, "asset.findUnique");
+});
+
+test("withReservedAsset fences the RESERVED check and callback in a transaction", async () => {
+  const calls: RepositoryCall[] = [];
+  const transactionClient = {
+    rovelleAsset: {
+      updateMany: async (args: unknown) => {
+        calls.push({ operation: "asset.updateMany", args });
+        return { count: 1 };
+      },
+      findUnique: async (args: unknown) => {
+        calls.push({ operation: "asset.findUnique", args });
+        return asset;
+      },
+    },
+  };
+  const prisma = {
+    client: {
+      $transaction: async <T>(
+        callback: (tx: typeof transactionClient) => Promise<T>,
+      ) => callback(transactionClient),
+    },
+  } as unknown as PrismaService;
+  const repository = new AssetRepository(prisma);
+
+  const result = await repository.withReservedAsset(
+    asset.id,
+    async (lockedAsset) => lockedAsset.id,
+  );
+
+  assert.deepEqual(result, {
+    kind: "reserved",
+    value: asset.id,
+  } satisfies ReservedAssetFenceResult<string>);
+  assert.deepEqual(calls, [
+    {
+      operation: "asset.updateMany",
+      args: {
+        where: { id: asset.id, status: RovelleAssetStatus.RESERVED },
+        data: { status: RovelleAssetStatus.RESERVED },
+      },
+    },
+    {
+      operation: "asset.findUnique",
+      args: { where: { id: asset.id } },
+    },
+  ]);
 });

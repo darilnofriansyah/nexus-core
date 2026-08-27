@@ -64,17 +64,25 @@ export class AssetService {
   }
 
   async createUploadUrl(id: string): Promise<AssetReservationDto> {
-    const asset = await this.findAssetOrThrow(id);
+    const result = await this.repository.withReservedAsset(
+      id,
+      async (asset) => {
+        const upload = await this.storage.createPutUrl(
+          asset.storageKey,
+          asset.mediaType,
+        );
+        return { asset: toAssetDto(asset), upload };
+      },
+    );
 
-    if (asset.status !== RovelleAssetStatus.RESERVED) {
+    if (result.kind === "missing") {
+      throw new NotFoundException("Rovelle asset not found");
+    }
+    if (result.kind !== "reserved") {
       throw new BadRequestException("Available assets cannot be overwritten");
     }
 
-    const upload = await this.storage.createPutUrl(
-      asset.storageKey,
-      asset.mediaType,
-    );
-    return { asset: toAssetDto(asset), upload };
+    return result.value;
   }
 
   async confirmUpload(id: string): Promise<AssetDto> {
@@ -119,8 +127,8 @@ export class AssetService {
       throw new BadRequestException("Asset is not available for reading");
     }
 
-    const read = await this.storage.createGetUrl(asset.storageKey);
-    return { asset: toAssetDto(asset), read };
+    const download = await this.storage.createGetUrl(asset.storageKey);
+    return { asset: toAssetDto(asset), download };
   }
 
   private async findAssetOrThrow(id: string): Promise<RovelleAsset> {

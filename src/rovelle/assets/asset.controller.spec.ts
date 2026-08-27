@@ -1,5 +1,6 @@
 import * as assert from "node:assert/strict";
 import { test } from "node:test";
+import { BadRequestException } from "@nestjs/common";
 import type { CreateAssetReservationRequestDto } from "./dto/asset.dto";
 import { AssetController } from "./asset.controller";
 import { AssetService } from "./asset.service";
@@ -8,8 +9,10 @@ const reservationRequest: CreateAssetReservationRequestDto = {
   assetType: "SOURCE",
   mediaType: "text/plain",
   originalFilename: "source.txt",
-  episodeId: "episode-1",
+  episodeId: "123e4567-e89b-42d3-a456-426614174000",
 };
+
+const assetId = "550e8400-e29b-41d4-a716-446655440000";
 
 const data = { id: "asset-1", status: "AVAILABLE" };
 
@@ -55,29 +58,29 @@ const routeCases = [
   {
     name: "gets an asset",
     method: "getAsset",
-    args: ["asset-1"],
-    call: (controller: AssetController) => controller.getAsset("asset-1"),
+    args: [assetId],
+    call: (controller: AssetController) => controller.getAsset(assetId),
   },
   {
     name: "creates an upload URL",
     method: "createUploadUrl",
-    args: ["asset-1"],
+    args: [assetId],
     call: (controller: AssetController) =>
-      controller.createUploadUrl("asset-1"),
+      controller.createUploadUrl(assetId),
   },
   {
     name: "confirms an upload",
     method: "confirmUpload",
-    args: ["asset-1"],
+    args: [assetId],
     call: (controller: AssetController) =>
-      controller.confirmUpload("asset-1"),
+      controller.confirmUpload(assetId),
   },
   {
     name: "creates a read URL",
     method: "createReadUrl",
-    args: ["asset-1"],
+    args: [assetId],
     call: (controller: AssetController) =>
-      controller.createReadUrl("asset-1"),
+      controller.createReadUrl(assetId),
   },
 ] as const;
 
@@ -93,3 +96,18 @@ for (const routeCase of routeCases) {
     ]);
   });
 }
+
+test("rejects malformed asset IDs before calling the service", async () => {
+  const routes = [
+    (controller: AssetController) => controller.getAsset("not-a-uuid"),
+    (controller: AssetController) => controller.createUploadUrl("not-a-uuid"),
+    (controller: AssetController) => controller.confirmUpload("not-a-uuid"),
+    (controller: AssetController) => controller.createReadUrl("not-a-uuid"),
+  ];
+
+  for (const route of routes) {
+    const { calls, controller } = createController();
+    await assert.rejects(() => route(controller), BadRequestException);
+    assert.deepEqual(calls, []);
+  }
+});
