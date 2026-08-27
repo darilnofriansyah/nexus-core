@@ -8,6 +8,11 @@ export interface CoreApiEnv {
   openAiApiKey?: string;
   openAiTimeoutMs: number;
   veyraMiniAppBaseUrl?: string;
+  r2AccountId?: string;
+  r2AccessKeyId?: string;
+  r2SecretAccessKey?: string;
+  r2Bucket?: string;
+  r2PresignTtlSeconds: number;
 }
 
 export function readEnv(): CoreApiEnv {
@@ -23,5 +28,10 @@ export function readEnv(): CoreApiEnv {
     openAiApiKey: process.env.OPENAI_API_KEY,
     openAiTimeoutMs: Number(process.env.OPENAI_TIMEOUT_MS ?? 20000),
     veyraMiniAppBaseUrl: process.env.VEYRA_MINI_APP_BASE_URL,
+    r2AccountId: process.env.R2_ACCOUNT_ID,
+    r2AccessKeyId: process.env.R2_ACCESS_KEY_ID,
+    r2SecretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
+    r2Bucket: process.env.R2_BUCKET,
+    r2PresignTtlSeconds: Number(process.env.R2_PRESIGN_TTL_SECONDS ?? 900),
   };
 }
