@@ -37,6 +37,25 @@ enum RovelleShotStatus {
   CANCELLED
 }
 
+enum RovelleAssetType {
+  SOURCE
+  CHARACTER_REFERENCE
+  ENVIRONMENT_REFERENCE
+  STYLE_REFERENCE
+  AUDIO_MASTER
+  STORYBOARD
+  GENERATION
+  RENDER
+  THUMBNAIL
+  CAPTION
+  PUBLISH_COPY
+}
+
+enum RovelleAssetStatus {
+  RESERVED
+  AVAILABLE
+}
+
 model RovelleEpisode {
   id                    String               @id @default(uuid()) @db.Uuid
   code                  String               @unique @db.VarChar(32)
@@ -45,6 +64,7 @@ model RovelleEpisode {
   brief                 Json?                @map("brief_json")
   targetDurationSeconds Int?                 @map("target_duration_seconds")
   shots                 RovelleShot[]
+  assets                RovelleAsset[]
   createdAt             DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt             DateTime             @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -67,6 +87,25 @@ model RovelleShot {
   @@unique([episodeId, sequence])
   @@index([episodeId, status])
   @@map("rovelle_shots")
+}
+
+model RovelleAsset {
+  id               String             @id @default(uuid()) @db.Uuid
+  episodeId        String?            @map("episode_id") @db.Uuid
+  assetType        RovelleAssetType   @map("asset_type")
+  status           RovelleAssetStatus @default(RESERVED)
+  mediaType        String             @map("media_type") @db.VarChar(127)
+  storageKey       String             @unique @map("storage_key") @db.VarChar(512)
+  originalFilename String?            @map("original_filename") @db.VarChar(255)
+  byteSize         BigInt?            @map("byte_size")
+  etag             String?            @db.VarChar(128)
+  episode          RovelleEpisode?    @relation(fields: [episodeId], references: [id], onDelete: SetNull)
+  createdAt        DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([episodeId])
+  @@index([assetType, status])
+  @@map("rovelle_assets")
 }
 
 model budget_alerts {
