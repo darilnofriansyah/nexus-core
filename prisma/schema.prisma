@@ -9,6 +9,66 @@ datasource db {
   provider = "postgresql"
 }
 
+enum RovelleEpisodeStatus {
+  DRAFT
+  BRIEF_APPROVED
+  PREPRODUCTION
+  READY_TO_GENERATE
+  GENERATING
+  REVIEW_REQUIRED
+  GENERATION_APPROVED
+  RENDERING
+  FINAL_REVIEW
+  PUBLISH_READY
+  PUBLISHING
+  PUBLISHED
+  PAUSED
+  CANCELLED
+  FAILED
+}
+
+enum RovelleShotStatus {
+  DRAFT
+  READY_TO_GENERATE
+  GENERATING
+  REVIEW_REQUIRED
+  APPROVED
+  FAILED
+  CANCELLED
+}
+
+model RovelleEpisode {
+  id                    String               @id @default(uuid()) @db.Uuid
+  code                  String               @unique @db.VarChar(32)
+  title                 String               @db.VarChar(200)
+  status                RovelleEpisodeStatus @default(DRAFT)
+  brief                 Json?                @map("brief_json")
+  targetDurationSeconds Int?                 @map("target_duration_seconds")
+  shots                 RovelleShot[]
+  createdAt             DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime             @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([status])
+  @@map("rovelle_episodes")
+}
+
+model RovelleShot {
+  id                    String            @id @default(uuid()) @db.Uuid
+  episodeId             String            @map("episode_id") @db.Uuid
+  sequence              Int
+  name                  String?           @db.VarChar(120)
+  direction             String            @db.Text
+  targetDurationSeconds Int?              @map("target_duration_seconds")
+  status                RovelleShotStatus @default(DRAFT)
+  episode               RovelleEpisode    @relation(fields: [episodeId], references: [id], onDelete: Cascade)
+  createdAt             DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([episodeId, sequence])
+  @@index([episodeId, status])
+  @@map("rovelle_shots")
+}
+
 model budget_alerts {
   id                BigInt   @id @default(autoincrement())
   budget_id         BigInt
