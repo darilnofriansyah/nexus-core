@@ -1,9 +1,265 @@
 generator client {
-  provider     = "prisma-client"
-  output       = "../src/generated/prisma"
-  moduleFormat = "cjs"
+  provider        = "prisma-client"
+  output          = "../src/generated/prisma"
+  previewFeatures = ["partialIndexes"]
+  moduleFormat    = "cjs"
 }
 
 datasource db {
   provider = "postgresql"
+}
+
+model budget_alerts {
+  id                BigInt   @id @default(autoincrement())
+  budget_id         BigInt
+  alert_type        String   @db.VarChar(50)
+  threshold_percent Int
+  triggered_at      DateTime @default(now()) @db.Timestamp(6)
+  period_key        String   @db.VarChar(20)
+  budgets           budgets  @relation(fields: [budget_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([budget_id, alert_type, period_key])
+  @@index([budget_id, alert_type, period_key], map: "idx_budget_alerts_lookup")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains an expression index which requires additional setup for migrations. Visit https://pris.ly/d/expression-indexes for more info.
+model budgets {
+  id               BigInt          @id @default(autoincrement())
+  user_id          BigInt          @unique(map: "budgets_unique_default_active_top_level_per_user", where: raw("(is_default AND is_active AND (parent_budget_id IS NULL))"))
+  parent_budget_id BigInt?
+  category         String
+  amount           Decimal?        @db.Decimal(15, 2)
+  period_type      String          @default("monthly") @db.VarChar(20)
+  is_active        Boolean         @default(true)
+  created_at       DateTime?       @default(now()) @db.Timestamptz(6)
+  is_default       Boolean         @default(false)
+  budget_alerts    budget_alerts[]
+  budgets          budgets?        @relation("budgetsTobudgets", fields: [parent_budget_id], references: [id], onUpdate: NoAction)
+  other_budgets    budgets[]       @relation("budgetsTobudgets")
+  telegram_users   telegram_users  @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  transactions     transactions[]
+
+  @@index([user_id], map: "idx_budgets_user")
+}
+
+/// This model contains an expression index which requires additional setup for migrations. Visit https://pris.ly/d/expression-indexes for more info.
+model categories {
+  id             BigInt          @id @default(autoincrement())
+  name           String
+  user_id        BigInt?
+  is_active      Boolean         @default(true)
+  telegram_users telegram_users? @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model category_rules {
+  id               BigInt          @id @default(autoincrement())
+  user_id          BigInt?
+  priority         Int?            @default(100)
+  merchant_pattern String
+  category         String
+  transaction_type String?         @db.VarChar(20)
+  is_active        Boolean?        @default(true)
+  created_at       DateTime?       @default(now()) @db.Timestamptz(6)
+  telegram_users   telegram_users? @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+model conversation_states {
+  id             BigInt         @id @default(autoincrement())
+  user_id        BigInt         @unique
+  state_name     String
+  state_data     Json?
+  expires_at     DateTime?      @db.Timestamptz(6)
+  created_at     DateTime?      @default(now()) @db.Timestamptz(6)
+  updated_at     DateTime?      @default(now()) @db.Timestamptz(6)
+  telegram_users telegram_users @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([user_id], map: "idx_conversation_states_user")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model credit_card_cycle_summaries {
+  id                BigInt         @id @default(autoincrement())
+  user_id           BigInt
+  cycle_start       DateTime       @db.Date
+  credit_limit      BigInt
+  credit_used       BigInt
+  statement_balance BigInt
+  telegram_users    telegram_users @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([user_id, cycle_start])
+}
+
+model email_parse_attempts {
+  id               BigInt         @id @default(autoincrement())
+  user_id          BigInt
+  source_reference String
+  provider         String?
+  template_key     String?
+  status           String
+  sender           String?
+  subject          String?
+  email_date       DateTime?      @db.Timestamptz(6)
+  parsed_payload   Json?
+  error_reason     String?
+  body_sample      String?
+  created_at       DateTime       @default(now()) @db.Timestamptz(6)
+  telegram_users   telegram_users @relation(fields: [user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([user_id, source_reference])
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains an expression index which requires additional setup for migrations. Visit https://pris.ly/d/expression-indexes for more info.
+model email_parser_templates {
+  id               BigInt         @id @default(autoincrement())
+  user_id          BigInt
+  provider         String
+  sender_address   String
+  template_key     String
+  template_version Int            @default(1)
+  fingerprint      String
+  rules            Json
+  status           String         @default("active")
+  last_matched_at  DateTime?      @db.Timestamptz(6)
+  disabled_at      DateTime?      @db.Timestamptz(6)
+  created_at       DateTime       @default(now()) @db.Timestamptz(6)
+  updated_at       DateTime       @default(now()) @db.Timestamptz(6)
+  telegram_users   telegram_users @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([user_id, fingerprint])
+}
+
+model merchant_aliases {
+  id             BigInt    @id @default(autoincrement())
+  alias_name     String    @unique
+  canonical_name String
+  created_at     DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model merchant_review_queue {
+  id                      BigInt    @id @default(autoincrement())
+  merchant_name           String    @unique(map: "merchant_review_queue_merchant_name_unique")
+  suggested_category      String?
+  confidence              Int?
+  occurrence_count        Int?      @default(1)
+  status                  String?   @default("pending") @db.VarChar(20)
+  reviewed_category       String?
+  reviewed_at             DateTime? @db.Timestamptz(6)
+  created_at              DateTime? @default(now()) @db.Timestamptz(6)
+  suggested_merchant_name String?
+}
+
+model telegram_users {
+  id                          BigInt                        @id @default(autoincrement())
+  telegram_id                 BigInt                        @unique
+  username                    String?
+  first_name                  String?
+  last_name                   String?
+  timezone                    String?                       @default("Asia/Jakarta")
+  currency_code               String?                       @default("IDR") @db.VarChar(3)
+  is_active                   Boolean?                      @default(true)
+  created_at                  DateTime?                     @default(now()) @db.Timestamptz(6)
+  updated_at                  DateTime?                     @default(now()) @db.Timestamptz(6)
+  cycle_start_day             Int?                          @default(1)
+  budgets                     budgets?
+  categories                  categories[]
+  category_rules              category_rules[]
+  conversation_states         conversation_states?
+  credit_card_cycle_summaries credit_card_cycle_summaries[]
+  email_parse_attempts        email_parse_attempts[]
+  email_parser_templates      email_parser_templates[]
+  transaction_imports         transaction_imports[]
+  transaction_risk_reviews    transaction_risk_reviews[]
+  transactions                transactions[]
+}
+
+model transaction_imports {
+  id               BigInt         @id @default(autoincrement())
+  user_id          BigInt
+  source           String
+  source_reference String
+  transaction_id   BigInt?
+  status           String
+  raw_payload      Json
+  created_at       DateTime       @default(now()) @db.Timestamptz(6)
+  transactions     transactions?  @relation(fields: [transaction_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  telegram_users   telegram_users @relation(fields: [user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([user_id, source, source_reference])
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains an expression index which requires additional setup for migrations. Visit https://pris.ly/d/expression-indexes for more info.
+model transaction_risk_reviews {
+  id             BigInt         @id @default(autoincrement())
+  user_id        BigInt
+  transaction_id BigInt
+  risk_type      String
+  risk_level     String
+  risk_score     Decimal?       @db.Decimal(5, 2)
+  risk_reasons   Json           @default("[]")
+  risk_metrics   Json           @default("{}")
+  status         String         @default("pending")
+  user_response  String?
+  note           String?
+  created_at     DateTime       @default(now()) @db.Timestamptz(6)
+  updated_at     DateTime       @default(now()) @db.Timestamptz(6)
+  resolved_at    DateTime?      @db.Timestamptz(6)
+  transactions   transactions   @relation(fields: [transaction_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  telegram_users telegram_users @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([transaction_id, risk_type], map: "transaction_risk_reviews_unique_pending", where: raw("(status = 'pending'::text)"))
+  @@index([risk_type], map: "idx_transaction_risk_reviews_risk_type")
+  @@index([status], map: "idx_transaction_risk_reviews_status")
+  @@index([transaction_id], map: "idx_transaction_risk_reviews_transaction")
+  @@index([user_id, created_at(sort: Desc)], map: "idx_transaction_risk_reviews_user_created")
+  @@index([user_id, status], map: "idx_transaction_risk_reviews_user_status")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model transactions {
+  id                       BigInt                     @id @default(autoincrement())
+  user_id                  BigInt
+  transaction_type         String                     @db.VarChar(20)
+  amount                   Decimal                    @db.Decimal(15, 2)
+  merchant                 String?
+  merchant_normalized      String?
+  category                 String
+  transaction_date         DateTime                   @db.Timestamptz(6)
+  source                   String                     @db.VarChar(30)
+  notes                    String?
+  created_at               DateTime?                  @default(now()) @db.Timestamptz(6)
+  updated_at               DateTime?                  @default(now()) @db.Timestamptz(6)
+  status                   String                     @default("confirmed") @db.VarChar(20)
+  confidence               Int?
+  raw_payload              Json?
+  pocket_id                BigInt?
+  transaction_imports      transaction_imports[]
+  transaction_risk_reviews transaction_risk_reviews[]
+  budgets                  budgets?                   @relation(fields: [pocket_id], references: [id], onUpdate: NoAction)
+  telegram_users           telegram_users             @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([user_id, category, transaction_date], map: "idx_transactions_budget_lookup")
+  @@index([category], map: "idx_transactions_category")
+  @@index([status], map: "idx_transactions_status")
+  @@index([user_id, transaction_date(sort: Desc)], map: "idx_transactions_user_date")
+  @@index([user_id, pocket_id, transaction_date], map: "idx_transactions_user_pocket_date")
+}
+
+/// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
+model transactions_import {
+  id               Int?
+  telegram_user_id BigInt?
+  type             String?
+  amount           Int?
+  merchant         String?
+  category         String?
+  wallet           String?
+  notes            String?
+  created_at       DateTime? @db.Timestamp(6)
+
+  @@ignore
 }
