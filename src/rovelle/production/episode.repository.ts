@@ -7,7 +7,7 @@ import {
   RovelleShotStatus,
 } from "../../generated/prisma/client";
 import { PrismaService } from "../../database/prisma.service";
-import { ShotInputDto } from "./dto/episode.dto";
+import { CreateEpisodeRequestDto, ShotInputDto } from "./dto/episode.dto";
 
 const includeShots = {
   shots: { orderBy: { sequence: "asc" as const } },
@@ -35,11 +35,11 @@ class MarkReadyInvalidStateError extends Error {}
 export class EpisodeRepository {
   constructor(private readonly prisma: PrismaService) {}
 
-  async createEpisode(
-    code: string,
-    title: string,
-    targetDurationSeconds?: number | null,
-  ): Promise<EpisodeWithShots> {
+  async createEpisode({
+    code,
+    title,
+    targetDurationSeconds,
+  }: CreateEpisodeRequestDto): Promise<EpisodeWithShots> {
     return this.prisma.client.rovelleEpisode.create({
       data: {
         code,
@@ -97,6 +97,18 @@ export class EpisodeRepository {
       });
 
       if (!episode || episode.status !== RovelleEpisodeStatus.PREPRODUCTION) {
+        return false;
+      }
+
+      const guarded = await tx.rovelleEpisode.updateMany({
+        where: {
+          id: episodeId,
+          status: RovelleEpisodeStatus.PREPRODUCTION,
+        },
+        data: { status: RovelleEpisodeStatus.PREPRODUCTION },
+      });
+
+      if (guarded.count !== 1) {
         return false;
       }
 

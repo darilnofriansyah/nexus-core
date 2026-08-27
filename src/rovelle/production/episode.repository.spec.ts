@@ -7,6 +7,7 @@ import {
   RovelleShot,
   RovelleShotStatus,
 } from "../../generated/prisma/client";
+import type { CreateEpisodeRequestDto } from "./dto/episode.dto";
 import { EpisodeRepository, EpisodeWithShots } from "./episode.repository";
 
 type RepositoryCall = {
@@ -141,8 +142,13 @@ function callsFor(
 
 test("createEpisode maps the episode fields and includes ordered shots", async () => {
   const { calls, repository } = createRepository();
+  const request: CreateEpisodeRequestDto = {
+    code: "EP-001",
+    title: "Berry Count",
+    targetDurationSeconds: 60,
+  };
 
-  await repository.createEpisode("EP-001", "Berry Count", 60);
+  await repository.createEpisode(request);
 
   assert.deepEqual(calls[0], {
     operation: "episode.create",
@@ -290,6 +296,35 @@ test("replaceShots returns null and leaves shots untouched outside preproduction
   assert.equal(result, null);
   assert.equal(callsFor(calls, "shot.deleteMany").length, 0);
   assert.equal(callsFor(calls, "shot.createMany").length, 0);
+});
+
+test("replaceShots returns null without deleting when the preproduction guard misses", async () => {
+  const fake = createRepository({
+    transactionEpisode: {
+      ...episode,
+      status: RovelleEpisodeStatus.PREPRODUCTION,
+    },
+    updatedCounts: [0],
+  });
+
+  const result = await fake.repository.replaceShots("episode-1", [
+    { sequence: 1, direction: "Open on the basket." },
+  ]);
+
+  assert.equal(result, null);
+  assert.deepEqual(callsFor(fake.calls, "episode.updateMany")[0], {
+    operation: "episode.updateMany",
+    args: {
+      where: {
+        id: "episode-1",
+        status: RovelleEpisodeStatus.PREPRODUCTION,
+      },
+      data: { status: RovelleEpisodeStatus.PREPRODUCTION },
+    },
+    inTransaction: true,
+  });
+  assert.equal(callsFor(fake.calls, "shot.deleteMany").length, 0);
+  assert.equal(callsFor(fake.calls, "shot.createMany").length, 0);
 });
 
 test("replaceShots omits createMany when replacing with no shots", async () => {
