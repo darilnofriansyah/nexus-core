@@ -1,4 +1,7 @@
-import { Module } from '@nestjs/common';
+import { Module } from "@nestjs/common";
+import { ProductionModule } from "./production/production.module";
 
-@Module({})
+@Module({
+  imports: [ProductionModule],
+})
 export class RovelleModule {}
