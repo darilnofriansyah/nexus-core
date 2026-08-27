@@ -177,3 +177,16 @@ Do not add libraries unless necessary.
 
 Keep business logic testable outside controllers.
 
+## Rovelle Exception
+
+For `src/rovelle/**` and Rovelle-owned `rovelle_*` database tables:
+
+* NestJS Core is the authoritative orchestration and state layer.
+* n8n is an auxiliary trigger, scheduling, notification, and integration layer.
+* Prisma is the default data-access layer for new Rovelle persistence.
+* Rovelle-specific additive PostgreSQL migrations are allowed only when backed
+  by an approved Superpowers design and implementation plan.
+* Do not apply these Rovelle rules to existing Veyra or Aegis features.
+* Do not migrate existing Veyra/Aegis orchestration or raw-`pg` repositories
+  unless separately requested.
+* Do not let n8n mutate Rovelle production state or Rovelle tables directly.
