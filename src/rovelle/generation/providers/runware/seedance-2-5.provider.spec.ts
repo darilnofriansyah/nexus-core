@@ -182,6 +182,20 @@ test("rejects empty webhook userinfo", async () => {
   );
 });
 
+test("accepts an at-sign in the path after a backslash separator", async () => {
+  const { service, client } = createProvider(new FakeSubmitClient(), {
+    ...WEBHOOK_CONFIG,
+    runwareWebhookBaseUrl: "https://core.test\\path@segment/runware",
+  });
+
+  await service.submit(BASE_REQUEST);
+
+  assert.equal(
+    (client.tasks[0] as { webhookURL: string }).webhookURL,
+    "https://core.test/path@segment/runware?token=runware-webhook-token-0123456789abcdef",
+  );
+});
+
 test("encodes the webhook token only on the outgoing task", async () => {
   const token = "runware/webhook?token&0123456789abcdef";
   const { service, client } = createProvider(new FakeSubmitClient(), {

@@ -188,6 +188,6 @@ function hasUserInfo(baseUrl: string): boolean {
   const schemeSeparator = baseUrl.indexOf("://");
   if (schemeSeparator < 0) return false;
 
-  const authority = baseUrl.slice(schemeSeparator + 3).split(/[/?#]/, 1)[0];
+  const authority = baseUrl.slice(schemeSeparator + 3).split(/[/?#\\]/, 1)[0];
   return authority.includes("@");
 }
