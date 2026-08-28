@@ -6,8 +6,10 @@ import { ServiceUnavailableException } from "@nestjs/common";
 import OpenAI from "openai";
 import {
   EMAIL_TRANSACTION_INSTRUCTIONS,
+  EMAIL_TRANSACTION_MODEL,
   EMAIL_TRANSACTION_SCHEMA,
   MANUAL_TRANSACTION_INSTRUCTIONS,
+  MANUAL_TRANSACTION_MODEL,
   MANUAL_TRANSACTION_SCHEMA,
   MASTER_INTENT_INSTRUCTIONS,
   MASTER_INTENT_MODEL,
@@ -248,7 +250,8 @@ test("extracts a valid manual transaction with a stateless strict-schema request
   assert.deepEqual(result, validResult);
   assert.deepEqual(requests, [
     {
-      model: "gpt-5.6-luna",
+      model: MANUAL_TRANSACTION_MODEL,
+      reasoning: { effort: "none" },
       store: false,
       input: [
         { role: "developer", content: MANUAL_TRANSACTION_INSTRUCTIONS },
@@ -503,7 +506,8 @@ test("reviews an email with the preserved stateless strict-schema contract", asy
   );
   assert.deepEqual(requests, [
     {
-      model: "gpt-5.6-luna",
+      model: EMAIL_TRANSACTION_MODEL,
+      reasoning: { effort: "low" },
       store: false,
       input: [
         { role: "developer", content: EMAIL_TRANSACTION_INSTRUCTIONS },
@@ -547,6 +551,7 @@ test("classifies master intent with the audited stateless strict-schema contract
   assert.deepEqual(requests, [
     {
       model: "gpt-5.6-luna",
+      reasoning: { effort: "low" },
       store: false,
       input: [
         { role: "developer", content: MASTER_INTENT_INSTRUCTIONS },
@@ -572,7 +577,7 @@ test("classifies master intent with the audited stateless strict-schema contract
 });
 
 test("sanitized n8n fixture covers and validates every audited master intent", async () => {
-  assert.equal(masterIntentFixture.evidence.model, MASTER_INTENT_MODEL);
+  assert.equal(masterIntentFixture.evidence.model, "gpt-5.4-mini");
   assert.equal(masterIntentFixture.evidence.liveOutputsCaptured, false);
   assert.deepEqual(
     masterIntentFixture.cases.map(({ expected }) => expected.intent).sort(),
