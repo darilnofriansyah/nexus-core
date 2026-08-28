@@ -52,6 +52,17 @@ describe("Runware webhook parser", () => {
     );
   });
 
+  test("rejects a URL passed as the video output identity", () => {
+    assertBadRequest(() =>
+      parseRunwareWebhook({
+        taskType: "videoInference",
+        taskUUID: TASK_ID,
+        status: "success",
+        videoUUID: "https://attacker.invalid/x",
+      }),
+    );
+  });
+
   test("normalizes a direct processing callback", () => {
     assert.deepEqual(
       parseRunwareWebhook({
@@ -142,6 +153,37 @@ describe("Runware webhook parser", () => {
         message: "The prompt is invalid",
         costUsd: "0.5",
       },
+    );
+  });
+
+  test("rejects a success item inside the errors wrapper", () => {
+    assertBadRequest(() =>
+      parseRunwareWebhook({
+        errors: [
+          {
+            taskType: "videoInference",
+            taskUUID: TASK_ID,
+            status: "success",
+            videoUUID: VIDEO_ID,
+          },
+        ],
+      }),
+    );
+  });
+
+  test("rejects an error item inside the data wrapper", () => {
+    assertBadRequest(() =>
+      parseRunwareWebhook({
+        data: [
+          {
+            taskType: "videoInference",
+            taskUUID: TASK_ID,
+            status: "error",
+            code: "PROVIDER_FAILURE",
+            message: "render failed",
+          },
+        ],
+      }),
     );
   });
 

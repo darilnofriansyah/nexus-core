@@ -7,7 +7,7 @@ const UUID_PATTERN =
 export function parseRunwareWebhook(
   input: unknown,
 ): RunwareWebhookEvent {
-  const item = unwrapSingleItem(input);
+  const { item, source } = unwrapSingleItem(input);
   if (item.taskType !== "videoInference") {
     throw new BadRequestException("taskType must be videoInference");
   }
@@ -17,6 +17,14 @@ export function parseRunwareWebhook(
   const costUsd = normalizeCost(item.cost);
   const providerOutputId = normalizeOutputId(item.videoUUID);
   const status = item.status;
+  const isFailure =
+    status === "error" ||
+    (status === undefined &&
+      (hasOwn(item, "code") || hasOwn(item, "message")));
+
+  if ((source === "errors" && !isFailure) || (source === "data" && isFailure)) {
+    throw new BadRequestException("webhook result does not match its container");
+  }
 
   if (status === "processing") {
     return { kind: "processing", taskId, progress };
@@ -55,14 +63,17 @@ export function parseRunwareWebhook(
   throw new BadRequestException("status is required");
 }
 
-function unwrapSingleItem(input: unknown): Record<string, unknown> {
+function unwrapSingleItem(input: unknown): {
+  item: Record<string, unknown>;
+  source: "direct" | "data" | "errors";
+} {
   if (!isRecord(input)) {
     throw new BadRequestException("webhook payload must be an object");
   }
 
   const hasData = hasOwn(input, "data");
   const hasErrors = hasOwn(input, "errors");
-  if (!hasData && !hasErrors) return input;
+  if (!hasData && !hasErrors) return { item: input, source: "direct" };
 
   if (hasData === hasErrors) {
     throw new BadRequestException("webhook payload must contain one result");
@@ -73,7 +84,7 @@ function unwrapSingleItem(input: unknown): Record<string, unknown> {
     throw new BadRequestException("webhook payload must contain one result");
   }
 
-  return items[0];
+  return { item: items[0], source: hasData ? "data" : "errors" };
 }
 
 function failureEvent(
@@ -106,7 +117,14 @@ function normalizeOutputId(value: unknown): string | null {
     throw new BadRequestException("videoUUID must be a non-empty string");
   }
 
-  return value.trim();
+  const outputId = value.trim();
+  try {
+    new URL(outputId);
+  } catch {
+    return outputId;
+  }
+
+  throw new BadRequestException("videoUUID must be an opaque identity");
 }
 
 function normalizeProgress(value: unknown): number | null {
