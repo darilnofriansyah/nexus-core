@@ -37,9 +37,14 @@ type OutputAsset = {
   status: RovelleAssetStatus;
 };
 
+type ProviderOutputAsset = {
+  storageKey: string;
+};
+
 type FakeOptions = {
   existing?: RovelleShotGeneration | null;
   raceExisting?: RovelleShotGeneration | null;
+  providerOutputAsset?: ProviderOutputAsset;
   generations?: Array<RovelleShotGeneration | GenerationWithState | null>;
   shot?: GenerationWithState["shot"] | null;
   latestAttempt?: number | null;
@@ -199,7 +204,18 @@ function createRepository(options: FakeOptions = {}) {
     rovelleShotGeneration: {
       findUnique: async (args: unknown) => {
         record("generation.findUnique", args);
-        return options.raceExisting ?? options.existing ?? null;
+        const existing = options.raceExisting ?? options.existing ?? null;
+        const include = (args as { include?: unknown }).include;
+        if (
+          existing &&
+          options.providerOutputAsset &&
+          include &&
+          typeof include === "object" &&
+          "outputAsset" in include
+        ) {
+          return { ...existing, outputAsset: options.providerOutputAsset };
+        }
+        return existing;
       },
       findMany: async (args: unknown) => {
         record("generation.findMany", args);
@@ -459,7 +475,36 @@ test("findByProviderTaskId reads by the provider task UUID", async () => {
   assert.equal(await fake.repository.findByProviderTaskId(TASK_ID), generation);
   assert.deepEqual(callsFor(fake.calls, "generation.findUnique")[0], {
     operation: "generation.findUnique",
-    args: { where: { providerTaskId: TASK_ID } },
+    args: {
+      where: { providerTaskId: TASK_ID },
+      include: { outputAsset: { select: { storageKey: true } } },
+    },
+    inTransaction: false,
+  });
+});
+
+test("findByProviderTaskId returns the persisted output asset storage key", async () => {
+  const outputAsset = {
+    storageKey: "provider-owned/output/asset-without-derived-name.mp4",
+  };
+  const fake = createRepository({
+    existing: generation,
+    providerOutputAsset: outputAsset,
+  });
+
+  const result = await fake.repository.findByProviderTaskId(TASK_ID);
+
+  assert.equal(
+    (result as RovelleShotGeneration & { outputAsset: ProviderOutputAsset })
+      .outputAsset.storageKey,
+    outputAsset.storageKey,
+  );
+  assert.deepEqual(callsFor(fake.calls, "generation.findUnique")[0], {
+    operation: "generation.findUnique",
+    args: {
+      where: { providerTaskId: TASK_ID },
+      include: { outputAsset: { select: { storageKey: true } } },
+    },
     inTransaction: false,
   });
 });

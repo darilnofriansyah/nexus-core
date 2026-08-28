@@ -10,6 +10,7 @@ import {
   RovelleGenerationStatus,
   RovelleShotGeneration,
   RovelleShotStatus,
+  type RovelleAsset,
 } from "../../generated/prisma/client";
 import { PrismaService } from "../../database/prisma.service";
 import { assertAssetId } from "../assets/asset-validation";
@@ -18,6 +19,10 @@ import { getGenerationProfile } from "./generation-profile";
 const URL_PATTERN = /(?:\b[a-z][a-z\d+.-]*:(?=\S)|\/\/)/i;
 
 export type InternalGenerationRecord = RovelleShotGeneration;
+
+export type GenerationWithOutputAsset = InternalGenerationRecord & {
+  outputAsset: Pick<RovelleAsset, "storageKey">;
+};
 
 export type CreateGenerationAttemptResult =
   | { status: "created"; generation: InternalGenerationRecord }
@@ -80,9 +85,10 @@ export class GenerationRepository {
 
   async findByProviderTaskId(
     providerTaskId: string,
-  ): Promise<InternalGenerationRecord | null> {
+  ): Promise<GenerationWithOutputAsset | null> {
     return this.prisma.client.rovelleShotGeneration.findUnique({
       where: { providerTaskId },
+      include: { outputAsset: { select: { storageKey: true } } },
     });
   }
 

@@ -3,15 +3,15 @@ import {
   Prisma,
   RovelleGenerationStatus,
 } from "../../../generated/prisma/client";
-import { buildAssetStorageKey } from "../../assets/asset-validation";
 import { R2StorageService } from "../../assets/r2-storage.service";
 import {
   GenerationRepository,
   type GenerationMutationResult,
-  type InternalGenerationRecord,
+  type GenerationWithOutputAsset,
 } from "../generation.repository";
 import type { RunwareWebhookEvent } from "./runware-webhook.dto";
 
+const URL_PATTERN = /(?:\b[a-z][a-z\d+.-]*:[^\s]*|\/\/[^\s]*)/gi;
 const EMPTY_OUTPUT_CODE = "OUTPUT_EMPTY";
 const EMPTY_OUTPUT_MESSAGE = "Runware output object is empty";
 const DEFAULT_ERROR_CODE = "RUNWARE_ERROR";
@@ -28,10 +28,6 @@ export interface RunwareWebhookHandleResult {
   generationId?: string;
 }
 
-type GenerationWithOutputAsset = InternalGenerationRecord & {
-  outputAsset?: { storageKey: string };
-};
-
 @Injectable()
 export class RunwareWebhookService {
   constructor(
@@ -42,9 +38,7 @@ export class RunwareWebhookService {
   async handle(
     event: RunwareWebhookEvent,
   ): Promise<RunwareWebhookHandleResult> {
-    const generation = (await this.repository.findByProviderTaskId(
-      event.taskId,
-    )) as GenerationWithOutputAsset | null;
+    const generation = await this.repository.findByProviderTaskId(event.taskId);
     if (!generation) return unknownTask();
     if (isTerminalGeneration(generation.status)) {
       return duplicate(generation.id);
@@ -71,8 +65,7 @@ export class RunwareWebhookService {
     generation: GenerationWithOutputAsset,
   ): Promise<RunwareWebhookHandleResult> {
     const metadata = await this.storage.headObject(
-      generation.outputAsset?.storageKey ??
-        buildAssetStorageKey(generation.outputAssetId),
+      generation.outputAsset.storageKey,
     );
     if (!metadata) {
       throw new ServiceUnavailableException(
@@ -143,7 +136,7 @@ function sanitizeError(
 }
 
 function redactUrls(value: string): string {
-  return value.replace(/(?:https?:\/\/|\/\/)[^\s]+/gi, "[redacted-url]");
+  return value.replace(URL_PATTERN, "[redacted-url]");
 }
 
 function isTerminalGeneration(status: RovelleGenerationStatus): boolean {

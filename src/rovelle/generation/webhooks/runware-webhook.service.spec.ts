@@ -12,9 +12,9 @@ import {
 import type { R2ObjectMetadata } from "../../assets/r2-storage.service";
 import type {
   GenerationMutationResult,
-  GenerationRepository,
   InternalGenerationRecord,
 } from "../generation.repository";
+import { GenerationRepository } from "../generation.repository";
 import type { RunwareWebhookEvent } from "./runware-webhook.dto";
 import { RunwareWebhookService } from "./runware-webhook.service";
 
@@ -24,6 +24,8 @@ const SHOT_ID = "123e4567-e89b-42d3-a456-426614174000";
 const REQUEST_ID = "323e4567-e89b-42d3-a456-426614174000";
 const ASSET_ID = "523e4567-e89b-42d3-a456-426614174000";
 const STORAGE_KEY = "ringmaster/assets/provider-owned-output.mp4";
+const PERSISTED_STORAGE_KEY =
+  "provider-owned/output/asset-without-derived-name.mp4";
 
 type GenerationWithOutputAsset = InternalGenerationRecord & {
   outputAsset: { storageKey: string };
@@ -174,6 +176,58 @@ class FakeStorageService {
   }
 }
 
+function createServiceWithRepositoryRead() {
+  const repositoryRead = new GenerationRepository({
+    client: {
+      rovelleShotGeneration: {
+        findUnique: async (args: unknown) => {
+          const include = (args as { include?: unknown }).include;
+          if (
+            include &&
+            typeof include === "object" &&
+            "outputAsset" in include
+          ) {
+            return {
+              ...generation(),
+              outputAsset: { storageKey: PERSISTED_STORAGE_KEY },
+            };
+          }
+          return generation();
+        },
+      },
+    },
+  } as never);
+  const completeInputs: Array<
+    Parameters<GenerationRepository["completeGeneration"]>[1]
+  > = [];
+  const repository = {
+    findByProviderTaskId:
+      repositoryRead.findByProviderTaskId.bind(repositoryRead),
+    markProcessing: async () => {
+      throw new Error("markProcessing should not run");
+    },
+    completeGeneration: async (
+      _taskId: string,
+      input: Parameters<GenerationRepository["completeGeneration"]>[1],
+    ): Promise<GenerationMutationResult> => {
+      completeInputs.push(input);
+      return {
+        status: "updated",
+        generation: generation({ status: RovelleGenerationStatus.COMPLETED }),
+      };
+    },
+    failGeneration: async () => {
+      throw new Error("failGeneration should not run");
+    },
+  };
+  const storage = new FakeStorageService();
+  const service = new RunwareWebhookService(
+    repository as unknown as GenerationRepository,
+    storage as never,
+  );
+  return { completeInputs, service, storage };
+}
+
 function createService() {
   const repository = new FakeGenerationRepository();
   const storage = new FakeStorageService();
@@ -242,6 +296,14 @@ describe("Runware webhook completion service", () => {
       "contentType" in (repository.completeCalls[0]?.input ?? {}),
       false,
     );
+  });
+
+  test("uses the non-deterministic storage key returned by the repository read contract", async () => {
+    const { service, storage } = createServiceWithRepositoryRead();
+
+    await service.handle(successEvent());
+
+    assert.deepEqual(storage.keys, [PERSISTED_STORAGE_KEY]);
   });
 
   test("turns a missing R2 object into a retryable service-unavailable error without mutation", async () => {
@@ -381,6 +443,18 @@ describe("Runware webhook completion service", () => {
     );
     assert.equal(repository.failCalls[0]?.input.actualCostUsd, null);
     assert.deepEqual(storage.keys, []);
+  });
+
+  test("redacts provider failure URLs with arbitrary URI schemes", async () => {
+    const { repository, service } = createService();
+
+    await service.handle(
+      failureEvent({
+        message: "s3://private-bucket/key",
+      }),
+    );
+
+    assert.equal(repository.failCalls[0]?.input.errorMessage, "[redacted-url]");
   });
 
   test("uses safe defaults for blank provider failure fields", async () => {
