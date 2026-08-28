@@ -182,6 +182,23 @@ test("rejects empty webhook userinfo", async () => {
   );
 });
 
+test("rejects canonicalized empty webhook userinfo variants", async () => {
+  for (const runwareWebhookBaseUrl of [
+    "https:@core.test/webhooks/runware",
+    "https:////@core.test/webhooks/runware",
+    "https:///@core.test/webhooks/runware",
+  ]) {
+    await assert.rejects(
+      () =>
+        createProvider(new FakeSubmitClient(), {
+          ...WEBHOOK_CONFIG,
+          runwareWebhookBaseUrl,
+        }).service.submit(BASE_REQUEST),
+      (error: unknown) => error instanceof ServiceUnavailableException,
+    );
+  }
+});
+
 test("accepts an at-sign in the path after a backslash separator", async () => {
   const { service, client } = createProvider(new FakeSubmitClient(), {
     ...WEBHOOK_CONFIG,
