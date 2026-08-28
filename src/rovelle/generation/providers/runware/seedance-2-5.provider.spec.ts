@@ -213,6 +213,19 @@ test("accepts an at-sign in the path after a backslash separator", async () => {
   );
 });
 
+test("rejects tab, LF, and CR in webhook base URLs", async () => {
+  for (const controlCharacter of ["\t", "\n", "\r"]) {
+    await assert.rejects(
+      () =>
+        createProvider(new FakeSubmitClient(), {
+          ...WEBHOOK_CONFIG,
+          runwareWebhookBaseUrl: `https://core.test/webhooks${controlCharacter}/runware`,
+        }).service.submit(BASE_REQUEST),
+      (error: unknown) => error instanceof ServiceUnavailableException,
+    );
+  }
+});
+
 test("encodes the webhook token only on the outgoing task", async () => {
   const token = "runware/webhook?token&0123456789abcdef";
   const { service, client } = createProvider(new FakeSubmitClient(), {

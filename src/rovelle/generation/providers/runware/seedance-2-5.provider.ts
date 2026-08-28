@@ -100,6 +100,9 @@ export class Seedance25Provider implements GenerationProvider {
         "Runware webhook token is not configured",
       );
     }
+    if (/[\t\n\r]/.test(baseUrl)) {
+      throw new ServiceUnavailableException("Runware webhook URL is invalid");
+    }
 
     let webhookUrl: URL;
     try {
