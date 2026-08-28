@@ -2083,18 +2083,6 @@ test(
   },
 );
 
-  const result = await service.evaluateTransaction({
-    userId: 1,
-    transactionId: 123,
-  });
-  const text = result.message?.text ?? '';
-
-  assert.equal(result.alerts.length, 4);
-  assert.equal(text.match(/<b>Budget warning\.<\/b>/g)?.length, 1);
-  assert.match(text, /Remaining: -Rp1\.005\.500\./);
-  assert.doesNotMatch(text, /Rp-/);
-});
-
 test('watchdog skips zero amount budgets', async () => {
   const { calls, service } = createService([
     [
