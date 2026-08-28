@@ -110,6 +110,7 @@ export class Seedance25Provider implements GenerationProvider {
 
     if (
       /[?#]/.test(baseUrl) ||
+      hasUserInfo(baseUrl) ||
       webhookUrl.username ||
       webhookUrl.password
     ) {
@@ -181,4 +182,12 @@ export class Seedance25Provider implements GenerationProvider {
 
 function isLoopback(hostname: string): boolean {
   return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]";
+}
+
+function hasUserInfo(baseUrl: string): boolean {
+  const schemeSeparator = baseUrl.indexOf("://");
+  if (schemeSeparator < 0) return false;
+
+  const authority = baseUrl.slice(schemeSeparator + 3).split(/[/?#]/, 1)[0];
+  return authority.includes("@");
 }

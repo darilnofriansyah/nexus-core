@@ -171,6 +171,17 @@ test("rejects webhook base URLs with query, hash, or userinfo", async () => {
   }
 });
 
+test("rejects empty webhook userinfo", async () => {
+  await assert.rejects(
+    () =>
+      createProvider(new FakeSubmitClient(), {
+        ...WEBHOOK_CONFIG,
+        runwareWebhookBaseUrl: "https://@core.test/webhooks/runware",
+      }).service.submit(BASE_REQUEST),
+    (error: unknown) => error instanceof ServiceUnavailableException,
+  );
+});
+
 test("encodes the webhook token only on the outgoing task", async () => {
   const token = "runware/webhook?token&0123456789abcdef";
   const { service, client } = createProvider(new FakeSubmitClient(), {
