@@ -709,26 +709,25 @@ test("completeGeneration fences unknown, terminal, and invalid output assets", a
     { status: "not_found" },
   );
 
-  const terminal = createRepository({
-    generations: [
-      generationWithState({ status: RovelleGenerationStatus.COMPLETED }),
-    ],
-  });
-  assert.deepEqual(
-    await terminal.repository.completeGeneration(TASK_ID, {
-      providerOutputId: null,
-      actualCostUsd: null,
-      byteSize: 1n,
-      etag: null,
-    }),
-    {
-      status: "already_terminal",
-      generation: generationWithState({
-        status: RovelleGenerationStatus.COMPLETED,
+  for (const status of [
+    RovelleGenerationStatus.COMPLETED,
+    RovelleGenerationStatus.FAILED,
+    RovelleGenerationStatus.CANCELLED,
+    RovelleGenerationStatus.SUBMISSION_FAILED,
+  ]) {
+    const terminalGeneration = generationWithState({ status });
+    const terminal = createRepository({ generations: [terminalGeneration] });
+    assert.deepEqual(
+      await terminal.repository.completeGeneration(TASK_ID, {
+        providerOutputId: null,
+        actualCostUsd: null,
+        byteSize: 1n,
+        etag: null,
       }),
-    },
-  );
-  assert.equal(callsFor(terminal.calls, "asset.updateMany").length, 0);
+      { status: "already_terminal", generation: terminalGeneration },
+    );
+    assert.equal(callsFor(terminal.calls, "asset.updateMany").length, 0);
+  }
 
   for (const outputAsset of [
     {
@@ -843,23 +842,61 @@ test("failGeneration records a terminal failure and reconciles remaining shots",
   assert.equal(callsFor(fake.calls, "asset.updateMany").length, 0);
 });
 
-test("failGeneration returns terminal rows idempotently and reconciles no pending shots", async () => {
-  const failed = generationWithState({
-    status: RovelleGenerationStatus.FAILED,
-  });
-  const fake = createRepository({ generations: [failed] });
-
-  assert.deepEqual(
-    await fake.repository.failGeneration(TASK_ID, {
-      errorCode: "ignored",
-      errorMessage: "ignored",
+test("failGeneration accepts submitted and processing states with the same fences", async () => {
+  for (const status of [
+    RovelleGenerationStatus.SUBMITTED,
+    RovelleGenerationStatus.PROCESSING,
+  ]) {
+    const failed = {
+      ...generation,
+      status: RovelleGenerationStatus.FAILED,
       actualCostUsd: null,
-    }),
-    { status: "already_terminal", generation: failed },
-  );
-  assert.equal(callsFor(fake.calls, "generation.updateMany").length, 0);
-  assert.equal(callsFor(fake.calls, "shot.updateMany").length, 0);
-  assert.equal(callsFor(fake.calls, "episode.updateMany").length, 0);
+      errorCode: "PROVIDER_FAILURE",
+      errorMessage: "Provider failed",
+    };
+    const fake = createRepository({
+      generations: [generationWithState({ status }), failed],
+      pendingShotCount: 1,
+    });
+
+    assert.deepEqual(
+      await fake.repository.failGeneration(TASK_ID, {
+        errorCode: "provider_failure",
+        errorMessage: "Provider failed",
+        actualCostUsd: null,
+      }),
+      { status: "updated", generation: failed },
+    );
+    assert.equal(callsFor(fake.calls, "generation.updateMany").length, 1);
+    assert.equal(callsFor(fake.calls, "shot.updateMany").length, 1);
+    assert.equal(callsFor(fake.calls, "shot.count").length, 1);
+    assert.equal(callsFor(fake.calls, "episode.updateMany").length, 1);
+    assert.equal(callsFor(fake.calls, "asset.updateMany").length, 0);
+  }
+});
+
+test("failGeneration returns terminal rows idempotently and reconciles no pending shots", async () => {
+  for (const status of [
+    RovelleGenerationStatus.COMPLETED,
+    RovelleGenerationStatus.FAILED,
+    RovelleGenerationStatus.CANCELLED,
+    RovelleGenerationStatus.SUBMISSION_FAILED,
+  ]) {
+    const failed = generationWithState({ status });
+    const fake = createRepository({ generations: [failed] });
+
+    assert.deepEqual(
+      await fake.repository.failGeneration(TASK_ID, {
+        errorCode: "ignored",
+        errorMessage: "ignored",
+        actualCostUsd: null,
+      }),
+      { status: "already_terminal", generation: failed },
+    );
+    assert.equal(callsFor(fake.calls, "generation.updateMany").length, 0);
+    assert.equal(callsFor(fake.calls, "shot.updateMany").length, 0);
+    assert.equal(callsFor(fake.calls, "episode.updateMany").length, 0);
+  }
 
   const noPending = createRepository({
     generations: [
@@ -1031,6 +1068,23 @@ test("markSubmitted rejects a non-created generation without changing its shot o
   const fake = createRepository({
     generations: [
       generationWithState({ status: RovelleGenerationStatus.SUBMITTED }),
+    ],
+  });
+
+  assert.deepEqual(await fake.repository.markSubmitted(GENERATION_ID), {
+    status: "invalid_state",
+  });
+  assert.equal(callsFor(fake.calls, "generation.updateMany").length, 0);
+  assert.equal(callsFor(fake.calls, "shot.updateMany").length, 0);
+  assert.equal(callsFor(fake.calls, "episode.updateMany").length, 0);
+});
+
+test("markSubmitted never submits a submission-failed generation", async () => {
+  const fake = createRepository({
+    generations: [
+      generationWithState({
+        status: RovelleGenerationStatus.SUBMISSION_FAILED,
+      }),
     ],
   });
 
