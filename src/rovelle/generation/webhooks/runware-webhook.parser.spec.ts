@@ -63,6 +63,28 @@ describe("Runware webhook parser", () => {
     );
   });
 
+  test("rejects a protocol-relative output URL", () => {
+    assertBadRequest(() =>
+      parseRunwareWebhook({
+        taskType: "videoInference",
+        taskUUID: TASK_ID,
+        status: "success",
+        videoUUID: "//attacker.invalid/video",
+      }),
+    );
+  });
+
+  test("rejects a UNC-style output URL", () => {
+    assertBadRequest(() =>
+      parseRunwareWebhook({
+        taskType: "videoInference",
+        taskUUID: TASK_ID,
+        status: "success",
+        videoUUID: "\\\\attacker.invalid\\video",
+      }),
+    );
+  });
+
   test("normalizes a direct processing callback", () => {
     assert.deepEqual(
       parseRunwareWebhook({
