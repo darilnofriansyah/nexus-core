@@ -550,7 +550,7 @@ test("classifies master intent with the audited stateless strict-schema contract
   assert.deepEqual(result, validMasterIntentResult);
   assert.deepEqual(requests, [
     {
-      model: "gpt-5.6-luna",
+      model: MASTER_INTENT_MODEL,
       reasoning: { effort: "low" },
       store: false,
       input: [
