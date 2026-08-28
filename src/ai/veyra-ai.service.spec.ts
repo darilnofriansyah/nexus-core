@@ -248,7 +248,7 @@ test("extracts a valid manual transaction with a stateless strict-schema request
   assert.deepEqual(result, validResult);
   assert.deepEqual(requests, [
     {
-      model: "gpt-5-mini",
+      model: "gpt-5.6-luna",
       store: false,
       input: [
         { role: "developer", content: MANUAL_TRANSACTION_INSTRUCTIONS },
@@ -310,7 +310,7 @@ test("parses a budget intent with the preserved stateless strict-schema contract
       };
     };
   }>;
-  assert.equal(request.model, "gpt-5-mini");
+  assert.equal(request.model, "gpt-5.6-luna");
   assert.equal(request.store, false);
   assert.match(request.input[0].content, /budget intent parser/);
   assert.deepEqual(JSON.parse(request.input[1].content), {
@@ -380,7 +380,7 @@ test("renders analytics insight with stateless strict-schema contract", async ()
     input: Array<{ role: string; content: string }>;
     text: { format: { type: string; name: string; strict: boolean } };
   }>;
-  assert.equal(request.model, "gpt-5-mini");
+  assert.equal(request.model, "gpt-5.6-luna");
   assert.equal(request.store, false);
   assert.match(request.input[0].content, /analytics insight renderer/);
   assert.deepEqual(JSON.parse(request.input[1].content), analyticsInsightPayload);
@@ -431,7 +431,7 @@ test("renders weekly review with stateless strict-schema contract", async () => 
     input: Array<{ role: string; content: string }>;
     text: { format: { name: string; strict: boolean } };
   }>;
-  assert.equal(request.model, "gpt-5.4");
+  assert.equal(request.model, "gpt-5.6-terra");
   assert.equal(request.store, false);
   assert.match(request.input[0].content, /weekly review renderer/);
   assert.deepEqual(JSON.parse(request.input[1].content), weeklyReviewPayload);
@@ -503,7 +503,7 @@ test("reviews an email with the preserved stateless strict-schema contract", asy
   );
   assert.deepEqual(requests, [
     {
-      model: "gpt-4.1-mini",
+      model: "gpt-5.6-luna",
       store: false,
       input: [
         { role: "developer", content: EMAIL_TRANSACTION_INSTRUCTIONS },
@@ -546,7 +546,7 @@ test("classifies master intent with the audited stateless strict-schema contract
   assert.deepEqual(result, validMasterIntentResult);
   assert.deepEqual(requests, [
     {
-      model: "gpt-5.4-mini",
+      model: "gpt-5.6-luna",
       store: false,
       input: [
         { role: "developer", content: MASTER_INTENT_INSTRUCTIONS },
