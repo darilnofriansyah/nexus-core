@@ -85,6 +85,17 @@ describe("Runware webhook parser", () => {
     );
   });
 
+  test("rejects a mixed-separator network-path output URL", () => {
+    assertBadRequest(() =>
+      parseRunwareWebhook({
+        taskType: "videoInference",
+        taskUUID: TASK_ID,
+        status: "success",
+        videoUUID: "/\\attacker.invalid\\video",
+      }),
+    );
+  });
+
   test("normalizes a direct processing callback", () => {
     assert.deepEqual(
       parseRunwareWebhook({

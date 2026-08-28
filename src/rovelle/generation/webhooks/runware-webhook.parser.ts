@@ -118,7 +118,7 @@ function normalizeOutputId(value: unknown): string | null {
   }
 
   const outputId = value.trim();
-  if (outputId.startsWith("//") || outputId.startsWith("\\\\")) {
+  if (/^[\\/]{2}/.test(outputId)) {
     throw new BadRequestException("videoUUID must be an opaque identity");
   }
 
