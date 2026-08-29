@@ -1,6 +1,5 @@
 import * as assert from "node:assert/strict";
 import { after, afterEach, before, describe, test } from "node:test";
-import { BadRequestException } from "@nestjs/common";
 import { PrismaService } from "../../database/prisma.service";
 import {
   RovelleEpisodeStatus,
@@ -202,14 +201,12 @@ describe(
       );
     });
 
-    test("rejects the READY_TO_GENERATE to GENERATING transition", () => {
-      assert.throws(
-        () =>
-          assertEpisodeTransition(
-            RovelleEpisodeStatus.READY_TO_GENERATE,
-            RovelleEpisodeStatus.GENERATING,
-          ),
-        BadRequestException,
+    test("allows the READY_TO_GENERATE to GENERATING transition", () => {
+      assert.doesNotThrow(() =>
+        assertEpisodeTransition(
+          RovelleEpisodeStatus.READY_TO_GENERATE,
+          RovelleEpisodeStatus.GENERATING,
+        ),
       );
     });
   },

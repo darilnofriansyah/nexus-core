@@ -13,6 +13,10 @@ export interface CoreApiEnv {
   r2SecretAccessKey?: string;
   r2Bucket?: string;
   r2PresignTtlSeconds: number;
+  runwareApiKey?: string;
+  runwareApiBaseUrl: string;
+  runwareVideoModel: string;
+  runwareSubmitTimeoutMs: number;
   runwareWebhookBaseUrl?: string;
   runwareWebhookToken?: string;
 }
@@ -35,6 +39,14 @@ export function readEnv(): CoreApiEnv {
     r2SecretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
     r2Bucket: process.env.R2_BUCKET,
     r2PresignTtlSeconds: Number(process.env.R2_PRESIGN_TTL_SECONDS ?? 900),
+    runwareApiKey: process.env.RUNWARE_API_KEY,
+    runwareApiBaseUrl:
+      process.env.RUNWARE_API_BASE_URL ?? "https://api.runware.ai/v1",
+    runwareVideoModel:
+      process.env.RUNWARE_VIDEO_MODEL ?? "bytedance:seedance@2.5",
+    runwareSubmitTimeoutMs: Number(
+      process.env.RUNWARE_SUBMIT_TIMEOUT_MS ?? 15000,
+    ),
     runwareWebhookBaseUrl: process.env.RUNWARE_WEBHOOK_BASE_URL,
     runwareWebhookToken: process.env.RUNWARE_WEBHOOK_TOKEN,
   };

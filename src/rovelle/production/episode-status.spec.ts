@@ -8,7 +8,7 @@ import {
 } from './episode-status';
 
 describe('episode status transitions', () => {
-  test('allows the Phase 1 lifecycle', () => {
+  test('allows the generation entry lifecycle', () => {
     assert.equal(
       canTransitionEpisode(
         RovelleEpisodeStatus.DRAFT,
@@ -27,6 +27,13 @@ describe('episode status transitions', () => {
       canTransitionEpisode(
         RovelleEpisodeStatus.PREPRODUCTION,
         RovelleEpisodeStatus.READY_TO_GENERATE,
+      ),
+      true,
+    );
+    assert.equal(
+      canTransitionEpisode(
+        RovelleEpisodeStatus.READY_TO_GENERATE,
+        RovelleEpisodeStatus.GENERATING,
       ),
       true,
     );
@@ -37,13 +44,6 @@ describe('episode status transitions', () => {
       canTransitionEpisode(
         RovelleEpisodeStatus.DRAFT,
         RovelleEpisodeStatus.READY_TO_GENERATE,
-      ),
-      false,
-    );
-    assert.equal(
-      canTransitionEpisode(
-        RovelleEpisodeStatus.READY_TO_GENERATE,
-        RovelleEpisodeStatus.GENERATING,
       ),
       false,
     );

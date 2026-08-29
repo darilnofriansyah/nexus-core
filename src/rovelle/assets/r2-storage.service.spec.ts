@@ -227,6 +227,34 @@ describe('R2 storage service', () => {
     );
   });
 
+  test('signs provider PUT with only the bucket and key', async () => {
+    configureR2('1200');
+    const client = new StubS3Client();
+    const { signer, calls } = createSigner('https://signed.example/provider-put');
+    const service = createService(client, signer);
+    const before = Date.now();
+
+    const result = await service.createProviderPutUrl(
+      'episodes/episode-1/provider-output.png',
+    );
+    const after = Date.now();
+
+    assert.equal(calls.length, 1);
+    assert.ok(calls[0].command instanceof PutObjectCommand);
+    assert.deepEqual(calls[0].command.input, {
+      Bucket: 'private-bucket',
+      Key: 'episodes/episode-1/provider-output.png',
+    });
+    assert.deepEqual(calls[0].options, { expiresIn: 1200 });
+    assert.equal(result.method, 'PUT');
+    assert.equal(result.url, 'https://signed.example/provider-put');
+    assert.deepEqual(result.headers, {});
+    assert.ok(
+      Date.parse(result.expiresAt) >= before + 1200 * 1000,
+    );
+    assert.ok(Date.parse(result.expiresAt) <= after + 1200 * 1000);
+  });
+
   test('destroys the configured S3 client on module shutdown', () => {
     configureR2();
     const client = new StubS3Client();

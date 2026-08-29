@@ -88,6 +88,28 @@ export class R2StorageService implements OnModuleDestroy {
     };
   }
 
+  async createProviderPutUrl(key: string): Promise<R2PresignedRequest> {
+    const env = readEnv();
+    const client = this.assertConfigured();
+    const url = await this.signer(
+      client,
+      new PutObjectCommand({
+        Bucket: env.r2Bucket!,
+        Key: key,
+      }),
+      { expiresIn: env.r2PresignTtlSeconds },
+    );
+
+    return {
+      method: 'PUT',
+      url,
+      headers: {},
+      expiresAt: new Date(
+        Date.now() + env.r2PresignTtlSeconds * 1000,
+      ).toISOString(),
+    };
+  }
+
   async createGetUrl(key: string): Promise<R2PresignedRequest> {
     const env = readEnv();
     const client = this.assertConfigured();
