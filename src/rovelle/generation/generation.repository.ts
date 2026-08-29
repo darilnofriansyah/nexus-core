@@ -14,9 +14,22 @@ import {
 } from "../../generated/prisma/client";
 import { PrismaService } from "../../database/prisma.service";
 import { assertAssetId } from "../assets/asset-validation";
+import {
+  actualGenerationSpend,
+  committedGenerationSpend,
+} from "../review/generation-cost";
 import { getGenerationProfile } from "./generation-profile";
 
 const URL_PATTERN = /(?:\b[a-z][a-z\d+.-]*:(?=\S)|\/\/)/i;
+
+const GENERATION_BUDGET_MUTABLE_EPISODE_STATUSES = [
+  RovelleEpisodeStatus.DRAFT,
+  RovelleEpisodeStatus.BRIEF_APPROVED,
+  RovelleEpisodeStatus.PREPRODUCTION,
+  RovelleEpisodeStatus.READY_TO_GENERATE,
+  RovelleEpisodeStatus.GENERATING,
+  RovelleEpisodeStatus.REVIEW_REQUIRED,
+];
 
 export type InternalGenerationRecord = RovelleShotGeneration;
 
@@ -27,6 +40,13 @@ export type GenerationWithOutputAsset = InternalGenerationRecord & {
 export type CreateGenerationAttemptResult =
   | { status: "created"; generation: InternalGenerationRecord }
   | { status: "existing"; generation: InternalGenerationRecord }
+  | {
+      status: "budget_exceeded";
+      budgetUsd: Prisma.Decimal;
+      committedUsd: Prisma.Decimal;
+      requestedEstimateUsd: Prisma.Decimal;
+      projectedUsd: Prisma.Decimal;
+    }
   | { status: "not_found" }
   | { status: "invalid_shot_state" }
   | { status: "invalid_episode_state" };
@@ -99,6 +119,54 @@ export class GenerationRepository {
     });
   }
 
+  async getEpisodeCostSummary(episodeId: string): Promise<{
+    episodeId: string;
+    budgetUsd: Prisma.Decimal | null;
+    actualSpentUsd: Prisma.Decimal;
+    committedUsd: Prisma.Decimal;
+  } | null> {
+    const episode = await this.prisma.client.rovelleEpisode.findUnique({
+      where: { id: episodeId },
+      select: { id: true, generationBudgetUsd: true },
+    });
+    if (!episode) return null;
+
+    const attempts = await this.prisma.client.rovelleShotGeneration.findMany({
+      where: { shot: { episodeId } },
+      select: {
+        status: true,
+        estimatedCostUsd: true,
+        actualCostUsd: true,
+      },
+    });
+    return {
+      episodeId: episode.id,
+      budgetUsd: episode.generationBudgetUsd,
+      actualSpentUsd: actualGenerationSpend(attempts),
+      committedUsd: committedGenerationSpend(attempts),
+    };
+  }
+
+  async setEpisodeGenerationBudget(
+    episodeId: string,
+    budgetUsd: Prisma.Decimal | null,
+  ): Promise<"updated" | "not_found" | "invalid_state"> {
+    const updated = await this.prisma.client.rovelleEpisode.updateMany({
+      where: {
+        id: episodeId,
+        status: { in: GENERATION_BUDGET_MUTABLE_EPISODE_STATUSES },
+      },
+      data: { generationBudgetUsd: budgetUsd },
+    });
+    if (updated.count === 1) return "updated";
+
+    const episode = await this.prisma.client.rovelleEpisode.findUnique({
+      where: { id: episodeId },
+      select: { id: true },
+    });
+    return episode ? "invalid_state" : "not_found";
+  }
+
   async createAttempt(
     input: CreateGenerationAttemptInput,
   ): Promise<CreateGenerationAttemptResult> {
@@ -128,6 +196,29 @@ export class GenerationRepository {
             }
             if (!isGenerationEpisode(shot.episode.status)) {
               return { status: "invalid_episode_state" };
+            }
+
+            const attempts = await tx.rovelleShotGeneration.findMany({
+              where: { shot: { episodeId: input.episodeId } },
+              select: {
+                status: true,
+                estimatedCostUsd: true,
+                actualCostUsd: true,
+              },
+            });
+            const committedUsd = committedGenerationSpend(attempts);
+            const budgetUsd = shot.episode.generationBudgetUsd;
+            if (budgetUsd !== null) {
+              const projectedUsd = committedUsd.plus(input.estimatedCostUsd);
+              if (projectedUsd.gt(budgetUsd)) {
+                return {
+                  status: "budget_exceeded",
+                  budgetUsd,
+                  committedUsd,
+                  requestedEstimateUsd: input.estimatedCostUsd,
+                  projectedUsd,
+                };
+              }
             }
 
             const latest = await tx.rovelleShotGeneration.aggregate({
