@@ -252,6 +252,29 @@ test("rejects a source size mismatch", async () => {
   }
 });
 
+test("rejects blank, signed, hexadecimal, and non-decimal source byte size metadata", async () => {
+  const root = await temporaryRoot();
+  try {
+    for (const [index, byteSize] of ["", " ", "0x0d", "+13", "-13", "13.5"].entries()) {
+      const service = createService(
+        new FakeAssetService(),
+        new FakeStorageService(),
+        async () => new Response(SOURCE_BYTES, { headers: { etag: "source-etag" } }),
+      );
+
+      await assert.rejects(
+        service.downloadFrozenAsset({
+          expected: { ...expected, byteSize },
+          destinationPath: join(root, `source-${index}.mp4`),
+        }),
+        assertWorkerError("SOURCE_METADATA_MISMATCH"),
+      );
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("rejects a present source ETag mismatch after normalizing quotes", async () => {
   const root = await temporaryRoot();
   try {

@@ -202,6 +202,7 @@ function assertFrozenAssetMetadata(
 
 function parseExpectedByteSize(value: string): bigint {
   try {
+    if (!/^[0-9]+$/.test(value)) throw new Error("non-decimal byte size");
     const byteSize = BigInt(value);
     if (byteSize < 0n) throw new Error("negative byte size");
     return byteSize;
