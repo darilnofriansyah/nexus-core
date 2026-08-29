@@ -40,6 +40,9 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Verify production entrypoint
+        run: test -f dist/main.js
+
   deploy:
     name: Deploy
     runs-on: ubuntu-latest
