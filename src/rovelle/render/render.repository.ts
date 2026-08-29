@@ -38,6 +38,16 @@ export type CreateRenderResult =
   | { status: "audio_invalid" }
   | { status: "caption_invalid" };
 
+export type RetryRenderResult =
+  | { status: "queued"; render: InternalRenderRecord }
+  | { status: "existing"; render: InternalRenderRecord }
+  | { status: "not_found" }
+  | { status: "request_conflict" }
+  | { status: "invalid_render_state" }
+  | { status: "invalid_episode_state" }
+  | { status: "output_not_retryable" }
+  | { status: "active_job_exists" };
+
 export interface CreateQueuedRenderInput {
   clientRequestId: string;
   episodeId: string;
@@ -48,6 +58,7 @@ export interface CreateQueuedRenderInput {
 }
 
 class EpisodeRenderStateChangedError extends Error {}
+class RenderRetryStateChangedError extends Error {}
 
 @Injectable()
 export class RenderRepository {
@@ -93,6 +104,42 @@ export class RenderRepository {
     }
   }
 
+  async retryRender(input: {
+    renderId: string;
+    clientRequestId: string;
+  }): Promise<RetryRenderResult> {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await this.prisma.client.$transaction(
+          async (tx) => this.retryInTransaction(tx, input),
+          { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+        );
+      } catch (error) {
+        if (error instanceof RenderRetryStateChangedError) {
+          const current = await this.findRender(input.renderId);
+          if (current?.jobs.some(isActiveRenderJob)) {
+            return { status: "active_job_exists" };
+          }
+          return { status: "invalid_render_state" };
+        }
+        if (isUniqueConstraintError(error)) {
+          const existing = await this.findJobByRequestId(input.clientRequestId);
+          if (existing) {
+            return existing.renderId === input.renderId
+              ? { status: "existing", render: existing.render }
+              : { status: "request_conflict" };
+          }
+          const current = await this.findRender(input.renderId);
+          if (current?.jobs.some(isActiveRenderJob)) {
+            return { status: "active_job_exists" };
+          }
+        }
+        if (attempt < 2 && isSerializableTransactionError(error)) continue;
+        throw error;
+      }
+    }
+  }
+
   private async findByRequestId(
     clientRequestId: string,
   ): Promise<InternalRenderRecord | null> {
@@ -100,6 +147,89 @@ export class RenderRepository {
       where: { clientRequestId },
       include: RENDER_INCLUDE,
     });
+  }
+
+  private async findJobByRequestId(clientRequestId: string) {
+    return this.prisma.client.rovelleRenderJob.findUnique({
+      where: { clientRequestId },
+      include: { render: { include: RENDER_INCLUDE } },
+    });
+  }
+
+  private async retryInTransaction(
+    tx: Prisma.TransactionClient,
+    input: { renderId: string; clientRequestId: string },
+  ): Promise<RetryRenderResult> {
+    const existing = await tx.rovelleRenderJob.findUnique({
+      where: { clientRequestId: input.clientRequestId },
+      include: { render: { include: RENDER_INCLUDE } },
+    });
+    if (existing) {
+      return existing.renderId === input.renderId
+        ? { status: "existing", render: existing.render }
+        : { status: "request_conflict" };
+    }
+
+    const render = await tx.rovelleRender.findUnique({
+      where: { id: input.renderId },
+      include: RENDER_INCLUDE,
+    });
+    if (!render) return { status: "not_found" };
+    if (render.status !== RovelleRenderStatus.FAILED) {
+      return { status: "invalid_render_state" };
+    }
+
+    const episode = await tx.rovelleEpisode.findUnique({
+      where: { id: render.episodeId },
+      select: { id: true, status: true },
+    });
+    if (episode?.status !== RovelleEpisodeStatus.RENDERING) {
+      return { status: "invalid_episode_state" };
+    }
+    if (
+      render.outputAsset.id !== render.outputAssetId ||
+      render.outputAsset.status !== RovelleAssetStatus.RESERVED
+    ) {
+      return { status: "output_not_retryable" };
+    }
+    if (render.jobs.some(isActiveRenderJob)) {
+      return { status: "active_job_exists" };
+    }
+
+    const latest = await tx.rovelleRenderJob.aggregate({
+      where: { renderId: render.id },
+      _max: { attempt: true },
+    });
+    await tx.rovelleRenderJob.create({
+      data: {
+        clientRequestId: input.clientRequestId,
+        renderId: render.id,
+        attempt: (latest._max.attempt ?? 0) + 1,
+        status: RovelleRenderJobStatus.QUEUED,
+        availableAt: new Date(),
+        workerId: null,
+        leaseToken: null,
+        claimedAt: null,
+        heartbeatAt: null,
+        leaseExpiresAt: null,
+        startedAt: null,
+        finishedAt: null,
+        errorCode: null,
+        errorMessage: null,
+      },
+    });
+    const transitioned = await tx.rovelleRender.updateMany({
+      where: { id: render.id, status: RovelleRenderStatus.FAILED },
+      data: { status: RovelleRenderStatus.QUEUED },
+    });
+    if (transitioned.count !== 1) throw new RenderRetryStateChangedError();
+
+    const queued = await tx.rovelleRender.findUnique({
+      where: { id: render.id },
+      include: RENDER_INCLUDE,
+    });
+    if (!queued) throw new RenderRetryStateChangedError();
+    return { status: "queued", render: queued };
   }
 
   private async createInTransaction(
@@ -350,6 +480,13 @@ function isPrismaInputJsonValue(value: unknown): value is Prisma.InputJsonValue 
   if (value === null || typeof value !== "object") return false;
   return Object.values(value).every(
     (entry) => entry === null || isPrismaInputJsonValue(entry),
+  );
+}
+
+function isActiveRenderJob(job: { status: RovelleRenderJobStatus }): boolean {
+  return (
+    job.status === RovelleRenderJobStatus.QUEUED ||
+    job.status === RovelleRenderJobStatus.RUNNING
   );
 }
 

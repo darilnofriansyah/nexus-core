@@ -357,6 +357,151 @@ function hasUnsafeSpecValue(value: unknown): boolean {
   return false;
 }
 
+type RetryRenderResult = { status: string; render?: InternalRenderRecord };
+
+type RetryRenderRepository = RenderRepository & {
+  retryRender(input: {
+    renderId: string;
+    clientRequestId: string;
+  }): Promise<RetryRenderResult>;
+};
+
+type RetryOptions = {
+  render?: InternalRenderRecord | null;
+  episode?: Episode | null;
+  requestJob?: (RovelleRenderJob & { render: InternalRenderRecord }) | null;
+  latestJobAttempt?: number | null;
+  renderUpdateCounts?: number[];
+  transactionErrors?: unknown[];
+  afterRace?: InternalRenderRecord | null;
+  afterSerialization?: InternalRenderRecord | null;
+};
+
+function failedRender(changes: Partial<InternalRenderRecord> = {}) {
+  return render({
+    status: RovelleRenderStatus.FAILED,
+    outputAsset: asset({
+      id: OUTPUT_ID,
+      assetType: RovelleAssetType.RENDER,
+      status: RovelleAssetStatus.RESERVED,
+    }),
+    jobs: [
+      renderJob({
+        status: RovelleRenderJobStatus.FAILED,
+        workerId: "render-worker",
+        errorCode: "RENDER_FAILED",
+        errorMessage: "encoder stopped",
+        startedAt: new Date("2026-08-29T00:01:00.000Z"),
+        finishedAt: new Date("2026-08-29T00:02:00.000Z"),
+      }),
+    ],
+    ...changes,
+  });
+}
+
+function retryInput(changes: Partial<{ renderId: string; clientRequestId: string }> = {}) {
+  return {
+    renderId: RENDER_ID,
+    clientRequestId: "923e4567-e89b-42d3-a456-426614174001",
+    ...changes,
+  };
+}
+
+function createRetryRepository(options: RetryOptions = {}) {
+  const calls: RepositoryCall[] = [];
+  const transactionErrors = [...(options.transactionErrors ?? [])];
+  const renderUpdateCounts = [...(options.renderUpdateCounts ?? [1])];
+  let current = options.render === undefined ? failedRender() : options.render;
+  const reloaded = current === null
+    ? null
+    : render({
+      ...current,
+      status: RovelleRenderStatus.QUEUED,
+      jobs: [
+        ...current.jobs,
+        renderJob({
+          id: "a23e4567-e89b-42d3-a456-426614174001",
+          clientRequestId: retryInput().clientRequestId,
+          attempt: (options.latestJobAttempt ?? current.jobs.at(-1)?.attempt ?? 0) + 1,
+          status: RovelleRenderJobStatus.QUEUED,
+        }),
+      ],
+    });
+  let targetReads = 0;
+  let inTransaction = false;
+  const record = (operation: string, args: unknown) =>
+    calls.push({ operation, args, inTransaction });
+  const transactionClient = {
+    rovelleRenderJob: {
+      findUnique: async (args: unknown) => {
+        record("retry.job.findUnique", args);
+        return options.requestJob ?? null;
+      },
+      aggregate: async (args: unknown) => {
+        record("retry.job.aggregate", args);
+        return {
+          _max: {
+            attempt: options.latestJobAttempt ?? current?.jobs.at(-1)?.attempt ?? null,
+          },
+        };
+      },
+      create: async (args: unknown) => {
+        record("retry.job.create", args);
+        return renderJob();
+      },
+    },
+    rovelleRender: {
+      findUnique: async (args: unknown) => {
+        record("retry.render.findUnique", args);
+        targetReads += 1;
+        return targetReads === 1 ? current : reloaded;
+      },
+      updateMany: async (args: unknown) => {
+        record("retry.render.updateMany", args);
+        return { count: renderUpdateCounts.shift() ?? 1 };
+      },
+    },
+    rovelleEpisode: {
+      findUnique: async (args: unknown) => {
+        record("retry.episode.findUnique", args);
+        return options.episode === undefined
+          ? { id: EPISODE_ID, status: RovelleEpisodeStatus.RENDERING }
+          : options.episode;
+      },
+    },
+  };
+  const client = {
+    $transaction: async <T>(
+      callback: (tx: typeof transactionClient) => Promise<T>,
+      transactionOptions: unknown,
+    ): Promise<T> => {
+      record("retry.$transaction", transactionOptions);
+      const error = transactionErrors.shift();
+      if (error) {
+        current = options.afterSerialization ?? current;
+        throw error;
+      }
+      inTransaction = true;
+      try {
+        return await callback(transactionClient);
+      } finally {
+        inTransaction = false;
+      }
+    },
+    rovelleRender: {
+      findUnique: async (args: unknown) => {
+        record("retry.client.render.findUnique", args);
+        return options.afterRace ?? null;
+      },
+    },
+  };
+
+  return {
+    repository: new RenderRepository({ client } as unknown as PrismaService) as RetryRenderRepository,
+    calls,
+  };
+}
+
 test("createQueuedRender returns the existing request before validating current state", async () => {
   const existing = render();
   const fake = createRepository({
@@ -673,4 +818,187 @@ test("findRender and listEpisodeRenders load the output and ordered jobs", async
     },
     inTransaction: false,
   });
+});
+
+test("retryRender returns the prior retry for the same render without a second job", async () => {
+  const current = failedRender();
+  const request = retryInput();
+  const existingJob = Object.assign(
+    renderJob({ clientRequestId: request.clientRequestId, renderId: RENDER_ID }),
+    { render: current },
+  );
+  const fake = createRetryRepository({ render: current, requestJob: existingJob });
+
+  assert.deepEqual(await fake.repository.retryRender(request), {
+    status: "existing",
+    render: current,
+  });
+  assert.equal(callsFor(fake.calls, "retry.render.findUnique").length, 0);
+  assert.equal(callsFor(fake.calls, "retry.job.create").length, 0);
+});
+
+test("retryRender rejects a retry request already owned by another render", async () => {
+  const request = retryInput();
+  const other = render({ id: "a23e4567-e89b-42d3-a456-426614174002" });
+  const existingJob = Object.assign(
+    renderJob({ clientRequestId: request.clientRequestId, renderId: other.id }),
+    { render: other },
+  );
+  const fake = createRetryRepository({ requestJob: existingJob });
+
+  assert.deepEqual(await fake.repository.retryRender(request), {
+    status: "request_conflict",
+  });
+  assert.equal(callsFor(fake.calls, "retry.job.create").length, 0);
+});
+
+test("retryRender rejects every independently invalid retry gate", async () => {
+  const activeJob = renderJob({ status: RovelleRenderJobStatus.RUNNING });
+  const cases: Array<{
+    options: RetryOptions;
+    expected: string;
+  }> = [
+    { options: { render: null }, expected: "not_found" },
+    {
+      options: { render: failedRender({ status: RovelleRenderStatus.QUEUED }) },
+      expected: "invalid_render_state",
+    },
+    {
+      options: { render: failedRender({ status: RovelleRenderStatus.RUNNING }) },
+      expected: "invalid_render_state",
+    },
+    {
+      options: { render: failedRender({ status: RovelleRenderStatus.COMPLETED }) },
+      expected: "invalid_render_state",
+    },
+    {
+      options: { episode: { id: EPISODE_ID, status: RovelleEpisodeStatus.FINAL_REVIEW } },
+      expected: "invalid_episode_state",
+    },
+    {
+      options: { episode: { id: EPISODE_ID, status: RovelleEpisodeStatus.PUBLISH_READY } },
+      expected: "invalid_episode_state",
+    },
+    {
+      options: {
+        render: failedRender({
+          outputAsset: asset({ id: OUTPUT_ID, status: RovelleAssetStatus.AVAILABLE }),
+        }),
+      },
+      expected: "output_not_retryable",
+    },
+    {
+      options: {
+        render: failedRender({
+          outputAsset: asset({
+            id: "a23e4567-e89b-42d3-a456-426614174003",
+            status: RovelleAssetStatus.RESERVED,
+          }),
+        }),
+      },
+      expected: "output_not_retryable",
+    },
+    {
+      options: { render: failedRender({ jobs: [activeJob] }) },
+      expected: "active_job_exists",
+    },
+    {
+      options: {
+        render: failedRender({
+          jobs: [renderJob({ status: RovelleRenderJobStatus.QUEUED })],
+        }),
+      },
+      expected: "active_job_exists",
+    },
+  ];
+
+  for (const { options, expected } of cases) {
+    const fake = createRetryRepository(options);
+    assert.deepEqual(await fake.repository.retryRender(retryInput()), { status: expected });
+    assert.equal(callsFor(fake.calls, "retry.job.create").length, 0);
+  }
+});
+
+test("retryRender appends a clean next job and preserves the failed render history", async () => {
+  const current = failedRender({
+    profile: RovelleRenderProfile.VERTICAL_SHORT_V1,
+    spec: { stable: true },
+    specHash: "b".repeat(64),
+  });
+  const oldJob = current.jobs[0];
+  const fake = createRetryRepository({ render: current, latestJobAttempt: 4 });
+
+  const result = await fake.repository.retryRender(retryInput());
+
+  assert.equal(result.status, "queued");
+  assert.equal(current.status, RovelleRenderStatus.FAILED);
+  assert.equal(current.profile, RovelleRenderProfile.VERTICAL_SHORT_V1);
+  assert.deepEqual(current.spec, { stable: true });
+  assert.equal(current.specHash, "b".repeat(64));
+  assert.equal(current.outputAssetId, OUTPUT_ID);
+  assert.equal(current.episodeId, EPISODE_ID);
+  assert.deepEqual(current.jobs, [oldJob]);
+  assert.equal(oldJob.status, RovelleRenderJobStatus.FAILED);
+  assert.equal(oldJob.workerId, "render-worker");
+  assert.equal(oldJob.errorCode, "RENDER_FAILED");
+  assert.equal(oldJob.errorMessage, "encoder stopped");
+  assert.ok(oldJob.startedAt);
+  assert.ok(oldJob.finishedAt);
+  assert.deepEqual(callsFor(fake.calls, "retry.job.aggregate")[0], {
+    operation: "retry.job.aggregate",
+    args: { where: { renderId: RENDER_ID }, _max: { attempt: true } },
+    inTransaction: true,
+  });
+  const jobData = (callsFor(fake.calls, "retry.job.create")[0]?.args as {
+    data: Record<string, unknown>;
+  }).data;
+  assert.deepEqual(jobData, {
+    clientRequestId: retryInput().clientRequestId,
+    renderId: RENDER_ID,
+    attempt: 5,
+    status: RovelleRenderJobStatus.QUEUED,
+    availableAt: jobData.availableAt,
+    workerId: null,
+    leaseToken: null,
+    claimedAt: null,
+    heartbeatAt: null,
+    leaseExpiresAt: null,
+    startedAt: null,
+    finishedAt: null,
+    errorCode: null,
+    errorMessage: null,
+  });
+  assert.ok(jobData.availableAt instanceof Date);
+  assert.deepEqual(callsFor(fake.calls, "retry.render.updateMany")[0], {
+    operation: "retry.render.updateMany",
+    args: {
+      where: { id: RENDER_ID, status: RovelleRenderStatus.FAILED },
+      data: { status: RovelleRenderStatus.QUEUED },
+    },
+    inTransaction: true,
+  });
+  assert.deepEqual(callsFor(fake.calls, "retry.$transaction")[0], {
+    operation: "retry.$transaction",
+    args: { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+    inTransaction: false,
+  });
+});
+
+test("retryRender serializes competing retry requests so the loser observes the queued render", async () => {
+  const queued = render({
+    status: RovelleRenderStatus.QUEUED,
+    outputAsset: asset({ id: OUTPUT_ID, assetType: RovelleAssetType.RENDER, status: RovelleAssetStatus.RESERVED }),
+    jobs: [renderJob({ status: RovelleRenderJobStatus.QUEUED })],
+  });
+  const fake = createRetryRepository({
+    transactionErrors: [{ code: "P2034" }],
+    afterSerialization: queued,
+  });
+
+  assert.deepEqual(
+    await fake.repository.retryRender(retryInput({ clientRequestId: "a23e4567-e89b-42d3-a456-426614174004" })),
+    { status: "invalid_render_state" },
+  );
+  assert.equal(callsFor(fake.calls, "retry.$transaction").length, 2);
+  assert.equal(callsFor(fake.calls, "retry.job.create").length, 0);
 });
