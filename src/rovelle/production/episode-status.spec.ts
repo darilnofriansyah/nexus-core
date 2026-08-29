@@ -56,6 +56,30 @@ describe('episode status transitions', () => {
     );
   });
 
+  test('allows review-required episodes to resume or finish generation review', () => {
+    assert.equal(
+      canTransitionEpisode(
+        RovelleEpisodeStatus.REVIEW_REQUIRED,
+        RovelleEpisodeStatus.GENERATING,
+      ),
+      true,
+    );
+    assert.equal(
+      canTransitionEpisode(
+        RovelleEpisodeStatus.REVIEW_REQUIRED,
+        RovelleEpisodeStatus.GENERATION_APPROVED,
+      ),
+      true,
+    );
+    assert.equal(
+      canTransitionEpisode(
+        RovelleEpisodeStatus.GENERATION_APPROVED,
+        RovelleEpisodeStatus.GENERATING,
+      ),
+      false,
+    );
+  });
+
   test('throws a bad request error for an invalid transition', () => {
     assert.throws(
       () =>
