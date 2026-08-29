@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   BadGatewayException,
   BadRequestException,
+  ConflictException,
   Inject,
   Injectable,
   InternalServerErrorException,
@@ -59,7 +60,10 @@ export class GenerationService {
     );
     if (existing) return toGenerationAttemptDto(existing);
 
-    const prepared = await this.preflight.preflight(shotId);
+    const prepared = await this.preflight.preflight(
+      shotId,
+      normalized.profile,
+    );
     const profile = getGenerationProfile(normalized.profile);
     const estimatedCostUsd = new Prisma.Decimal(
       estimateGenerationCostUsd(normalized.profile, prepared.duration),
@@ -85,6 +89,15 @@ export class GenerationService {
       return toGenerationAttemptDto(created.generation);
     if (created.status === "not_found") {
       throw new NotFoundException("Rovelle shot not found");
+    }
+    if (created.status === "budget_exceeded") {
+      throw new ConflictException({
+        message: "Episode generation budget would be exceeded",
+        budgetUsd: created.budgetUsd.toFixed(6),
+        committedUsd: created.committedUsd.toFixed(6),
+        requestedEstimateUsd: created.requestedEstimateUsd.toFixed(6),
+        projectedUsd: created.projectedUsd.toFixed(6),
+      });
     }
     if (created.status !== "created") {
       throw new BadRequestException("Rovelle shot is not ready to generate");

@@ -2,8 +2,10 @@ import {
   BadRequestException,
   Injectable,
   NotFoundException,
+  Optional,
 } from "@nestjs/common";
 import {
+  Prisma,
   RovelleAssetStatus,
   RovelleCanonEntityType,
   RovelleCanonVersionStatus,
@@ -13,6 +15,9 @@ import {
 import { PrismaService } from "../../database/prisma.service";
 import { CanonPinService } from "../canon/canon-pin.service";
 import type { CanonPinDto } from "../canon/dto/canon.dto";
+import type { GenerationProfile } from "./dto/generation.dto";
+import { estimateGenerationCostUsd } from "./generation-profile";
+import { GenerationRepository } from "./generation.repository";
 import {
   GenerationPromptCompiler,
   type PreparedShotGeneration,
@@ -24,15 +29,31 @@ const REQUIRED_CANON_TYPES = [
   RovelleCanonEntityType.STYLE,
 ] as const;
 
+export interface GenerationBudgetVisibility {
+  budgetUsd: string | null;
+  committedUsd: string;
+  requestedEstimateUsd: string;
+  projectedUsd: string;
+  withinBudget: boolean;
+}
+
+export type PreparedShotGenerationWithBudget = PreparedShotGeneration & {
+  budget: GenerationBudgetVisibility;
+};
+
 @Injectable()
 export class GenerationPreflightService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly canonPinService: CanonPinService,
     private readonly promptCompiler: GenerationPromptCompiler,
+    @Optional() private readonly generationRepository?: GenerationRepository,
   ) {}
 
-  async preflight(shotId: string): Promise<PreparedShotGeneration> {
+  async preflight(
+    shotId: string,
+    profile: GenerationProfile = "DRAFT",
+  ): Promise<PreparedShotGenerationWithBudget> {
     const shot = await this.prisma.client.rovelleShot.findUnique({
       where: { id: shotId },
       select: {
@@ -69,13 +90,34 @@ export class GenerationPreflightService {
     const canon = await this.canonPinService.getEffectiveShotCanon(shot.id);
     this.assertCanon(canon);
 
-    return this.promptCompiler.compile({
+    const prepared = this.promptCompiler.compile({
       shotId: shot.id,
       episodeId: shot.episodeId,
       direction: shot.direction,
       duration: shot.targetDurationSeconds,
       canon,
     });
+
+    const summary = this.generationRepository
+      ? await this.generationRepository.getEpisodeCostSummary(shot.episodeId)
+      : null;
+    const requestedEstimateUsd = new Prisma.Decimal(
+      estimateGenerationCostUsd(profile, shot.targetDurationSeconds),
+    );
+    const committedUsd = summary?.committedUsd ?? new Prisma.Decimal("0");
+    const budgetUsd = summary?.budgetUsd ?? null;
+    const projectedUsd = committedUsd.plus(requestedEstimateUsd);
+
+    return {
+      ...prepared,
+      budget: {
+        budgetUsd: budgetUsd?.toFixed(6) ?? null,
+        committedUsd: committedUsd.toFixed(6),
+        requestedEstimateUsd: requestedEstimateUsd.toFixed(6),
+        projectedUsd: projectedUsd.toFixed(6),
+        withinBudget: budgetUsd === null || projectedUsd.lte(budgetUsd),
+      },
+    };
   }
 
   private assertCanon(canon: readonly CanonPinDto[]): void {
