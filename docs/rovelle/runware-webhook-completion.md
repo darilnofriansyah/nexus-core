@@ -187,6 +187,11 @@ boundary also make callback races safe: if a callback completes a `CREATED`
 generation before the submission request later calls `markSubmitted`, the
 submission transition observes terminal state and cannot regress it.
 
+This callback-race guarantee complements the Phase 3A submission contract:
+retrying the same client `requestId` returns the original attempt and does not
+create a second paid provider task. See [Rovelle Runware generation
+submission](runware-generation-submission.md) for that idempotency boundary.
+
 ## Response dispositions
 
 Successful callbacks use the standard Core envelope:
