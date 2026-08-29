@@ -16,7 +16,6 @@ import {
 } from "@nestjs/common";
 import { PrismaService } from "../../database/prisma.service";
 import {
-  Prisma,
   RovelleAssetStatus,
   RovelleAssetType,
   RovelleCanonEntityType,
@@ -52,9 +51,10 @@ const originalDatabaseUrl = process.env.DATABASE_URL;
 
 class FakeR2Storage {
   private readonly mediaTypes = new Map<string, string>();
+  readonly headCalls: string[] = [];
+  readonly headObjectResults = new Map<string, R2ObjectMetadata | null>();
   readUrlError: Error | undefined;
   providerPutUrlError: Error | undefined;
-  headObjectResult: R2ObjectMetadata | null | undefined;
 
   assertConfigured(): void {}
 
@@ -93,7 +93,10 @@ class FakeR2Storage {
   }
 
   async headObject(key: string): Promise<R2ObjectMetadata | null> {
-    if (this.headObjectResult !== undefined) return this.headObjectResult;
+    this.headCalls.push(key);
+    if (this.headObjectResults.has(key)) {
+      return this.headObjectResults.get(key) ?? null;
+    }
     return {
       byteSize: 1n,
       etag: "fake-etag",
@@ -105,6 +108,9 @@ class FakeR2Storage {
 class FakeRunwareProvider {
   readonly calls: GenerationProviderSubmission[] = [];
   error: RunwareSubmissionError | undefined;
+  acceptedHook:
+    | ((request: GenerationProviderSubmission) => Promise<void> | void)
+    | undefined;
   private holdUntilCallCount = 0;
   private readonly heldSubmitters: Array<() => void> = [];
 
@@ -131,6 +137,7 @@ class FakeRunwareProvider {
       }
       await gate;
     }
+    if (this.acceptedHook) await this.acceptedHook(request);
     return { providerTaskId: request.taskId };
   }
 }
@@ -188,10 +195,12 @@ describe(
     beforeEach(() => {
       provider.calls.length = 0;
       provider.error = undefined;
+      provider.acceptedHook = undefined;
       provider.resetSubmissionGate();
       storage.readUrlError = undefined;
       storage.providerPutUrlError = undefined;
-      storage.headObjectResult = undefined;
+      storage.headCalls.length = 0;
+      storage.headObjectResults.clear();
     });
 
     afterEach(cleanRovelleTables);
@@ -379,48 +388,48 @@ describe(
       };
     }
 
-    async function createCreatedAttempt(fixture: {
-      episodeId: string;
-      shotId: string;
-      referenceAssetIds: string[];
-    }) {
-      const outputAssetId = randomUUID();
-      const result = await generationRepository.createAttempt({
-        clientRequestId: randomUUID(),
-        shotId: fixture.shotId,
-        episodeId: fixture.episodeId,
-        providerTaskId: randomUUID(),
-        outputAssetId,
-        outputStorageKey: `race/${outputAssetId}.mp4`,
-        profile: RovelleGenerationProfile.DRAFT,
-        model: "bytedance:seedance@2.5",
-        prompt: "Race callback test",
-        sanitizedRequest: {
-          profile: "DRAFT",
-          width: 480,
-          height: 854,
-          duration: 5,
-          audio: false,
-          referenceAssetIds: fixture.referenceAssetIds,
-          referenceCanonVersions: fixture.referenceAssetIds.map((_, index) => ({
-            entityCode: `REFERENCE_${index}`,
-            version: 1,
-          })),
-        },
-        estimatedCostUsd: new Prisma.Decimal("0.575000"),
-        pricingSource: "RUNWARE_SEEDANCE_2_5_2026_08_28",
-      });
-      assert.equal(result.status, "created");
-      return result.generation;
+    function serializeDurable(value: unknown): string {
+      return (
+        JSON.stringify(value, (_key, current) =>
+          typeof current === "bigint" ? current.toString() : current,
+        ) ?? ""
+      );
+    }
+
+    async function snapshotDurableState() {
+      return {
+        generations: await prisma.client.rovelleShotGeneration.findMany({
+          orderBy: { id: "asc" },
+        }),
+        assets: await prisma.client.rovelleAsset.findMany({
+          orderBy: { id: "asc" },
+        }),
+        shots: await prisma.client.rovelleShot.findMany({
+          orderBy: { id: "asc" },
+        }),
+        episodes: await prisma.client.rovelleEpisode.findMany({
+          orderBy: { id: "asc" },
+        }),
+      };
     }
 
     test("completes a submitted generation from a success webhook", async () => {
       const fixture = await createFixture();
       const submitted = await submitShot(fixture.shotId);
-
-      const result = await webhookService.handle(
-        successEvent(submitted.providerTaskId),
+      const providerVideoUrl = "https://provider.invalid/video.mp4";
+      const event = {
+        ...successEvent(submitted.providerTaskId),
+        videoURL: providerVideoUrl,
+      } as Extract<RunwareWebhookEvent, { kind: "success" }> & {
+        videoURL: string;
+      };
+      const reservedOutput = await prisma.client.rovelleAsset.findUniqueOrThrow(
+        { where: { id: submitted.outputAssetId } },
       );
+      storage.headCalls.length = 0;
+
+      const result = await webhookService.handle(event);
+      assert.deepEqual(storage.headCalls, [reservedOutput.storageKey]);
 
       assert.deepEqual(result, {
         accepted: true,
@@ -442,23 +451,22 @@ describe(
       assert.equal(output.byteSize, 1n);
       assert.equal(output.etag, "fake-etag");
 
-      assert.equal(
-        (
-          await prisma.client.rovelleShot.findUniqueOrThrow({
-            where: { id: fixture.shotId },
-          })
-        ).status,
-        RovelleShotStatus.REVIEW_REQUIRED,
-      );
-      assert.equal(
-        (
-          await prisma.client.rovelleEpisode.findUniqueOrThrow({
-            where: { id: fixture.episodeId },
-          })
-        ).status,
-        RovelleEpisodeStatus.REVIEW_REQUIRED,
-      );
-      assert.doesNotMatch(JSON.stringify(completed.request), /videoURL/i);
+      const shot = await prisma.client.rovelleShot.findUniqueOrThrow({
+        where: { id: fixture.shotId },
+      });
+      assert.equal(shot.status, RovelleShotStatus.REVIEW_REQUIRED);
+      const episode = await prisma.client.rovelleEpisode.findUniqueOrThrow({
+        where: { id: fixture.episodeId },
+      });
+      assert.equal(episode.status, RovelleEpisodeStatus.REVIEW_REQUIRED);
+      const serialized = serializeDurable({
+        generation: completed,
+        outputAsset: output,
+        shot,
+        episode,
+      });
+      assert.equal(serialized.includes(providerVideoUrl), false);
+      assert.doesNotMatch(serialized, /videoURL/i);
     });
 
     test("moves an episode to review only after every shot reaches a terminal state", async () => {
@@ -466,11 +474,21 @@ describe(
       const secondShot = await createReadyShot(fixture.episodeId, 2);
       const first = await submitShot(fixture.shotId);
       const second = await submitShot(secondShot.id);
+      const firstOutput = await prisma.client.rovelleAsset.findUniqueOrThrow({
+        where: { id: first.outputAssetId },
+        select: { storageKey: true },
+      });
+      const secondOutput = await prisma.client.rovelleAsset.findUniqueOrThrow({
+        where: { id: second.outputAssetId },
+        select: { storageKey: true },
+      });
+      storage.headCalls.length = 0;
 
       const firstResult = await webhookService.handle(
         successEvent(first.providerTaskId),
       );
       assert.equal(firstResult.disposition, "completed");
+      assert.deepEqual(storage.headCalls, [firstOutput.storageKey]);
       assert.equal(
         (
           await prisma.client.rovelleShot.findUniqueOrThrow({
@@ -496,10 +514,12 @@ describe(
         RovelleEpisodeStatus.GENERATING,
       );
 
+      storage.headCalls.length = 0;
       const secondResult = await webhookService.handle(
         successEvent(second.providerTaskId),
       );
       assert.equal(secondResult.disposition, "completed");
+      assert.deepEqual(storage.headCalls, [secondOutput.storageKey]);
       assert.deepEqual(
         (
           await prisma.client.rovelleShot.findMany({
@@ -525,12 +545,20 @@ describe(
       const secondShot = await createReadyShot(fixture.episodeId, 2);
       const first = await submitShot(fixture.shotId);
       const second = await submitShot(secondShot.id);
+      const firstOutput = await prisma.client.rovelleAsset.findUniqueOrThrow({
+        where: { id: first.outputAssetId },
+        select: { storageKey: true },
+      });
+      storage.headCalls.length = 0;
 
       await webhookService.handle(successEvent(first.providerTaskId));
+      assert.deepEqual(storage.headCalls, [firstOutput.storageKey]);
+      storage.headCalls.length = 0;
       const failedResult = await webhookService.handle(
         failureEvent(second.providerTaskId),
       );
       assert.equal(failedResult.disposition, "failed");
+      assert.deepEqual(storage.headCalls, []);
 
       assert.equal(
         (
@@ -572,8 +600,16 @@ describe(
       const fixture = await createFixture();
       const submitted = await submitShot(fixture.shotId);
       const event = successEvent(submitted.providerTaskId);
+      const reservedOutput = await prisma.client.rovelleAsset.findUniqueOrThrow(
+        {
+          where: { id: submitted.outputAssetId },
+          select: { storageKey: true },
+        },
+      );
+      storage.headCalls.length = 0;
 
       await webhookService.handle(event);
+      assert.deepEqual(storage.headCalls, [reservedOutput.storageKey]);
       const firstGeneration =
         await prisma.client.rovelleShotGeneration.findUniqueOrThrow({
           where: { id: submitted.id },
@@ -588,7 +624,9 @@ describe(
         { where: { id: fixture.episodeId } },
       );
 
+      storage.headCalls.length = 0;
       const duplicate = await webhookService.handle(event);
+      assert.deepEqual(storage.headCalls, []);
       assert.deepEqual(duplicate, {
         accepted: true,
         disposition: "duplicate",
@@ -694,7 +732,12 @@ describe(
       const fixture = await createFixture();
       const submitted = await submitShot(fixture.shotId);
       const event = successEvent(submitted.providerTaskId);
-      storage.headObjectResult = null;
+      const output = await prisma.client.rovelleAsset.findUniqueOrThrow({
+        where: { id: submitted.outputAssetId },
+        select: { storageKey: true },
+      });
+      storage.headCalls.length = 0;
+      storage.headObjectResults.set(output.storageKey, null);
 
       await assert.rejects(
         () => webhookService.handle(event),
@@ -702,6 +745,7 @@ describe(
           error instanceof ServiceUnavailableException &&
           error.getStatus() === 503,
       );
+      assert.deepEqual(storage.headCalls, [output.storageKey]);
       const pending =
         await prisma.client.rovelleShotGeneration.findUniqueOrThrow({
           where: { id: submitted.id },
@@ -724,12 +768,14 @@ describe(
         RovelleAssetStatus.RESERVED,
       );
 
-      storage.headObjectResult = {
+      storage.headCalls.length = 0;
+      storage.headObjectResults.set(output.storageKey, {
         byteSize: 2048n,
         etag: "retry-etag",
         contentType: "video/mp4",
-      };
+      });
       const retried = await webhookService.handle(event);
+      assert.deepEqual(storage.headCalls, [output.storageKey]);
       assert.deepEqual(retried, {
         accepted: true,
         disposition: "completed",
@@ -752,20 +798,31 @@ describe(
 
     test("lets a callback complete a CREATED attempt before markSubmitted", async () => {
       const fixture = await createFixture();
-      const created = await createCreatedAttempt(fixture);
+      let callbackResult:
+        | Awaited<ReturnType<RunwareWebhookService["handle"]>>
+        | undefined;
+      provider.acceptedHook = async ({ taskId }) => {
+        callbackResult = await webhookService.handle(successEvent(taskId));
+      };
+      storage.headCalls.length = 0;
 
-      const callback = await webhookService.handle(
-        successEvent(created.providerTaskId),
-      );
-      assert.deepEqual(callback, {
+      const submitted = await submitShot(fixture.shotId);
+      const output = await prisma.client.rovelleAsset.findUniqueOrThrow({
+        where: { id: submitted.outputAssetId },
+        select: { storageKey: true },
+      });
+      assert.deepEqual(callbackResult, {
         accepted: true,
         disposition: "completed",
-        generationId: created.id,
+        generationId: submitted.id,
       });
+      assert.equal(provider.calls.length, 1);
+      assert.deepEqual(storage.headCalls, [output.storageKey]);
+      assert.equal(submitted.status, RovelleGenerationStatus.COMPLETED);
       assert.equal(
         (
           await prisma.client.rovelleShotGeneration.findUniqueOrThrow({
-            where: { id: created.id },
+            where: { id: submitted.id },
           })
         ).status,
         RovelleGenerationStatus.COMPLETED,
@@ -787,67 +844,24 @@ describe(
         RovelleEpisodeStatus.REVIEW_REQUIRED,
       );
 
-      const marked = await generationRepository.markSubmitted(created.id);
+      const marked = await generationRepository.markSubmitted(submitted.id);
       assert.equal(marked.status, "already_terminal");
       assert.equal(marked.generation.status, RovelleGenerationStatus.COMPLETED);
-      assert.equal(provider.calls.length, 0);
+      assert.equal(provider.calls.length, 1);
     });
 
     test("returns unknown_task for a valid callback with no matching task", async () => {
-      const fixture = await createFixture();
-      const beforeGenerationCount =
-        await prisma.client.rovelleShotGeneration.count();
-      const beforeAssetCount = await prisma.client.rovelleAsset.count({
-        where: { episodeId: fixture.episodeId },
-      });
-      const beforeOutputCount = await prisma.client.rovelleAsset.count({
-        where: {
-          episodeId: fixture.episodeId,
-          assetType: RovelleAssetType.GENERATION,
-        },
-      });
+      await createFixture();
+      const before = await snapshotDurableState();
 
       const result = await webhookService.handle(successEvent(randomUUID()));
+      const after = await snapshotDurableState();
 
       assert.deepEqual(result, {
         accepted: true,
         disposition: "unknown_task",
       });
-      assert.equal(
-        await prisma.client.rovelleShotGeneration.count(),
-        beforeGenerationCount,
-      );
-      assert.equal(
-        await prisma.client.rovelleAsset.count({
-          where: { episodeId: fixture.episodeId },
-        }),
-        beforeAssetCount,
-      );
-      assert.equal(
-        await prisma.client.rovelleAsset.count({
-          where: {
-            episodeId: fixture.episodeId,
-            assetType: RovelleAssetType.GENERATION,
-          },
-        }),
-        beforeOutputCount,
-      );
-      assert.equal(
-        (
-          await prisma.client.rovelleShot.findUniqueOrThrow({
-            where: { id: fixture.shotId },
-          })
-        ).status,
-        RovelleShotStatus.READY_TO_GENERATE,
-      );
-      assert.equal(
-        (
-          await prisma.client.rovelleEpisode.findUniqueOrThrow({
-            where: { id: fixture.episodeId },
-          })
-        ).status,
-        RovelleEpisodeStatus.READY_TO_GENERATE,
-      );
+      assert.deepEqual(after, before);
       assert.equal(provider.calls.length, 0);
     });
 
