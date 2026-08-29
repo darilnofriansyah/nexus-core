@@ -165,4 +165,11 @@ describe('Rovelle render mapping', () => {
     assert.equal('leaseToken' in mapped.jobs[0]!, false);
     assert.equal('workerSecret' in mapped.jobs[0]!, false);
   });
+
+  test('rejects unsupported render spec versions', () => {
+    assert.throws(
+      () => toRenderDto({ ...render, specVersion: 2 }),
+      /unsupported render spec version/,
+    );
+  });
 });

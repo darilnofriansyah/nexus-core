@@ -67,6 +67,10 @@ export function toRenderDto(
     jobs: RovelleRenderJob[];
   },
 ): RenderDto {
+  if (render.specVersion !== 1) {
+    throw new Error('unsupported render spec version');
+  }
+
   return {
     id: render.id,
     requestId: render.clientRequestId,
@@ -74,7 +78,7 @@ export function toRenderDto(
     attempt: render.attempt,
     profile: render.profile,
     status: render.status,
-    specVersion: render.specVersion as 1,
+    specVersion: 1,
     specHash: render.specHash,
     spec: render.spec as unknown as RenderSpecV1,
     outputAsset: toAssetDto(render.outputAsset),
