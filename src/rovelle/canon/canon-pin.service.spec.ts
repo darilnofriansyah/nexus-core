@@ -83,6 +83,7 @@ const episode: RovelleEpisode = {
   status: RovelleEpisodeStatus.PREPRODUCTION,
   brief: null,
   targetDurationSeconds: 60,
+  generationBudgetUsd: null,
   createdAt,
   updatedAt,
 };
@@ -95,6 +96,7 @@ const shot: RovelleShot & { episode: Pick<RovelleEpisode, "status"> } = {
   direction: "Open on the basket.",
   targetDurationSeconds: 10,
   status: RovelleShotStatus.DRAFT,
+  approvedGenerationId: null,
   episode: { status: episode.status },
   createdAt,
   updatedAt,

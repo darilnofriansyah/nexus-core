@@ -57,6 +57,7 @@ function generation(
     status: RovelleGenerationStatus.PROCESSING,
     outputAssetId: ASSET_ID,
     estimatedCostUsd: new Prisma.Decimal("0.575000"),
+    currency: "USD",
     pricingSource: "RUNWARE_SEEDANCE_2_5_2026_08_28",
     actualCostUsd: null,
     errorCode: null,
