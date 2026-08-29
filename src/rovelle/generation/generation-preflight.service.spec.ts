@@ -200,6 +200,21 @@ test("preflight returns only prepared metadata and a prompt without mutating sta
   assert.deepEqual(canon.calls, [SHOT_ID]);
 });
 
+test("requires the generation repository budget authority", () => {
+  const { prisma, canon } = createPreflight();
+
+  assert.throws(
+    () =>
+      new GenerationPreflightService(
+        prisma as unknown as PrismaService,
+        canon as unknown as CanonPinService,
+        new GenerationPromptCompiler(),
+        undefined as unknown as GenerationRepository,
+      ),
+    /GenerationRepository is required/,
+  );
+});
+
 test("preflight exposes Decimal budget visibility after profile and duration cost are known", async () => {
   const cases = [
     {

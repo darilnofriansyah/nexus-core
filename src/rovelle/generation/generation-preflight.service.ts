@@ -2,7 +2,6 @@ import {
   BadRequestException,
   Injectable,
   NotFoundException,
-  Optional,
 } from "@nestjs/common";
 import {
   Prisma,
@@ -47,8 +46,12 @@ export class GenerationPreflightService {
     private readonly prisma: PrismaService,
     private readonly canonPinService: CanonPinService,
     private readonly promptCompiler: GenerationPromptCompiler,
-    @Optional() private readonly generationRepository?: GenerationRepository,
-  ) {}
+    private readonly generationRepository: GenerationRepository,
+  ) {
+    if (!generationRepository) {
+      throw new Error("GenerationRepository is required");
+    }
+  }
 
   async preflight(
     shotId: string,
@@ -98,9 +101,9 @@ export class GenerationPreflightService {
       canon,
     });
 
-    const summary = this.generationRepository
-      ? await this.generationRepository.getEpisodeCostSummary(shot.episodeId)
-      : null;
+    const summary = await this.generationRepository.getEpisodeCostSummary(
+      shot.episodeId,
+    );
     const requestedEstimateUsd = new Prisma.Decimal(
       estimateGenerationCostUsd(profile, shot.targetDurationSeconds),
     );
