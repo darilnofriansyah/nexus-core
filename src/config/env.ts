@@ -1,3 +1,5 @@
+import { hostname } from "node:os";
+
 export interface CoreApiEnv {
   nodeEnv: string;
   port: number;
@@ -19,6 +21,14 @@ export interface CoreApiEnv {
   runwareSubmitTimeoutMs: number;
   runwareWebhookBaseUrl?: string;
   runwareWebhookToken?: string;
+  renderWorkerId?: string;
+  renderWorkerPollMs?: number;
+  renderWorkerLeaseSeconds?: number;
+  renderWorkerHeartbeatSeconds?: number;
+  renderWorkerRecoverySeconds?: number;
+  renderWorkerTempDir?: string;
+  renderFfmpegPath?: string;
+  renderFfprobePath?: string;
 }
 
 export function readEnv(): CoreApiEnv {
@@ -49,5 +59,20 @@ export function readEnv(): CoreApiEnv {
     ),
     runwareWebhookBaseUrl: process.env.RUNWARE_WEBHOOK_BASE_URL,
     runwareWebhookToken: process.env.RUNWARE_WEBHOOK_TOKEN,
+    renderWorkerId: process.env.RENDER_WORKER_ID?.trim() || hostname(),
+    renderWorkerPollMs: Number(process.env.RENDER_WORKER_POLL_MS ?? 2000),
+    renderWorkerLeaseSeconds: Number(
+      process.env.RENDER_WORKER_LEASE_SECONDS ?? 120,
+    ),
+    renderWorkerHeartbeatSeconds: Number(
+      process.env.RENDER_WORKER_HEARTBEAT_SECONDS ?? 30,
+    ),
+    renderWorkerRecoverySeconds: Number(
+      process.env.RENDER_WORKER_RECOVERY_SECONDS ?? 30,
+    ),
+    renderWorkerTempDir:
+      process.env.RENDER_WORKER_TEMP_DIR ?? "/tmp/rovelle-render-worker",
+    renderFfmpegPath: process.env.RENDER_FFMPEG_PATH ?? "/usr/bin/ffmpeg",
+    renderFfprobePath: process.env.RENDER_FFPROBE_PATH ?? "/usr/bin/ffprobe",
   };
 }
