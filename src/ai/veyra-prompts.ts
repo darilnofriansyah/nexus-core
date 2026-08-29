@@ -1,4 +1,4 @@
-export const MANUAL_TRANSACTION_MODEL = "gpt-5-mini";
+export const MANUAL_TRANSACTION_MODEL = "gpt-5.6-luna";
 export const MANUAL_TRANSACTION_PROMPT_VERSION = "manual-transaction-v1";
 export const MANUAL_TRANSACTION_INSTRUCTIONS = `
 Extract one finance transaction from the supplied JSON data.
@@ -55,7 +55,7 @@ export const MANUAL_TRANSACTION_SCHEMA = {
   },
 } as const;
 
-export const BUDGET_INTENT_MODEL = "gpt-5-mini";
+export const BUDGET_INTENT_MODEL = "gpt-5.6-luna";
 export const BUDGET_INTENT_PROMPT_VERSION = "budget-intent-v1";
 export const BUDGET_INTENTS = [
   "budget_overview",
@@ -115,7 +115,7 @@ export const BUDGET_INTENT_SCHEMA = {
   },
 } as const;
 
-export const ANALYTICS_INSIGHT_MODEL = "gpt-5-mini";
+export const ANALYTICS_INSIGHT_MODEL = "gpt-5.6-luna";
 export const ANALYTICS_INSIGHT_PROMPT_VERSION = "analytics-insight-v1";
 export const ANALYTICS_INSIGHT_INSTRUCTIONS = `
 You are Veyra's analytics insight renderer. Return only the structured result required by the response schema.
@@ -139,7 +139,7 @@ export const ANALYTICS_INSIGHT_SCHEMA = {
   },
 } as const;
 
-export const WEEKLY_REVIEW_MODEL = "gpt-5.4";
+export const WEEKLY_REVIEW_MODEL = "gpt-5.6-terra";
 export const WEEKLY_REVIEW_PROMPT_VERSION = "weekly-review-v1";
 export const WEEKLY_REVIEW_INSTRUCTIONS = `
 You are Veyra's weekly review renderer. Return only the structured result required by the response schema.
@@ -170,7 +170,7 @@ export const WEEKLY_REVIEW_SCHEMA = {
   },
 } as const;
 
-export const MASTER_INTENT_MODEL = "gpt-5.4-mini";
+export const MASTER_INTENT_MODEL = "gpt-5.6-luna";
 export const MASTER_INTENT_PROMPT_VERSION = "master-intent-v1";
 export const MASTER_INTENTS = [
   "spending_summary",
@@ -371,7 +371,7 @@ export const MASTER_INTENT_SCHEMA = {
   },
 } as const;
 
-export const EMAIL_TRANSACTION_MODEL = "gpt-4.1-mini";
+export const EMAIL_TRANSACTION_MODEL = "gpt-5.6-luna";
 export const EMAIL_TRANSACTION_PROMPT_VERSION = "email-transaction-review-v1";
 export const EMAIL_TRANSACTION_INSTRUCTIONS = `
 You parse Veyra transaction emails. Return only the structured result required by the response schema.

@@ -107,11 +107,11 @@ export interface WeeklyReviewResult {
 export type EmailAiReviewResult =
   | { isTransaction: false }
   | {
-      isTransaction: true;
-      transactionCandidate: EmailReviewTransactionCandidateDto;
-      resolution: EmailReviewResolutionDto;
-      templateProposal: EmailParserTemplateProposalDto | null;
-    };
+    isTransaction: true;
+    transactionCandidate: EmailReviewTransactionCandidateDto;
+    resolution: EmailReviewResolutionDto;
+    templateProposal: EmailParserTemplateProposalDto | null;
+  };
 
 @Injectable()
 export class VeyraAiService {
@@ -136,6 +136,7 @@ export class VeyraAiService {
         this.getClient().responses.create(
           {
             model: MASTER_INTENT_MODEL,
+            reasoning: { effort: "low" },
             store: false,
             input: [
               { role: "developer", content: MASTER_INTENT_INSTRUCTIONS },
@@ -221,6 +222,7 @@ export class VeyraAiService {
         this.getClient().responses.create(
           {
             model: MANUAL_TRANSACTION_MODEL,
+            reasoning: { effort: "low" },
             store: false,
             input: [
               { role: "developer", content: MANUAL_TRANSACTION_INSTRUCTIONS },
@@ -303,6 +305,7 @@ export class VeyraAiService {
         this.getClient().responses.create(
           {
             model: BUDGET_INTENT_MODEL,
+            reasoning: { effort: "low" },
             store: false,
             input: [
               { role: "developer", content: BUDGET_INTENT_INSTRUCTIONS },
@@ -379,6 +382,7 @@ export class VeyraAiService {
         this.getClient().responses.create(
           {
             model: ANALYTICS_INSIGHT_MODEL,
+            reasoning: { effort: "low" },
             store: false,
             input: [
               { role: "developer", content: ANALYTICS_INSIGHT_INSTRUCTIONS },
@@ -457,6 +461,7 @@ export class VeyraAiService {
         this.getClient().responses.create(
           {
             model: WEEKLY_REVIEW_MODEL,
+            reasoning: { effort: "low" },
             store: false,
             input: [
               { role: "developer", content: WEEKLY_REVIEW_INSTRUCTIONS },
@@ -533,6 +538,7 @@ export class VeyraAiService {
         this.getClient().responses.create(
           {
             model: EMAIL_TRANSACTION_MODEL,
+            reasoning: { effort: "low" },
             store: false,
             input: [
               { role: "developer", content: EMAIL_TRANSACTION_INSTRUCTIONS },
@@ -1087,12 +1093,12 @@ export class VeyraAiService {
 
   private logResult(input: {
     capability:
-      | "master-intent"
-      | "transaction-extract"
-      | "budget-intent"
-      | "analytics-insight"
-      | "weekly-review"
-      | "email-transaction-review";
+    | "master-intent"
+    | "transaction-extract"
+    | "budget-intent"
+    | "analytics-insight"
+    | "weekly-review"
+    | "email-transaction-review";
     model: string;
     promptVersion: string;
     responseId: string | undefined;
