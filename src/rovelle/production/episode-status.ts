@@ -21,6 +21,7 @@ const PHASE_ONE_TRANSITIONS: Readonly<
   [RovelleEpisodeStatus.GENERATION_APPROVED]: [
     RovelleEpisodeStatus.RENDERING,
   ],
+  [RovelleEpisodeStatus.RENDERING]: [RovelleEpisodeStatus.FINAL_REVIEW],
 };
 
 export function canTransitionEpisode(

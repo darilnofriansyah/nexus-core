@@ -85,6 +85,34 @@ describe('episode status transitions', () => {
       ),
       true,
     );
+    assert.equal(
+      canTransitionEpisode(
+        RovelleEpisodeStatus.RENDERING,
+        RovelleEpisodeStatus.FINAL_REVIEW,
+      ),
+      true,
+    );
+    assert.equal(
+      canTransitionEpisode(
+        RovelleEpisodeStatus.FINAL_REVIEW,
+        RovelleEpisodeStatus.PUBLISH_READY,
+      ),
+      false,
+    );
+    assert.equal(
+      canTransitionEpisode(
+        RovelleEpisodeStatus.FINAL_REVIEW,
+        RovelleEpisodeStatus.RENDERING,
+      ),
+      false,
+    );
+    assert.equal(
+      canTransitionEpisode(
+        RovelleEpisodeStatus.RENDERING,
+        RovelleEpisodeStatus.PUBLISH_READY,
+      ),
+      false,
+    );
   });
 
   test('throws a bad request error for an invalid transition', () => {
