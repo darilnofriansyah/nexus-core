@@ -115,6 +115,9 @@ export class FfprobeService {
     signal: AbortSignal,
   ): Promise<ProbedMaster> {
     const probe = parseProbeJson(await this.run(this.probeArgs(input.path), signal));
+    if (!isMp4Container(probe.format)) {
+      throw invalidMedia("Final media must use an MP4 container");
+    }
     const video = findStream(probe.streams, "video");
     const audio = findStream(
       probe.streams,
@@ -155,13 +158,17 @@ export class FfprobeService {
       throw invalidMedia("Final media does not match the render contract");
     }
 
-    const subtitle = input.captionsExpected
-      ? findStream(
-          probe.streams,
-          "subtitle",
-          (stream) => optionalString(stream.codec_name) === "mov_text",
-        )
-      : findStream(probe.streams, "subtitle");
+    const subtitleStreams = probe.streams.filter(
+      (stream) => stream.codec_type === "subtitle",
+    );
+    if (
+      subtitleStreams.some(
+        (stream) => optionalString(stream.codec_name) !== "mov_text",
+      )
+    ) {
+      throw invalidMedia("Only mov_text subtitle streams are supported");
+    }
+    const subtitle = subtitleStreams[0] ?? null;
     const subtitleCodec = optionalString(subtitle?.codec_name);
     if (input.captionsExpected && subtitleCodec !== "mov_text") {
       throw invalidMedia("A mov_text subtitle stream is required");
@@ -340,7 +347,7 @@ function parseAudio(stream: ProbeStream): ProbedAudio | null {
 }
 
 function readFrameRate(stream: ProbeStream): number {
-  const values = [stream.r_frame_rate, stream.avg_frame_rate];
+  const values = [stream.avg_frame_rate, stream.r_frame_rate];
   let foundValue = false;
   for (const value of values) {
     if (value === undefined || value === null) continue;
@@ -394,6 +401,11 @@ function findStream(
       (stream) => stream.codec_type === codecType && predicate(stream),
     ) ?? null
   );
+}
+
+function isMp4Container(format: ProbeRecord | null): boolean {
+  const formatName = optionalString(format?.format_name);
+  return formatName?.split(",").some((name) => name.trim() === "mp4") ?? false;
 }
 
 function positiveDuration(

@@ -282,6 +282,138 @@ test("accepts the final master contract and ignores benign metadata", async () =
   assert.equal(result.durationSeconds, 10.05);
 });
 
+test("rejects a final master that is not an MP4 container", async () => {
+  const output = JSON.stringify({
+    streams: [
+      {
+        codec_name: "h264",
+        codec_type: "video",
+        width: 1080,
+        height: 1920,
+        pix_fmt: "yuv420p",
+        r_frame_rate: "30/1",
+      },
+      { codec_name: "aac", codec_type: "audio", sample_rate: "48000" },
+    ],
+    format: { duration: "10", format_name: "matroska,webm" },
+  });
+
+  await assert.rejects(
+    createService(createSpawn(output).spawn).verifyMaster(
+      {
+        path: "/safe/master.mkv",
+        expectedDurationSeconds: 10,
+        captionsExpected: false,
+      },
+      new AbortController().signal,
+    ),
+    (error: unknown) => {
+      assertErrorCode(error, "OUTPUT_MEDIA_INVALID");
+      return true;
+    },
+  );
+});
+
+test("prefers average frame rate and falls back to raw frame rate", async () => {
+  const vfrOutput = JSON.stringify({
+    streams: [
+      {
+        codec_name: "h264",
+        codec_type: "video",
+        width: 1080,
+        height: 1920,
+        pix_fmt: "yuv420p",
+        r_frame_rate: "30/1",
+        avg_frame_rate: "24/1",
+      },
+      { codec_name: "aac", codec_type: "audio", sample_rate: "48000" },
+    ],
+    format: {
+      duration: "10",
+      format_name: "mov,mp4,m4a,3gp,3g2,mj2",
+    },
+  });
+
+  await assert.rejects(
+    createService(createSpawn(vfrOutput).spawn).verifyMaster(
+      {
+        path: "/safe/master.mp4",
+        expectedDurationSeconds: 10,
+        captionsExpected: false,
+      },
+      new AbortController().signal,
+    ),
+    (error: unknown) => {
+      assertErrorCode(error, "OUTPUT_MEDIA_INVALID");
+      return true;
+    },
+  );
+
+  const fallbackOutput = JSON.stringify({
+    streams: [
+      {
+        codec_name: "h264",
+        codec_type: "video",
+        width: 1080,
+        height: 1920,
+        pix_fmt: "yuv420p",
+        r_frame_rate: "30/1",
+      },
+      { codec_name: "aac", codec_type: "audio", sample_rate: "48000" },
+    ],
+    format: {
+      duration: "10",
+      format_name: "mov,mp4,m4a,3gp,3g2,mj2",
+    },
+  });
+
+  const result = await createService(createSpawn(fallbackOutput).spawn).verifyMaster(
+    {
+      path: "/safe/master.mp4",
+      expectedDurationSeconds: 10,
+      captionsExpected: false,
+    },
+    new AbortController().signal,
+  );
+  assert.equal(result.video.frameRate, 30);
+});
+
+test("rejects unsupported subtitle codecs even when captions are optional", async () => {
+  const output = JSON.stringify({
+    streams: [
+      {
+        codec_name: "h264",
+        codec_type: "video",
+        width: 1080,
+        height: 1920,
+        pix_fmt: "yuv420p",
+        r_frame_rate: "30/1",
+      },
+      { codec_name: "aac", codec_type: "audio", sample_rate: "48000" },
+      { codec_name: "subrip", codec_type: "subtitle" },
+    ],
+    format: {
+      duration: "10",
+      format_name: "mov,mp4,m4a,3gp,3g2,mj2",
+    },
+  });
+
+  await assert.rejects(
+    createService(createSpawn(output).spawn).verifyMaster(
+      {
+        path: "/safe/master.mp4",
+        expectedDurationSeconds: 10,
+        captionsExpected: false,
+      },
+      new AbortController().signal,
+    ),
+    (error: unknown) => {
+      assertErrorCode(error, "OUTPUT_MEDIA_INVALID");
+      return true;
+    },
+  );
+});
+
 test("requires the final video, audio, caption, and duration contract", async () => {
   type MasterCase = {
     name: string;
@@ -354,7 +486,10 @@ test("requires the final video, audio, caption, and duration contract", async ()
           ? []
           : [{ codec_name: "mov_text", codec_type: "subtitle" }]),
       ],
-      format: { duration: testCase.actualDuration ?? "10" },
+      format: {
+        duration: testCase.actualDuration ?? "10",
+        format_name: "mov,mp4,m4a,3gp,3g2,mj2",
+      },
     });
 
     await assert.rejects(
@@ -388,7 +523,10 @@ test("accepts a master without captions when captions are not expected", async (
       },
       { codec_name: "aac", codec_type: "audio", sample_rate: "48000" },
     ],
-    format: { duration: "10" },
+    format: {
+      duration: "10",
+      format_name: "mov,mp4,m4a,3gp,3g2,mj2",
+    },
   });
 
   const result = await createService(createSpawn(output).spawn).verifyMaster(
@@ -416,7 +554,10 @@ test("accepts inclusive frame-rate and duration tolerance boundaries", async () 
       },
       { codec_name: "aac", codec_type: "audio", sample_rate: "48000" },
     ],
-    format: { duration: "10.2" },
+    format: {
+      duration: "10.2",
+      format_name: "mov,mp4,m4a,3gp,3g2,mj2",
+    },
   });
 
   await createService(createSpawn(output).spawn).verifyMaster(
@@ -443,7 +584,10 @@ test("uses a valid AAC stream when another AAC stream is malformed", async () =>
       { codec_name: "aac", codec_type: "audio", sample_rate: "44100" },
       { codec_name: "aac", codec_type: "audio", sample_rate: "48000" },
     ],
-    format: { duration: "10" },
+    format: {
+      duration: "10",
+      format_name: "mov,mp4,m4a,3gp,3g2,mj2",
+    },
   });
 
   const result = await createService(createSpawn(output).spawn).verifyMaster(
@@ -472,7 +616,10 @@ test("rejects invalid rational frame rates instead of accepting non-finite value
         },
         { codec_name: "aac", codec_type: "audio", sample_rate: "48000" },
       ],
-      format: { duration: "10" },
+      format: {
+        duration: "10",
+        format_name: "mov,mp4,m4a,3gp,3g2,mj2",
+      },
     });
 
     await assert.rejects(
