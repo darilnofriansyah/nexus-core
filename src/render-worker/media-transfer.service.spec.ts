@@ -125,12 +125,16 @@ test("downloads each frozen asset through a just-in-time GET and streams it to d
     const assetService = new FakeAssetService();
     const storage = new FakeStorageService();
     const calls: Array<{ url: string; init?: FetchInit }> = [];
-    const service = createService(assetService, storage, async (input, init) => {
-      calls.push({ url: input.toString(), init });
-      return new Response(SOURCE_BYTES, {
-        headers: { etag: '"source-etag"' },
-      });
-    });
+    const service = createService(
+      assetService,
+      storage,
+      async (input, init) => {
+        calls.push({ url: input.toString(), init });
+        return new Response(SOURCE_BYTES, {
+          headers: { etag: '"source-etag"' },
+        });
+      },
+    );
     const destinationPath = join(root, "source.mp4");
 
     await service.downloadFrozenAsset({ expected, destinationPath });
@@ -151,8 +155,11 @@ test("creates a fresh signed read URL for every frozen asset download", async ()
   try {
     const assetService = new FakeAssetService();
     const storage = new FakeStorageService();
-    const service = createService(assetService, storage, async () =>
-      new Response(SOURCE_BYTES, { headers: { etag: "source-etag" } }),
+    const service = createService(
+      assetService,
+      storage,
+      async () =>
+        new Response(SOURCE_BYTES, { headers: { etag: "source-etag" } }),
     );
 
     await service.downloadFrozenAsset({
@@ -175,12 +182,17 @@ test("rejects a non-2xx source response without exposing its signed URL", async 
   const root = await temporaryRoot();
   try {
     const assetService = new FakeAssetService();
-    const service = createService(assetService, new FakeStorageService(), async () =>
-      new Response("denied", { status: 403 }),
+    const service = createService(
+      assetService,
+      new FakeStorageService(),
+      async () => new Response("denied", { status: 403 }),
     );
 
     await assert.rejects(
-      service.downloadFrozenAsset({ expected, destinationPath: join(root, "source.mp4") }),
+      service.downloadFrozenAsset({
+        expected,
+        destinationPath: join(root, "source.mp4"),
+      }),
       assertWorkerError("SOURCE_DOWNLOAD_FAILED"),
     );
   } finally {
@@ -198,7 +210,10 @@ test("rejects a source response with no body", async () => {
     );
 
     await assert.rejects(
-      service.downloadFrozenAsset({ expected, destinationPath: join(root, "source.mp4") }),
+      service.downloadFrozenAsset({
+        expected,
+        destinationPath: join(root, "source.mp4"),
+      }),
       assertWorkerError("SOURCE_DOWNLOAD_FAILED"),
     );
   } finally {
@@ -218,14 +233,20 @@ test("rejects source metadata when the returned asset ID or media type is not fr
 
     assetService.assetId = OTHER_ASSET_ID;
     await assert.rejects(
-      service.downloadFrozenAsset({ expected, destinationPath: join(root, "wrong-id.mp4") }),
+      service.downloadFrozenAsset({
+        expected,
+        destinationPath: join(root, "wrong-id.mp4"),
+      }),
       assertWorkerError("SOURCE_METADATA_MISMATCH"),
     );
 
     assetService.assetId = ASSET_ID;
     assetService.mediaType = "image/png";
     await assert.rejects(
-      service.downloadFrozenAsset({ expected, destinationPath: join(root, "wrong-type.mp4") }),
+      service.downloadFrozenAsset({
+        expected,
+        destinationPath: join(root, "wrong-type.mp4"),
+      }),
       assertWorkerError("SOURCE_METADATA_MISMATCH"),
     );
   } finally {
@@ -239,11 +260,15 @@ test("rejects a source size mismatch", async () => {
     const service = createService(
       new FakeAssetService(),
       new FakeStorageService(),
-      async () => new Response("different-size", { headers: { etag: "source-etag" } }),
+      async () =>
+        new Response("different-size", { headers: { etag: "source-etag" } }),
     );
 
     await assert.rejects(
-      service.downloadFrozenAsset({ expected, destinationPath: join(root, "source.mp4") }),
+      service.downloadFrozenAsset({
+        expected,
+        destinationPath: join(root, "source.mp4"),
+      }),
       assertWorkerError("SOURCE_SIZE_MISMATCH"),
     );
     await assert.rejects(stat(join(root, "source.mp4")));
@@ -255,11 +280,19 @@ test("rejects a source size mismatch", async () => {
 test("rejects blank, signed, hexadecimal, and non-decimal source byte size metadata", async () => {
   const root = await temporaryRoot();
   try {
-    for (const [index, byteSize] of ["", " ", "0x0d", "+13", "-13", "13.5"].entries()) {
+    for (const [index, byteSize] of [
+      "",
+      " ",
+      "0x0d",
+      "+13",
+      "-13",
+      "13.5",
+    ].entries()) {
       const service = createService(
         new FakeAssetService(),
         new FakeStorageService(),
-        async () => new Response(SOURCE_BYTES, { headers: { etag: "source-etag" } }),
+        async () =>
+          new Response(SOURCE_BYTES, { headers: { etag: "source-etag" } }),
       );
 
       await assert.rejects(
@@ -281,11 +314,15 @@ test("rejects a present source ETag mismatch after normalizing quotes", async ()
     const service = createService(
       new FakeAssetService(),
       new FakeStorageService(),
-      async () => new Response(SOURCE_BYTES, { headers: { etag: '"different-etag"' } }),
+      async () =>
+        new Response(SOURCE_BYTES, { headers: { etag: '"different-etag"' } }),
     );
 
     await assert.rejects(
-      service.downloadFrozenAsset({ expected, destinationPath: join(root, "source.mp4") }),
+      service.downloadFrozenAsset({
+        expected,
+        destinationPath: join(root, "source.mp4"),
+      }),
       assertWorkerError("SOURCE_ETAG_MISMATCH"),
     );
   } finally {
@@ -322,12 +359,17 @@ test("removes a partial destination after a streaming download failure", async (
 test("rejects a missing output file", async () => {
   const root = await temporaryRoot();
   try {
-    const service = createService(new FakeAssetService(), new FakeStorageService(), async () =>
-      new Response(null),
+    const service = createService(
+      new FakeAssetService(),
+      new FakeStorageService(),
+      async () => new Response(null),
     );
 
     await assert.rejects(
-      service.uploadRenderOutput({ storageKey: STORAGE_KEY, sourcePath: join(root, "missing.mp4") }),
+      service.uploadRenderOutput({
+        storageKey: STORAGE_KEY,
+        sourcePath: join(root, "missing.mp4"),
+      }),
       assertWorkerError("OUTPUT_UPLOAD_FAILED"),
     );
   } finally {
@@ -341,8 +383,10 @@ test("rejects a zero-byte output file", async () => {
     const sourcePath = join(root, "empty.mp4");
     await writeFile(sourcePath, "");
     const storage = new FakeStorageService();
-    const service = createService(new FakeAssetService(), storage, async () =>
-      new Response(null),
+    const service = createService(
+      new FakeAssetService(),
+      storage,
+      async () => new Response(null),
     );
 
     await assert.rejects(
@@ -362,24 +406,41 @@ test("streams a PUT with no Content-Type requirement and verifies its R2 HEAD", 
     await writeFile(sourcePath, OUTPUT_BYTES);
     const storage = new FakeStorageService();
     const calls: Array<{ url: string; init?: FetchInit }> = [];
-    const service = createService(new FakeAssetService(), storage, async (input, init) => {
-      calls.push({ url: input.toString(), init });
-      storage.events.push("put");
-      return new Response(null, { status: 200 });
-    });
+    const service = createService(
+      new FakeAssetService(),
+      storage,
+      async (input, init) => {
+        calls.push({ url: input.toString(), init });
+        storage.events.push("put");
+        return new Response(null, { status: 200 });
+      },
+    );
 
-    const result = await service.uploadRenderOutput({ storageKey: STORAGE_KEY, sourcePath });
+    const result = await service.uploadRenderOutput({
+      storageKey: STORAGE_KEY,
+      sourcePath,
+    });
 
     assert.deepEqual(storage.putUrlCalls, [STORAGE_KEY]);
     assert.deepEqual(storage.headCalls, [STORAGE_KEY]);
-    assert.deepEqual(storage.events, ["createProviderPutUrl", "put", "headObject"]);
+    assert.deepEqual(storage.events, [
+      "createProviderPutUrl",
+      "put",
+      "headObject",
+    ]);
     assert.equal(calls[0]?.url, UPLOAD_URL);
     assert.equal(calls[0]?.init?.method, "PUT");
     assert.equal(calls[0]?.init?.headers, undefined);
     assert.equal(calls[0]?.init?.duplex, "half");
     assert.ok(calls[0]?.init?.body instanceof Object);
-    assert.equal(typeof (calls[0]?.init?.body as { pipe?: unknown })?.pipe, "function");
-    assert.deepEqual(result, { byteSize: BigInt(OUTPUT_BYTES.byteLength), etag: "output-etag" });
+    assert.equal(
+      typeof (calls[0]?.init?.body as { pipe?: unknown })?.pipe,
+      "function",
+    );
+    assert.deepEqual(result, {
+      byteSize: BigInt(OUTPUT_BYTES.byteLength),
+      etag: "output-etag",
+    });
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -390,8 +451,10 @@ test("rejects a non-2xx output upload without exposing its signed URL", async ()
   try {
     const sourcePath = join(root, "master.mp4");
     await writeFile(sourcePath, OUTPUT_BYTES);
-    const service = createService(new FakeAssetService(), new FakeStorageService(), async () =>
-      new Response("denied", { status: 500 }),
+    const service = createService(
+      new FakeAssetService(),
+      new FakeStorageService(),
+      async () => new Response("denied", { status: 500 }),
     );
 
     await assert.rejects(
@@ -409,8 +472,10 @@ test("rejects a missing, empty, or size-mismatched R2 output during HEAD verific
     const sourcePath = join(root, "master.mp4");
     await writeFile(sourcePath, OUTPUT_BYTES);
     const storage = new FakeStorageService();
-    const service = createService(new FakeAssetService(), storage, async () =>
-      new Response(null, { status: 200 }),
+    const service = createService(
+      new FakeAssetService(),
+      storage,
+      async () => new Response(null, { status: 200 }),
     );
 
     for (const headResult of [
@@ -424,6 +489,89 @@ test("rejects a missing, empty, or size-mismatched R2 output during HEAD verific
         assertWorkerError("OUTPUT_VERIFY_FAILED"),
       );
     }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("aborts a streaming source download and removes the partial file", async () => {
+  const root = await temporaryRoot();
+  try {
+    const controller = new AbortController();
+    let fetchStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      fetchStarted = resolve;
+    });
+    const service = createService(
+      new FakeAssetService(),
+      new FakeStorageService(),
+      async (_input, init) => {
+        fetchStarted();
+        const body = new ReadableStream<Uint8Array>({
+          start(stream) {
+            stream.enqueue(new TextEncoder().encode("partial"));
+            init?.signal?.addEventListener(
+              "abort",
+              () => stream.error(new DOMException("aborted", "AbortError")),
+              { once: true },
+            );
+          },
+        });
+        return new Response(body, { status: 200 });
+      },
+    );
+    const destinationPath = join(root, "source.mp4");
+    const pending = service.downloadFrozenAsset({
+      expected,
+      destinationPath,
+      signal: controller.signal,
+    });
+
+    await started;
+    controller.abort();
+
+    await assert.rejects(pending, assertWorkerError("WORKER_SHUTDOWN"));
+    await assert.rejects(stat(destinationPath));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("aborts a streaming output upload before HEAD verification", async () => {
+  const root = await temporaryRoot();
+  try {
+    const sourcePath = join(root, "master.mp4");
+    await writeFile(sourcePath, OUTPUT_BYTES);
+    const controller = new AbortController();
+    let fetchStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      fetchStarted = resolve;
+    });
+    const storage = new FakeStorageService();
+    const service = createService(
+      new FakeAssetService(),
+      storage,
+      async (_input, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          fetchStarted();
+          init?.signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("aborted", "AbortError")),
+            { once: true },
+          );
+        }),
+    );
+    const pending = service.uploadRenderOutput({
+      storageKey: STORAGE_KEY,
+      sourcePath,
+      signal: controller.signal,
+    });
+
+    await started;
+    controller.abort();
+
+    await assert.rejects(pending, assertWorkerError("WORKER_SHUTDOWN"));
+    assert.deepEqual(storage.headCalls, []);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

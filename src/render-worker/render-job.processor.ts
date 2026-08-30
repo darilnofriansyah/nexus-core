@@ -4,9 +4,15 @@ import { Injectable, Logger } from "@nestjs/common";
 
 import { hashRenderSpec } from "../rovelle/render/render-spec";
 import { RenderWorkerError } from "./media-transfer.service";
-import type { RenderWorkspace, TempWorkspaceService } from "./temp-workspace.service";
+import type {
+  RenderWorkspace,
+  TempWorkspaceService,
+} from "./temp-workspace.service";
 import type { RenderWorkerConfig } from "./worker-config";
-import type { ClaimedRenderJob, RenderWorkerRepository } from "./render-worker.repository";
+import type {
+  ClaimedRenderJob,
+  RenderWorkerRepository,
+} from "./render-worker.repository";
 import type { MediaTransferService } from "./media-transfer.service";
 import type { FfmpegRunner } from "./ffmpeg-runner";
 import type { FfprobeService } from "./ffprobe.service";
@@ -48,6 +54,17 @@ export class RenderJobProcessor {
       this.ffmpegRunner.terminateActiveProcess();
     };
     const onShutdown = (): void => terminateWork();
+    const ensureActive = (): void => {
+      if (leaseLost) {
+        throw new RenderWorkerError(
+          "WORKER_LEASE_LOST",
+          "Render worker lease was lost",
+        );
+      }
+      if (workController.signal.aborted) {
+        throw new RenderWorkerError("WORKER_SHUTDOWN", "Worker shutdown");
+      }
+    };
     const heartbeat = async (): Promise<void> => {
       if (workController.signal.aborted || leaseLost) return;
       try {
@@ -78,9 +95,7 @@ export class RenderJobProcessor {
 
     try {
       workspace = await this.workspaceService.create(claim.jobId);
-      if (workController.signal.aborted) {
-        throw new RenderWorkerError("WORKER_SHUTDOWN", "Worker shutdown");
-      }
+      ensureActive();
       if (hashRenderSpec(claim.renderSpec) !== claim.specHash) {
         throw new RenderWorkerError(
           "RENDER_SPEC_HASH_MISMATCH",
@@ -92,7 +107,10 @@ export class RenderJobProcessor {
         (sum, shot) => sum + shot.targetDurationSeconds,
         0,
       );
-      if (!Number.isSafeInteger(totalDurationSeconds) || totalDurationSeconds <= 0) {
+      if (
+        !Number.isSafeInteger(totalDurationSeconds) ||
+        totalDurationSeconds <= 0
+      ) {
         throw new RenderWorkerError(
           "RENDER_SPEC_INVALID",
           "Render duration must be a positive integer",
@@ -107,14 +125,15 @@ export class RenderJobProcessor {
         const name = `shot-${String(index + 1).padStart(4, "0")}`;
         const sourcePath = join(workspace.shotsDir, `${name}.source`);
         const normalizedPath = join(workspace.normalizedDir, `${name}.mp4`);
+        ensureActive();
         await this.mediaTransfer.downloadFrozenAsset({
           expected: shot.video,
           destinationPath: sourcePath,
+          signal: workController.signal,
         });
-        await this.ffprobeService.probeVideo(
-          sourcePath,
-          workController.signal,
-        );
+        ensureActive();
+        await this.ffprobeService.probeVideo(sourcePath, workController.signal);
+        ensureActive();
         await this.ffmpegRunner.normalizeShot(
           {
             sourcePath,
@@ -123,13 +142,17 @@ export class RenderJobProcessor {
           },
           workController.signal,
         );
+        ensureActive();
         normalizedPaths.push(normalizedPath);
       }
 
+      ensureActive();
       await this.mediaTransfer.downloadFrozenAsset({
         expected: claim.renderSpec.audio,
         destinationPath: workspace.audioPath,
+        signal: workController.signal,
       });
+      ensureActive();
 
       const caption = claim.renderSpec.captions;
       const captionPath = caption
@@ -138,18 +161,23 @@ export class RenderJobProcessor {
           : workspace.captionSrtPath
         : null;
       if (caption && captionPath) {
+        ensureActive();
         await this.mediaTransfer.downloadFrozenAsset({
           expected: caption,
           destinationPath: captionPath,
+          signal: workController.signal,
         });
+        ensureActive();
       }
 
+      ensureActive();
       await this.ffmpegRunner.concatenate(
         normalizedPaths,
         workspace.concatListPath,
         workspace.concatenatedVideoPath,
         workController.signal,
       );
+      ensureActive();
       await this.ffmpegRunner.muxFinal(
         {
           concatenatedVideoPath: workspace.concatenatedVideoPath,
@@ -161,6 +189,7 @@ export class RenderJobProcessor {
         },
         workController.signal,
       );
+      ensureActive();
       await this.ffprobeService.verifyMaster(
         {
           path: workspace.finalOutputPath,
@@ -169,14 +198,13 @@ export class RenderJobProcessor {
         },
         workController.signal,
       );
+      ensureActive();
       const uploaded = await this.mediaTransfer.uploadRenderOutput({
         storageKey: claim.outputAsset.storageKey,
         sourcePath: workspace.finalOutputPath,
+        signal: workController.signal,
       });
-      if (leaseLost) return { outcome: "lease_lost" };
-      if (shutdownSignal.aborted) {
-        throw new RenderWorkerError("WORKER_SHUTDOWN", "Worker shutdown");
-      }
+      ensureActive();
       const completed = await this.repository.completeJob({
         jobId: claim.jobId,
         leaseToken: claim.leaseToken,
@@ -189,9 +217,13 @@ export class RenderJobProcessor {
       const shutdown = shutdownSignal.aborted;
       const failure = shutdown
         ? new RenderWorkerError("WORKER_SHUTDOWN", "Worker shutdown")
-        : heartbeatFailure ?? (error instanceof RenderWorkerError
-          ? error
-          : new RenderWorkerError("RENDER_WORKER_FAILED", "Render worker failed"));
+        : (heartbeatFailure ??
+          (error instanceof RenderWorkerError
+            ? error
+            : new RenderWorkerError(
+                "RENDER_WORKER_FAILED",
+                "Render worker failed",
+              )));
       const result = await this.repository.failJob({
         jobId: claim.jobId,
         leaseToken: claim.leaseToken,

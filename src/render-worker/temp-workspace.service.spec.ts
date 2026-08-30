@@ -1,6 +1,16 @@
 import * as assert from "node:assert/strict";
+import * as fsPromises from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { access, mkdtemp, mkdir, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import {
+  access,
+  mkdtemp,
+  mkdir,
+  readFile,
+  rm,
+  symlink,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -25,7 +35,10 @@ test("creates a confined workspace with generated render paths", async () => {
     assert.equal(workspace.captionVttPath, join(root, jobId, "captions.vtt"));
     assert.equal(workspace.captionSrtPath, join(root, jobId, "captions.srt"));
     assert.equal(workspace.concatListPath, join(root, jobId, "concat.txt"));
-    assert.equal(workspace.concatenatedVideoPath, join(root, jobId, "video-concat.mp4"));
+    assert.equal(
+      workspace.concatenatedVideoPath,
+      join(root, jobId, "video-concat.mp4"),
+    );
     assert.equal(workspace.finalOutputPath, join(root, jobId, "master.mp4"));
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -70,9 +83,15 @@ test("cleans stale direct-child job directories but preserves root and recent jo
     const now = new Date("2026-08-29T12:00:00.000Z");
     const old = new Date(now.getTime() - 25 * 60 * 60 * 1000);
     await utimes(stale, old, old);
-    await utimes(recent, new Date(now.getTime() - 60 * 60 * 1000), new Date(now.getTime() - 60 * 60 * 1000));
+    await utimes(
+      recent,
+      new Date(now.getTime() - 60 * 60 * 1000),
+      new Date(now.getTime() - 60 * 60 * 1000),
+    );
 
-    const removed = await new TempWorkspaceService({ tempDir: root }).cleanupStale(now);
+    const removed = await new TempWorkspaceService({
+      tempDir: root,
+    }).cleanupStale(now);
 
     assert.equal(removed, 1);
     await assert.rejects(readFile(stale));
@@ -92,7 +111,12 @@ test("skips symlink directories during stale cleanup", async () => {
     const old = new Date("2026-08-28T00:00:00.000Z");
     await utimes(link, old, old);
 
-    assert.equal(await new TempWorkspaceService({ tempDir: root }).cleanupStale(new Date("2026-08-29T12:00:00.000Z")), 0);
+    assert.equal(
+      await new TempWorkspaceService({ tempDir: root }).cleanupStale(
+        new Date("2026-08-29T12:00:00.000Z"),
+      ),
+      0,
+    );
     await access(target);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -107,7 +131,10 @@ test("rejects a configured symlink temp root", async () => {
   try {
     await rm(root, { recursive: true, force: true });
     await symlink(target, link, "dir");
-    await assert.rejects(new TempWorkspaceService({ tempDir: link }).create(randomUUID()), /temporary directory/i);
+    await assert.rejects(
+      new TempWorkspaceService({ tempDir: link }).create(randomUUID()),
+      /temporary directory/i,
+    );
     await access(target);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -142,6 +169,37 @@ test("removes a workspace recursively without removing the temp root", async () 
     await assert.rejects(readFile(workspace.root));
     await access(root);
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("removes its partial job root when workspace setup fails", async () => {
+  const root = await temporaryRoot();
+  const jobId = randomUUID();
+  const originalMkdir = fsPromises.mkdir;
+  try {
+    const failingMkdir = (path: string | URL | Buffer, options?: unknown) => {
+      if (String(path).endsWith(`${jobId}/normalized`)) {
+        return Promise.reject(new Error("normalized directory failed"));
+      }
+      return originalMkdir(path as never, options as never);
+    };
+    Object.defineProperty(fsPromises, "mkdir", {
+      configurable: true,
+      value: failingMkdir,
+      writable: true,
+    });
+    const service = new TempWorkspaceService({ tempDir: root });
+
+    await assert.rejects(service.create(jobId), /normalized directory failed/);
+    await assert.rejects(access(join(root, jobId)));
+    await access(root);
+  } finally {
+    Object.defineProperty(fsPromises, "mkdir", {
+      configurable: true,
+      value: originalMkdir,
+      writable: true,
+    });
     await rm(root, { recursive: true, force: true });
   }
 });

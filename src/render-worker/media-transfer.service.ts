@@ -43,20 +43,26 @@ export class MediaTransferService {
   async downloadFrozenAsset(input: {
     expected: FrozenAssetExpectation;
     destinationPath: string;
+    signal?: AbortSignal;
   }): Promise<void> {
     let removeOnFailure = false;
 
     try {
+      throwIfAborted(input.signal);
       removeOnFailure = !(await pathExists(input.destinationPath));
+      throwIfAborted(input.signal);
       const readUrl = await this.assetService.createReadUrl(
         input.expected.assetId,
       );
+      throwIfAborted(input.signal);
       assertFrozenAssetMetadata(readUrl.asset, input.expected);
 
       const response = await this.fetchImpl(readUrl.download.url, {
         method: "GET",
         headers: readUrl.download.headers,
+        signal: input.signal,
       });
+      throwIfAborted(input.signal);
       if (response.status < 200 || response.status >= 300) {
         throw new RenderWorkerError(
           "SOURCE_DOWNLOAD_FAILED",
@@ -70,14 +76,21 @@ export class MediaTransferService {
         );
       }
 
-      await pipeline(
-        Readable.fromWeb(
-          response.body as unknown as NodeReadableStream<Uint8Array>,
-        ),
-        createWriteStream(input.destinationPath, { flags: "wx" }),
+      const source = Readable.fromWeb(
+        response.body as unknown as NodeReadableStream<Uint8Array>,
       );
+      const destination = createWriteStream(input.destinationPath, {
+        flags: "wx",
+      });
+      if (input.signal) {
+        await pipeline(source, destination, { signal: input.signal });
+      } else {
+        await pipeline(source, destination);
+      }
+      throwIfAborted(input.signal);
 
       const downloaded = await stat(input.destinationPath, { bigint: true });
+      throwIfAborted(input.signal);
       const expectedByteSize = parseExpectedByteSize(input.expected.byteSize);
       if (downloaded.size !== expectedByteSize) {
         throw new RenderWorkerError(
@@ -86,6 +99,7 @@ export class MediaTransferService {
         );
       }
 
+      throwIfAborted(input.signal);
       const responseEtag = response.headers.get("etag");
       if (
         input.expected.etag !== null &&
@@ -99,6 +113,7 @@ export class MediaTransferService {
       }
     } catch (error) {
       await removePartialFile(input.destinationPath, removeOnFailure);
+      if (input.signal?.aborted) throw workerShutdownError();
       if (error instanceof RenderWorkerError) throw error;
       throw new RenderWorkerError(
         "SOURCE_DOWNLOAD_FAILED",
@@ -110,10 +125,13 @@ export class MediaTransferService {
   async uploadRenderOutput(input: {
     storageKey: string;
     sourcePath: string;
+    signal?: AbortSignal;
   }): Promise<{ byteSize: bigint; etag: string | null }> {
     let localByteSize: bigint;
     try {
+      throwIfAborted(input.signal);
       const source = await stat(input.sourcePath, { bigint: true });
+      throwIfAborted(input.signal);
       if (!source.isFile() || source.size === 0n) {
         throw new RenderWorkerError(
           "OUTPUT_UPLOAD_FAILED",
@@ -122,6 +140,7 @@ export class MediaTransferService {
       }
       localByteSize = source.size;
     } catch (error) {
+      if (input.signal?.aborted) throw workerShutdownError();
       if (error instanceof RenderWorkerError) throw error;
       throw new RenderWorkerError(
         "OUTPUT_UPLOAD_FAILED",
@@ -131,32 +150,11 @@ export class MediaTransferService {
 
     let putUrl: string;
     try {
-      putUrl = (
-        await this.storage.createProviderPutUrl(input.storageKey)
-      ).url;
-    } catch {
-      throw new RenderWorkerError(
-        "OUTPUT_UPLOAD_FAILED",
-        "Render output upload failed",
-      );
-    }
-
-    try {
-      const response = await this.fetchImpl(
-        putUrl,
-        {
-          method: "PUT",
-          body: createReadStream(input.sourcePath),
-          duplex: "half",
-        } as unknown as StreamingRequestInit,
-      );
-      if (response.status < 200 || response.status >= 300) {
-        throw new RenderWorkerError(
-          "OUTPUT_UPLOAD_FAILED",
-          "Render output upload failed",
-        );
-      }
+      throwIfAborted(input.signal);
+      putUrl = (await this.storage.createProviderPutUrl(input.storageKey)).url;
+      throwIfAborted(input.signal);
     } catch (error) {
+      if (input.signal?.aborted) throw workerShutdownError();
       if (error instanceof RenderWorkerError) throw error;
       throw new RenderWorkerError(
         "OUTPUT_UPLOAD_FAILED",
@@ -164,10 +162,46 @@ export class MediaTransferService {
       );
     }
 
+    const source = createReadStream(input.sourcePath);
+    const onAbort = (): void => {
+      source.destroy();
+    };
+    input.signal?.addEventListener("abort", onAbort, { once: true });
+    try {
+      throwIfAborted(input.signal);
+      const response = await this.fetchImpl(putUrl, {
+        method: "PUT",
+        body: source,
+        duplex: "half",
+        signal: input.signal,
+      } as unknown as StreamingRequestInit);
+      throwIfAborted(input.signal);
+      if (response.status < 200 || response.status >= 300) {
+        throw new RenderWorkerError(
+          "OUTPUT_UPLOAD_FAILED",
+          "Render output upload failed",
+        );
+      }
+    } catch (error) {
+      source.destroy();
+      if (input.signal?.aborted) throw workerShutdownError();
+      if (error instanceof RenderWorkerError) throw error;
+      throw new RenderWorkerError(
+        "OUTPUT_UPLOAD_FAILED",
+        "Render output upload failed",
+      );
+    } finally {
+      input.signal?.removeEventListener("abort", onAbort);
+    }
+
     let metadata: R2ObjectMetadata | null;
     try {
+      throwIfAborted(input.signal);
       metadata = await this.storage.headObject(input.storageKey);
-    } catch {
+      throwIfAborted(input.signal);
+    } catch (error) {
+      if (input.signal?.aborted) throw workerShutdownError();
+      if (error instanceof RenderWorkerError) throw error;
       throw new RenderWorkerError(
         "OUTPUT_VERIFY_FAILED",
         "Render output verification failed",
@@ -186,6 +220,17 @@ export class MediaTransferService {
 
     return { byteSize: metadata.byteSize, etag: metadata.etag };
   }
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw workerShutdownError();
+}
+
+function workerShutdownError(): RenderWorkerError {
+  return new RenderWorkerError(
+    "WORKER_SHUTDOWN",
+    "Render worker operation was aborted",
+  );
 }
 
 function assertFrozenAssetMetadata(
@@ -228,7 +273,10 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
-async function removePartialFile(path: string, shouldRemove: boolean): Promise<void> {
+async function removePartialFile(
+  path: string,
+  shouldRemove: boolean,
+): Promise<void> {
   if (!shouldRemove) return;
   try {
     await rm(path, { force: true });

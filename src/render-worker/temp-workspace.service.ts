@@ -15,7 +15,8 @@ export interface RenderWorkspace {
   finalOutputPath: string;
 }
 
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const STALE_MS = 24 * 60 * 60 * 1000;
 
 export class TempWorkspaceService {
@@ -30,27 +31,36 @@ export class TempWorkspaceService {
     await this.ensureTempDir();
     const root = join(this.tempDir, jobId);
     await rm(root, { recursive: true, force: true });
-    const shotsDir = join(root, "shots");
-    const normalizedDir = join(root, "normalized");
-    await mkdir(shotsDir, { recursive: true });
-    await mkdir(normalizedDir);
-    return {
-      root,
-      shotsDir,
-      normalizedDir,
-      audioPath: join(root, "audio.source"),
-      captionVttPath: join(root, "captions.vtt"),
-      captionSrtPath: join(root, "captions.srt"),
-      concatListPath: join(root, "concat.txt"),
-      concatenatedVideoPath: join(root, "video-concat.mp4"),
-      finalOutputPath: join(root, "master.mp4"),
-    };
+    try {
+      const shotsDir = join(root, "shots");
+      const normalizedDir = join(root, "normalized");
+      await mkdir(shotsDir, { recursive: true });
+      await mkdir(normalizedDir);
+      return {
+        root,
+        shotsDir,
+        normalizedDir,
+        audioPath: join(root, "audio.source"),
+        captionVttPath: join(root, "captions.vtt"),
+        captionSrtPath: join(root, "captions.srt"),
+        concatListPath: join(root, "concat.txt"),
+        concatenatedVideoPath: join(root, "video-concat.mp4"),
+        finalOutputPath: join(root, "master.mp4"),
+      };
+    } catch (error) {
+      await rm(root, { recursive: true, force: true }).catch(() => undefined);
+      throw error;
+    }
   }
 
   async remove(workspace: RenderWorkspace): Promise<void> {
     await this.ensureTempDir();
     const root = resolve(workspace.root);
-    if (root === this.tempDir || dirname(root) !== this.tempDir || !UUID_PATTERN.test(root.slice(this.tempDir.length + 1))) {
+    if (
+      root === this.tempDir ||
+      dirname(root) !== this.tempDir ||
+      !UUID_PATTERN.test(root.slice(this.tempDir.length + 1))
+    ) {
       throw new Error("Invalid render workspace path");
     }
     await rm(root, { recursive: true, force: true });
@@ -61,7 +71,12 @@ export class TempWorkspaceService {
     const cutoff = now.getTime() - STALE_MS;
     let removed = 0;
     for (const entry of await readdir(this.tempDir, { withFileTypes: true })) {
-      if (!entry.isDirectory() || entry.isSymbolicLink() || !UUID_PATTERN.test(entry.name)) continue;
+      if (
+        !entry.isDirectory() ||
+        entry.isSymbolicLink() ||
+        !UUID_PATTERN.test(entry.name)
+      )
+        continue;
       const path = join(this.tempDir, entry.name);
       const stats = await lstat(path);
       if (stats.mtimeMs < cutoff) {
@@ -73,13 +88,18 @@ export class TempWorkspaceService {
   }
 
   private assertJobId(jobId: string): void {
-    if (!UUID_PATTERN.test(jobId)) throw new Error("jobId must be a valid UUID");
+    if (!UUID_PATTERN.test(jobId))
+      throw new Error("jobId must be a valid UUID");
   }
 
   private async ensureTempDir(): Promise<void> {
     await mkdir(this.tempDir, { recursive: true });
     const stats = await lstat(this.tempDir);
-    if (!stats.isDirectory() || stats.isSymbolicLink() || (await realpath(this.tempDir)) !== this.tempDir) {
+    if (
+      !stats.isDirectory() ||
+      stats.isSymbolicLink() ||
+      (await realpath(this.tempDir)) !== this.tempDir
+    ) {
       throw new Error("Invalid render worker temporary directory");
     }
   }

@@ -2,7 +2,10 @@ import * as assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { RovelleAssetStatus } from "../generated/prisma/client";
-import { hashRenderSpec, type RenderSpecV1 } from "../rovelle/render/render-spec";
+import {
+  hashRenderSpec,
+  type RenderSpecV1,
+} from "../rovelle/render/render-spec";
 import { RenderWorkerError } from "./media-transfer.service";
 import type { RenderWorkspace } from "./temp-workspace.service";
 import {
@@ -43,13 +46,20 @@ const renderSpec: RenderSpecV1 = {
 const workspace: RenderWorkspace = {
   root: "/tmp/render-worker/750e8400-e29b-41d4-a716-446655440000",
   shotsDir: "/tmp/render-worker/750e8400-e29b-41d4-a716-446655440000/shots",
-  normalizedDir: "/tmp/render-worker/750e8400-e29b-41d4-a716-446655440000/normalized",
-  audioPath: "/tmp/render-worker/750e8400-e29b-41d4-a716-446655440000/audio.source",
-  captionVttPath: "/tmp/render-worker/750e8400-e29b-41d4-a716-446655440000/captions.vtt",
-  captionSrtPath: "/tmp/render-worker/750e8400-e29b-41d4-a716-446655440000/captions.srt",
-  concatListPath: "/tmp/render-worker/750e8400-e29b-41d4-a716-446655440000/concat.txt",
-  concatenatedVideoPath: "/tmp/render-worker/750e8400-e29b-41d4-a716-446655440000/video-concat.mp4",
-  finalOutputPath: "/tmp/render-worker/750e8400-e29b-41d4-a716-446655440000/master.mp4",
+  normalizedDir:
+    "/tmp/render-worker/750e8400-e29b-41d4-a716-446655440000/normalized",
+  audioPath:
+    "/tmp/render-worker/750e8400-e29b-41d4-a716-446655440000/audio.source",
+  captionVttPath:
+    "/tmp/render-worker/750e8400-e29b-41d4-a716-446655440000/captions.vtt",
+  captionSrtPath:
+    "/tmp/render-worker/750e8400-e29b-41d4-a716-446655440000/captions.srt",
+  concatListPath:
+    "/tmp/render-worker/750e8400-e29b-41d4-a716-446655440000/concat.txt",
+  concatenatedVideoPath:
+    "/tmp/render-worker/750e8400-e29b-41d4-a716-446655440000/video-concat.mp4",
+  finalOutputPath:
+    "/tmp/render-worker/750e8400-e29b-41d4-a716-446655440000/master.mp4",
 };
 
 type FailureCall = {
@@ -66,17 +76,32 @@ type HarnessOptions = {
   failJob?: (call: FailureCall) => Promise<"failed" | "lease_lost">;
   completeJob?: (call: unknown) => Promise<"completed" | "lease_lost">;
   heartbeat?: () => Promise<boolean>;
-  downloadFrozenAsset?: (input: { expected: unknown; destinationPath: string }) => Promise<void>;
+  downloadFrozenAsset?: (input: {
+    expected: unknown;
+    destinationPath: string;
+    signal?: AbortSignal;
+  }) => Promise<void>;
   probeVideo?: (path: string, signal: AbortSignal) => Promise<unknown>;
   normalizeShot?: (input: unknown, signal: AbortSignal) => Promise<void>;
-  concatenate?: (inputPaths: string[], listPath: string, outputPath: string, signal: AbortSignal) => Promise<void>;
+  concatenate?: (
+    inputPaths: string[],
+    listPath: string,
+    outputPath: string,
+    signal: AbortSignal,
+  ) => Promise<void>;
   muxFinal?: (input: unknown, signal: AbortSignal) => Promise<void>;
   verifyMaster?: (input: unknown, signal: AbortSignal) => Promise<unknown>;
-  uploadRenderOutput?: (input: { storageKey: string; sourcePath: string }) => Promise<{ byteSize: bigint; etag: string | null }>;
+  uploadRenderOutput?: (input: {
+    storageKey: string;
+    sourcePath: string;
+    signal?: AbortSignal;
+  }) => Promise<{ byteSize: bigint; etag: string | null }>;
   removeWorkspace?: () => Promise<void>;
 };
 
-function claimWith(overrides: Partial<ClaimedRenderJob> = {}): ClaimedRenderJob {
+function claimWith(
+  overrides: Partial<ClaimedRenderJob> = {},
+): ClaimedRenderJob {
   return {
     jobId: JOB_ID,
     renderId: RENDER_ID,
@@ -111,6 +136,7 @@ function specWith(
 function createHarness(input: HarnessOptions = {}) {
   const events: Event[] = [];
   const failures: FailureCall[] = [];
+  const transferSignals: AbortSignal[] = [];
   let terminateCalls = 0;
   let removals = 0;
   const repository = {
@@ -120,7 +146,9 @@ function createHarness(input: HarnessOptions = {}) {
     },
     completeJob: async (call: unknown) => {
       events.push({ kind: "complete", input: call });
-      return input.completeJob ? input.completeJob(call) : ("completed" as const);
+      return input.completeJob
+        ? input.completeJob(call)
+        : ("completed" as const);
     },
     failJob: async (call: FailureCall) => {
       events.push({ kind: "fail", input: call });
@@ -140,12 +168,34 @@ function createHarness(input: HarnessOptions = {}) {
     },
   };
   const mediaTransfer = {
-    downloadFrozenAsset: async (call: { expected: unknown; destinationPath: string }) => {
-      events.push({ kind: "download", input: call });
+    downloadFrozenAsset: async (call: {
+      expected: unknown;
+      destinationPath: string;
+      signal?: AbortSignal;
+    }) => {
+      if (call.signal) transferSignals.push(call.signal);
+      events.push({
+        kind: "download",
+        input: {
+          expected: call.expected,
+          destinationPath: call.destinationPath,
+        },
+      });
       if (input.downloadFrozenAsset) await input.downloadFrozenAsset(call);
     },
-    uploadRenderOutput: async (call: { storageKey: string; sourcePath: string }) => {
-      events.push({ kind: "upload", input: call });
+    uploadRenderOutput: async (call: {
+      storageKey: string;
+      sourcePath: string;
+      signal?: AbortSignal;
+    }) => {
+      if (call.signal) transferSignals.push(call.signal);
+      events.push({
+        kind: "upload",
+        input: {
+          storageKey: call.storageKey,
+          sourcePath: call.sourcePath,
+        },
+      });
       return input.uploadRenderOutput
         ? input.uploadRenderOutput(call)
         : { byteSize: 20n, etag: "etag" };
@@ -156,9 +206,18 @@ function createHarness(input: HarnessOptions = {}) {
       events.push({ kind: "normalize", input: call });
       if (input.normalizeShot) await input.normalizeShot(call, signal);
     },
-    concatenate: async (inputPaths: string[], listPath: string, outputPath: string, signal: AbortSignal) => {
-      events.push({ kind: "concatenate", input: { inputPaths, listPath, outputPath } });
-      if (input.concatenate) await input.concatenate(inputPaths, listPath, outputPath, signal);
+    concatenate: async (
+      inputPaths: string[],
+      listPath: string,
+      outputPath: string,
+      signal: AbortSignal,
+    ) => {
+      events.push({
+        kind: "concatenate",
+        input: { inputPaths, listPath, outputPath },
+      });
+      if (input.concatenate)
+        await input.concatenate(inputPaths, listPath, outputPath, signal);
     },
     muxFinal: async (call: unknown, signal: AbortSignal) => {
       events.push({ kind: "mux", input: call });
@@ -208,13 +267,17 @@ function createHarness(input: HarnessOptions = {}) {
     mediaTransfer as never,
     ffmpegRunner as never,
     ffprobeService as never,
-    { leaseSeconds: 120, heartbeatSeconds: 30 } satisfies RenderJobProcessorConfig,
+    {
+      leaseSeconds: 120,
+      heartbeatSeconds: 30,
+    } satisfies RenderJobProcessorConfig,
   );
 
   return {
     processor,
     claim: input.claim ?? claimWith(),
     events,
+    transferSignals,
     failures,
     get terminateCalls() {
       return terminateCalls;
@@ -234,7 +297,10 @@ test("fails an active job before downloading when the render spec hash mismatche
   );
 
   assert.deepEqual(result, { outcome: "failed" });
-  assert.equal(harness.events.filter(({ kind }) => kind === "download").length, 0);
+  assert.equal(
+    harness.events.filter(({ kind }) => kind === "download").length,
+    0,
+  );
   assert.equal(harness.removals, 1);
   assert.deepEqual(harness.failures, [
     {
@@ -266,7 +332,10 @@ test("downloads, probes, and normalizes shots in sequence order before composing
     ],
   });
   const harness = createHarness({
-    claim: claimWith({ renderSpec: orderedSpec, specHash: hashRenderSpec(orderedSpec) }),
+    claim: claimWith({
+      renderSpec: orderedSpec,
+      specHash: hashRenderSpec(orderedSpec),
+    }),
   });
 
   const result = await harness.processor.process(
@@ -295,34 +364,45 @@ test("downloads, probes, and normalizes shots in sequence order before composing
     ],
   );
   const downloads = harness.events.filter(({ kind }) => kind === "download");
-  assert.deepEqual(downloads.map(({ input }) => input), [
-    {
-      expected: orderedSpec.shots[1]?.video,
-      destinationPath: `${workspace.shotsDir}/shot-0001.source`,
-    },
-    {
-      expected: orderedSpec.shots[0]?.video,
-      destinationPath: `${workspace.shotsDir}/shot-0002.source`,
-    },
-    {
-      expected: orderedSpec.audio,
-      destinationPath: workspace.audioPath,
-    },
-  ]);
-  const normalizations = harness.events.filter(({ kind }) => kind === "normalize");
-  assert.deepEqual(normalizations.map(({ input }) => input), [
-    {
-      sourcePath: `${workspace.shotsDir}/shot-0001.source`,
-      outputPath: `${workspace.normalizedDir}/shot-0001.mp4`,
-      durationSeconds: 2,
-    },
-    {
-      sourcePath: `${workspace.shotsDir}/shot-0002.source`,
-      outputPath: `${workspace.normalizedDir}/shot-0002.mp4`,
-      durationSeconds: 3,
-    },
-  ]);
-  assert.deepEqual(harness.events.find(({ kind }) => kind === "probe")?.input, `${workspace.shotsDir}/shot-0001.source`);
+  assert.deepEqual(
+    downloads.map(({ input }) => input),
+    [
+      {
+        expected: orderedSpec.shots[1]?.video,
+        destinationPath: `${workspace.shotsDir}/shot-0001.source`,
+      },
+      {
+        expected: orderedSpec.shots[0]?.video,
+        destinationPath: `${workspace.shotsDir}/shot-0002.source`,
+      },
+      {
+        expected: orderedSpec.audio,
+        destinationPath: workspace.audioPath,
+      },
+    ],
+  );
+  const normalizations = harness.events.filter(
+    ({ kind }) => kind === "normalize",
+  );
+  assert.deepEqual(
+    normalizations.map(({ input }) => input),
+    [
+      {
+        sourcePath: `${workspace.shotsDir}/shot-0001.source`,
+        outputPath: `${workspace.normalizedDir}/shot-0001.mp4`,
+        durationSeconds: 2,
+      },
+      {
+        sourcePath: `${workspace.shotsDir}/shot-0002.source`,
+        outputPath: `${workspace.normalizedDir}/shot-0002.mp4`,
+        durationSeconds: 3,
+      },
+    ],
+  );
+  assert.deepEqual(
+    harness.events.find(({ kind }) => kind === "probe")?.input,
+    `${workspace.shotsDir}/shot-0001.source`,
+  );
   assert.deepEqual(
     harness.events.find(({ kind }) => kind === "concatenate")?.input,
     {
@@ -342,21 +422,32 @@ test("downloads, probes, and normalizes shots in sequence order before composing
     durationSeconds: 5,
     outputPath: workspace.finalOutputPath,
   });
-  assert.deepEqual(harness.events.find(({ kind }) => kind === "verify")?.input, {
-    path: workspace.finalOutputPath,
-    expectedDurationSeconds: 5,
-    captionsExpected: false,
-  });
-  assert.deepEqual(harness.events.find(({ kind }) => kind === "upload")?.input, {
-    storageKey: "rovelle/private/output.mp4",
-    sourcePath: workspace.finalOutputPath,
-  });
-  assert.deepEqual(harness.events.find(({ kind }) => kind === "complete")?.input, {
-    jobId: JOB_ID,
-    leaseToken: LEASE_TOKEN,
-    byteSize: 20n,
-    etag: "etag",
-  });
+  assert.deepEqual(
+    harness.events.find(({ kind }) => kind === "verify")?.input,
+    {
+      path: workspace.finalOutputPath,
+      expectedDurationSeconds: 5,
+      captionsExpected: false,
+    },
+  );
+  assert.deepEqual(
+    harness.events.find(({ kind }) => kind === "upload")?.input,
+    {
+      storageKey: "rovelle/private/output.mp4",
+      sourcePath: workspace.finalOutputPath,
+    },
+  );
+  assert.equal(harness.transferSignals.length, 4);
+  assert.equal(new Set(harness.transferSignals).size, 1);
+  assert.deepEqual(
+    harness.events.find(({ kind }) => kind === "complete")?.input,
+    {
+      jobId: JOB_ID,
+      leaseToken: LEASE_TOKEN,
+      byteSize: 20n,
+      etag: "etag",
+    },
+  );
 });
 
 test("downloads WEBVTT captions to the generated VTT path and forwards the format", async () => {
@@ -381,13 +472,19 @@ test("downloads WEBVTT captions to the generated VTT path and forwards the forma
   });
 
   assert.deepEqual(
-    await harness.processor.process(harness.claim, new AbortController().signal),
+    await harness.processor.process(
+      harness.claim,
+      new AbortController().signal,
+    ),
     { outcome: "completed" },
   );
-  assert.deepEqual(harness.events.filter(({ kind }) => kind === "download").at(-1)?.input, {
-    expected: caption,
-    destinationPath: workspace.captionVttPath,
-  });
+  assert.deepEqual(
+    harness.events.filter(({ kind }) => kind === "download").at(-1)?.input,
+    {
+      expected: caption,
+      destinationPath: workspace.captionVttPath,
+    },
+  );
   assert.deepEqual(harness.events.find(({ kind }) => kind === "mux")?.input, {
     concatenatedVideoPath: workspace.concatenatedVideoPath,
     audioPath: workspace.audioPath,
@@ -396,11 +493,14 @@ test("downloads WEBVTT captions to the generated VTT path and forwards the forma
     durationSeconds: 4,
     outputPath: workspace.finalOutputPath,
   });
-  assert.deepEqual(harness.events.find(({ kind }) => kind === "verify")?.input, {
-    path: workspace.finalOutputPath,
-    expectedDurationSeconds: 4,
-    captionsExpected: true,
-  });
+  assert.deepEqual(
+    harness.events.find(({ kind }) => kind === "verify")?.input,
+    {
+      path: workspace.finalOutputPath,
+      expectedDurationSeconds: 4,
+      captionsExpected: true,
+    },
+  );
 });
 
 test("downloads SRT captions to the generated SRT path without using an original filename", async () => {
@@ -425,15 +525,23 @@ test("downloads SRT captions to the generated SRT path without using an original
   });
 
   assert.deepEqual(
-    await harness.processor.process(harness.claim, new AbortController().signal),
+    await harness.processor.process(
+      harness.claim,
+      new AbortController().signal,
+    ),
     { outcome: "completed" },
   );
-  assert.deepEqual(harness.events.filter(({ kind }) => kind === "download").at(-1)?.input, {
-    expected: caption,
-    destinationPath: workspace.captionSrtPath,
-  });
+  assert.deepEqual(
+    harness.events.filter(({ kind }) => kind === "download").at(-1)?.input,
+    {
+      expected: caption,
+      destinationPath: workspace.captionSrtPath,
+    },
+  );
   assert.equal(
-    String(harness.events.find(({ kind }) => kind === "mux")?.input).includes("original"),
+    String(harness.events.find(({ kind }) => kind === "mux")?.input).includes(
+      "original",
+    ),
     false,
   );
 });
@@ -445,10 +553,16 @@ test("fails a spec whose total shot duration is not a positive integer before me
   });
 
   assert.deepEqual(
-    await harness.processor.process(harness.claim, new AbortController().signal),
+    await harness.processor.process(
+      harness.claim,
+      new AbortController().signal,
+    ),
     { outcome: "failed" },
   );
-  assert.equal(harness.events.some(({ kind }) => kind === "download"), false);
+  assert.equal(
+    harness.events.some(({ kind }) => kind === "download"),
+    false,
+  );
   assert.deepEqual(harness.failures, [
     {
       jobId: JOB_ID,
@@ -502,18 +616,76 @@ test("aborts active work and returns lease_lost when a heartbeat loses ownership
     await new Promise<void>((resolve) => queueMicrotask(resolve));
 
     assert.deepEqual(await pending, { outcome: "lease_lost" });
-    assert.deepEqual(harness.events.find(({ kind }) => kind === "heartbeat")?.input, {
-      jobId: JOB_ID,
-      leaseToken: LEASE_TOKEN,
-      leaseSeconds: 120,
-    });
+    assert.deepEqual(
+      harness.events.find(({ kind }) => kind === "heartbeat")?.input,
+      {
+        jobId: JOB_ID,
+        leaseToken: LEASE_TOKEN,
+        leaseSeconds: 120,
+      },
+    );
     assert.equal(harness.terminateCalls, 1);
     assert.equal(harness.failures.length, 0);
-    assert.equal(harness.events.some(({ kind }) => kind === "complete"), false);
+    assert.equal(
+      harness.events.some(({ kind }) => kind === "complete"),
+      false,
+    );
 
     t.mock.timers.tick(30_000);
     await new Promise<void>((resolve) => queueMicrotask(resolve));
-    assert.equal(harness.events.filter(({ kind }) => kind === "heartbeat").length, 1);
+    assert.equal(
+      harness.events.filter(({ kind }) => kind === "heartbeat").length,
+      1,
+    );
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
+test("aborts an active media transfer when a heartbeat loses ownership", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  try {
+    const spec = singleShotSpec();
+    let downloadStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      downloadStarted = resolve;
+    });
+    const harness = createHarness({
+      claim: claimWith({ renderSpec: spec, specHash: hashRenderSpec(spec) }),
+      heartbeat: async () => false,
+      downloadFrozenAsset: async ({ signal }) => {
+        downloadStarted();
+        await new Promise<void>((_resolve, reject) => {
+          if (!signal) {
+            reject(new Error("missing transfer signal"));
+            return;
+          }
+          signal.addEventListener(
+            "abort",
+            () => reject(new RenderWorkerError("WORKER_SHUTDOWN", "aborted")),
+            { once: true },
+          );
+        });
+      },
+    });
+
+    const pending = harness.processor.process(
+      harness.claim,
+      new AbortController().signal,
+    );
+    await started;
+    t.mock.timers.tick(30_000);
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+
+    assert.deepEqual(await pending, { outcome: "lease_lost" });
+    assert.equal(harness.transferSignals.length, 1);
+    assert.equal(harness.transferSignals[0]?.aborted, true);
+    assert.equal(harness.failures.length, 0);
+    assert.equal(
+      harness.events.some(({ kind }) => kind === "complete"),
+      false,
+    );
   } finally {
     t.mock.timers.reset();
   }
@@ -596,7 +768,10 @@ for (const failureCase of [
   },
   {
     name: "corrupt source input",
-    error: new RenderWorkerError("OUTPUT_MEDIA_INVALID", "A video stream is required"),
+    error: new RenderWorkerError(
+      "OUTPUT_MEDIA_INVALID",
+      "A video stream is required",
+    ),
     configure: (options: HarnessOptions, error: RenderWorkerError) => {
       options.probeVideo = async () => {
         throw error;
@@ -614,7 +789,10 @@ for (const failureCase of [
   },
   {
     name: "invalid final media",
-    error: new RenderWorkerError("OUTPUT_MEDIA_INVALID", "Final media does not match the render contract"),
+    error: new RenderWorkerError(
+      "OUTPUT_MEDIA_INVALID",
+      "Final media does not match the render contract",
+    ),
     configure: (options: HarnessOptions, error: RenderWorkerError) => {
       options.verifyMaster = async () => {
         throw error;
@@ -623,7 +801,10 @@ for (const failureCase of [
   },
   {
     name: "output upload failure",
-    error: new RenderWorkerError("OUTPUT_UPLOAD_FAILED", "Render output upload failed"),
+    error: new RenderWorkerError(
+      "OUTPUT_UPLOAD_FAILED",
+      "Render output upload failed",
+    ),
     configure: (options: HarnessOptions, error: RenderWorkerError) => {
       options.uploadRenderOutput = async () => {
         throw error;
@@ -644,7 +825,10 @@ for (const failureCase of [
     const harness = createHarness(options);
 
     assert.deepEqual(
-      await harness.processor.process(harness.claim, new AbortController().signal),
+      await harness.processor.process(
+        harness.claim,
+        new AbortController().signal,
+      ),
       { outcome: "failed" },
     );
     assert.equal(harness.failures.length, 1);
@@ -654,7 +838,10 @@ for (const failureCase of [
       errorCode: failureCase.error.code,
       errorMessage: failureCase.error.message,
     });
-    assert.equal(harness.events.filter(({ kind }) => kind === "complete").length, 0);
+    assert.equal(
+      harness.events.filter(({ kind }) => kind === "complete").length,
+      0,
+    );
     assert.equal(harness.removals, 1);
   });
 }
@@ -665,16 +852,25 @@ test("returns lease_lost when failure persistence discovers the lease is gone", 
     claim: claimWith({ renderSpec: spec, specHash: hashRenderSpec(spec) }),
     failJob: async () => "lease_lost",
     downloadFrozenAsset: async () => {
-      throw new RenderWorkerError("SOURCE_DOWNLOAD_FAILED", "Frozen asset download failed");
+      throw new RenderWorkerError(
+        "SOURCE_DOWNLOAD_FAILED",
+        "Frozen asset download failed",
+      );
     },
   });
 
   assert.deepEqual(
-    await harness.processor.process(harness.claim, new AbortController().signal),
+    await harness.processor.process(
+      harness.claim,
+      new AbortController().signal,
+    ),
     { outcome: "lease_lost" },
   );
   assert.equal(harness.failures.length, 1);
-  assert.equal(harness.events.some(({ kind }) => kind === "complete"), false);
+  assert.equal(
+    harness.events.some(({ kind }) => kind === "complete"),
+    false,
+  );
 });
 
 test("does not change a committed result when workspace cleanup fails", async () => {
@@ -687,7 +883,10 @@ test("does not change a committed result when workspace cleanup fails", async ()
   });
 
   assert.deepEqual(
-    await harness.processor.process(harness.claim, new AbortController().signal),
+    await harness.processor.process(
+      harness.claim,
+      new AbortController().signal,
+    ),
     { outcome: "completed" },
   );
   assert.equal(harness.failures.length, 0);
@@ -727,7 +926,10 @@ test("does not complete an uploaded output after lease loss during upload", asyn
 
     assert.deepEqual(await pending, { outcome: "lease_lost" });
     assert.equal(harness.failures.length, 0);
-    assert.equal(harness.events.some(({ kind }) => kind === "complete"), false);
+    assert.equal(
+      harness.events.some(({ kind }) => kind === "complete"),
+      false,
+    );
   } finally {
     t.mock.timers.reset();
   }
@@ -741,9 +943,15 @@ test("returns lease_lost without failing again when completion loses the lease",
   });
 
   assert.deepEqual(
-    await harness.processor.process(harness.claim, new AbortController().signal),
+    await harness.processor.process(
+      harness.claim,
+      new AbortController().signal,
+    ),
     { outcome: "lease_lost" },
   );
   assert.equal(harness.failures.length, 0);
-  assert.equal(harness.events.filter(({ kind }) => kind === "complete").length, 1);
+  assert.equal(
+    harness.events.filter(({ kind }) => kind === "complete").length,
+    1,
+  );
 });
