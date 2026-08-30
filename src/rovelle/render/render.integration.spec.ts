@@ -305,6 +305,10 @@ describe(
       const first = await service.createRender(fixture.episode.id, request);
       const repeat = await service.createRender(fixture.episode.id, request);
       assert.equal(repeat.id, first.id);
+      assert.equal(
+        (await prisma.client.rovelleEpisode.findUniqueOrThrow({ where: { id: fixture.episode.id } })).status,
+        RovelleEpisodeStatus.RENDERING,
+      );
       assert.equal(await prisma.client.rovelleRender.count(), 1);
       assert.equal(await prisma.client.rovelleRenderJob.count(), 1);
       assert.equal(
@@ -320,6 +324,10 @@ describe(
       );
       assert.equal(await prisma.client.rovelleRender.count(), 1);
       assert.equal(await prisma.client.rovelleRenderJob.count(), 1);
+      assert.equal(
+        await prisma.client.rovelleAsset.count({ where: { assetType: RovelleAssetType.RENDER } }),
+        1,
+      );
     });
 
     test("rejects every non-authoritative approval or source fixture without writes", async () => {
