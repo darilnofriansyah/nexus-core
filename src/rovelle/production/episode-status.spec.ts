@@ -78,6 +78,13 @@ describe('episode status transitions', () => {
       ),
       false,
     );
+    assert.equal(
+      canTransitionEpisode(
+        RovelleEpisodeStatus.GENERATION_APPROVED,
+        RovelleEpisodeStatus.RENDERING,
+      ),
+      true,
+    );
   });
 
   test('throws a bad request error for an invalid transition', () => {

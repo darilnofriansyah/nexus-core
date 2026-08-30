@@ -18,6 +18,9 @@ const PHASE_ONE_TRANSITIONS: Readonly<
     RovelleEpisodeStatus.GENERATING,
     RovelleEpisodeStatus.GENERATION_APPROVED,
   ],
+  [RovelleEpisodeStatus.GENERATION_APPROVED]: [
+    RovelleEpisodeStatus.RENDERING,
+  ],
 };
 
 export function canTransitionEpisode(
