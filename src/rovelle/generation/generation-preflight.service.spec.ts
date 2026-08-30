@@ -1,6 +1,7 @@
 import * as assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  Prisma,
   RovelleAssetStatus,
   RovelleCanonEntityType,
   RovelleCanonVersionStatus,
@@ -11,6 +12,7 @@ import { PrismaService } from "../../database/prisma.service";
 import { CanonPinService } from "../canon/canon-pin.service";
 import type { CanonPinDto } from "../canon/dto/canon.dto";
 import { GenerationPromptCompiler } from "./generation-prompt.compiler";
+import type { GenerationRepository } from "./generation.repository";
 import { GenerationPreflightService } from "./generation-preflight.service";
 
 const SHOT_ID = "123e4567-e89b-42d3-a456-426614174000";
@@ -109,12 +111,32 @@ class FakeCanonPinService {
   }
 }
 
+class FakeGenerationRepository {
+  calls: string[] = [];
+
+  constructor(
+    readonly summary: {
+      episodeId: string;
+      budgetUsd: Prisma.Decimal | null;
+      actualSpentUsd: Prisma.Decimal;
+      committedUsd: Prisma.Decimal;
+    },
+  ) {}
+
+  async getEpisodeCostSummary(episodeId: string) {
+    this.calls.push(episodeId);
+    return this.summary;
+  }
+}
+
 function createPreflight(
   options: {
     episodeStatus?: RovelleEpisodeStatus;
     shotStatus?: RovelleShotStatus;
     duration?: number | null;
     pins?: CanonPinDto[];
+    budgetUsd?: string | null;
+    committedUsd?: string;
   } = {},
 ) {
   const prisma = new FakePrismaService({
@@ -129,13 +151,23 @@ function createPreflight(
     },
   });
   const canon = new FakeCanonPinService(options.pins ?? validCanon());
+  const repository = new FakeGenerationRepository({
+    episodeId: EPISODE_ID,
+    budgetUsd:
+      options.budgetUsd === undefined || options.budgetUsd === null
+        ? null
+        : new Prisma.Decimal(options.budgetUsd),
+    actualSpentUsd: new Prisma.Decimal("0"),
+    committedUsd: new Prisma.Decimal(options.committedUsd ?? "0"),
+  });
   const service = new GenerationPreflightService(
     prisma as unknown as PrismaService,
     canon as unknown as CanonPinService,
     new GenerationPromptCompiler(),
+    repository as unknown as GenerationRepository,
   );
 
-  return { service, prisma, canon };
+  return { service, prisma, canon, repository };
 }
 
 test("preflight returns only prepared metadata and a prompt without mutating state", async () => {
@@ -144,6 +176,7 @@ test("preflight returns only prepared metadata and a prompt without mutating sta
   const prepared = await service.preflight(SHOT_ID);
 
   assert.deepEqual(Object.keys(prepared).sort(), [
+    "budget",
     "direction",
     "duration",
     "episodeId",
@@ -156,8 +189,76 @@ test("preflight returns only prepared metadata and a prompt without mutating sta
     ["CLOVERVALE_STORYBOOK_STYLE-asset", "KOKO-asset", "MEADOW_VILLAGE-asset"],
   );
   assert.equal(prepared.prompt.includes("https://"), false);
+  assert.deepEqual(prepared.budget, {
+    budgetUsd: null,
+    committedUsd: "0.000000",
+    requestedEstimateUsd: "0.920000",
+    projectedUsd: "0.920000",
+    withinBudget: true,
+  });
   assert.equal(prisma.calls, 1);
   assert.deepEqual(canon.calls, [SHOT_ID]);
+});
+
+test("requires the generation repository budget authority", () => {
+  const { prisma, canon } = createPreflight();
+
+  assert.throws(
+    () =>
+      new GenerationPreflightService(
+        prisma as unknown as PrismaService,
+        canon as unknown as CanonPinService,
+        new GenerationPromptCompiler(),
+        undefined as unknown as GenerationRepository,
+      ),
+    /GenerationRepository is required/,
+  );
+});
+
+test("preflight exposes Decimal budget visibility after profile and duration cost are known", async () => {
+  const cases = [
+    {
+      budgetUsd: null,
+      committedUsd: "8.000000",
+      expected: {
+        budgetUsd: null,
+        committedUsd: "8.000000",
+        requestedEstimateUsd: "0.920000",
+        projectedUsd: "8.920000",
+        withinBudget: true,
+      },
+    },
+    {
+      budgetUsd: "8.920000",
+      committedUsd: "8.000000",
+      expected: {
+        budgetUsd: "8.920000",
+        committedUsd: "8.000000",
+        requestedEstimateUsd: "0.920000",
+        projectedUsd: "8.920000",
+        withinBudget: true,
+      },
+    },
+    {
+      budgetUsd: "8.919999",
+      committedUsd: "8.000000",
+      expected: {
+        budgetUsd: "8.919999",
+        committedUsd: "8.000000",
+        requestedEstimateUsd: "0.920000",
+        projectedUsd: "8.920000",
+        withinBudget: false,
+      },
+    },
+  ] as const;
+
+  for (const scenario of cases) {
+    const { service, repository } = createPreflight(scenario);
+    const prepared = await service.preflight(SHOT_ID, "DRAFT");
+
+    assert.deepEqual(prepared.budget, scenario.expected);
+    assert.deepEqual(repository.calls, [EPISODE_ID]);
+  }
 });
 
 test("preflight rejects an episode outside generation states", async () => {

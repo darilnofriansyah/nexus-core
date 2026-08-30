@@ -178,6 +178,7 @@ describe(
           prisma,
           canonPinService,
           new GenerationPromptCompiler(),
+          generationRepository,
         ),
         generationRepository,
         assetService,

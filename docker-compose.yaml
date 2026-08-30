@@ -15,6 +15,21 @@ services:
     networks:
       - veyra-network
 
+  render-worker:
+    container_name: render-worker
+    build:
+      context: .
+      dockerfile: Dockerfile.render-worker
+    restart: unless-stopped
+    stop_grace_period: 5m
+    env_file:
+      - ../.env
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=postgresql://${VEYRA_DB_USER}:${VEYRA_DB_PASSWORD}@postgres:5432/veyra
+    networks:
+      - veyra-network
+
 networks:
   veyra-network:
     external: true

@@ -27,9 +27,15 @@ type GenerationWithState = RovelleShotGeneration & {
     id: string;
     episodeId: string;
     status: RovelleShotStatus;
-    episode: { id: string; status: RovelleEpisodeStatus };
+    episode: {
+      id: string;
+      status: RovelleEpisodeStatus;
+      generationBudgetUsd?: Prisma.Decimal | null;
+    };
   };
 };
+
+type Episode = GenerationWithState["shot"]["episode"];
 
 type OutputAsset = {
   id: string;
@@ -46,6 +52,8 @@ type FakeOptions = {
   raceExisting?: RovelleShotGeneration | null;
   providerOutputAsset?: ProviderOutputAsset;
   generations?: Array<RovelleShotGeneration | GenerationWithState | null>;
+  episodeAttempts?: RovelleShotGeneration[];
+  episode?: Episode | null;
   shot?: GenerationWithState["shot"] | null;
   latestAttempt?: number | null;
   createError?: unknown;
@@ -53,6 +61,7 @@ type FakeOptions = {
   generationUpdateCounts?: number[];
   shotUpdateCounts?: number[];
   episodeUpdateCounts?: number[];
+  generationBudgetUpdateCount?: number;
   outputAsset?: OutputAsset | null;
   outputAssetUpdateCounts?: number[];
   pendingShotCount?: number;
@@ -91,6 +100,7 @@ const generation: RovelleShotGeneration = {
   status: RovelleGenerationStatus.CREATED,
   outputAssetId: ASSET_ID,
   estimatedCostUsd: new Prisma.Decimal("0.575000"),
+  currency: "USD",
   pricingSource: "RUNWARE_SEEDANCE_2_5_2026_08_28",
   actualCostUsd: null,
   errorCode: null,
@@ -113,6 +123,7 @@ function generationWithState(
       episode: {
         id: EPISODE_ID,
         status: RovelleEpisodeStatus.READY_TO_GENERATE,
+        generationBudgetUsd: null,
       },
     },
     ...changes,
@@ -122,6 +133,7 @@ function generationWithState(
 function createRepository(options: FakeOptions = {}) {
   const calls: RepositoryCall[] = [];
   const generations = [...(options.generations ?? [])];
+  const episodeAttempts = options.episodeAttempts ?? [];
   const transactionErrors = [...(options.transactionErrors ?? [])];
   const generationUpdateCounts = [...(options.generationUpdateCounts ?? [1])];
   const shotUpdateCounts = [...(options.shotUpdateCounts ?? [1])];
@@ -146,6 +158,10 @@ function createRepository(options: FakeOptions = {}) {
       aggregate: async (args: unknown) => {
         record("generation.aggregate", args);
         return { _max: { attempt: options.latestAttempt ?? null } };
+      },
+      findMany: async (args: unknown) => {
+        record("generation.findMany", args);
+        return episodeAttempts;
       },
       create: async (args: unknown) => {
         record("generation.create", args);
@@ -174,6 +190,12 @@ function createRepository(options: FakeOptions = {}) {
       },
     },
     rovelleEpisode: {
+      findUnique: async (args: unknown) => {
+        record("episode.findUnique", args);
+        return options.episode === undefined
+          ? generationWithState().shot.episode
+          : options.episode;
+      },
       updateMany: async (args: unknown) => {
         record("episode.updateMany", args);
         return { count: episodeUpdateCounts.shift() ?? 1 };
@@ -219,7 +241,20 @@ function createRepository(options: FakeOptions = {}) {
       },
       findMany: async (args: unknown) => {
         record("generation.findMany", args);
-        return [generation];
+        const where = (args as { where: Record<string, unknown> }).where;
+        return "shot" in where ? episodeAttempts : [generation];
+      },
+    },
+    rovelleEpisode: {
+      findUnique: async (args: unknown) => {
+        record("episode.findUnique", args);
+        return options.episode === undefined
+          ? generationWithState().shot.episode
+          : options.episode;
+      },
+      updateMany: async (args: unknown) => {
+        record("episode.updateMany", args);
+        return { count: options.generationBudgetUpdateCount ?? 1 };
       },
     },
     $transaction: async <T>(
@@ -273,6 +308,172 @@ function input(
     ...overrides,
   };
 }
+
+test("getEpisodeCostSummary derives actual and committed spend across the episode", async () => {
+  const fake = createRepository({
+    episode: {
+      id: EPISODE_ID,
+      status: RovelleEpisodeStatus.GENERATING,
+      generationBudgetUsd: new Prisma.Decimal("10.000000"),
+    },
+    episodeAttempts: [
+      {
+        ...generation,
+        status: RovelleGenerationStatus.SUBMISSION_FAILED,
+        estimatedCostUsd: new Prisma.Decimal("4.000000"),
+        actualCostUsd: new Prisma.Decimal("1.500000"),
+      },
+      {
+        ...generation,
+        status: RovelleGenerationStatus.FAILED,
+        estimatedCostUsd: new Prisma.Decimal("0.800000"),
+        actualCostUsd: new Prisma.Decimal("0.250000"),
+      },
+      {
+        ...generation,
+        status: RovelleGenerationStatus.SUBMITTED,
+        estimatedCostUsd: new Prisma.Decimal("0.400000"),
+        actualCostUsd: null,
+      },
+      {
+        ...generation,
+        status: RovelleGenerationStatus.CREATED,
+        estimatedCostUsd: new Prisma.Decimal("0.100000"),
+        actualCostUsd: null,
+      },
+    ],
+  });
+  const repository = fake.repository as GenerationRepository & {
+    getEpisodeCostSummary(episodeId: string): Promise<{
+      episodeId: string;
+      budgetUsd: Prisma.Decimal | null;
+      actualSpentUsd: Prisma.Decimal;
+      committedUsd: Prisma.Decimal;
+    } | null>;
+  };
+
+  const summary = await repository.getEpisodeCostSummary(EPISODE_ID);
+
+  assert.equal(summary?.episodeId, EPISODE_ID);
+  assert.equal(summary?.budgetUsd?.toFixed(6), "10.000000");
+  assert.equal(summary?.actualSpentUsd.toFixed(6), "1.750000");
+  assert.equal(summary?.committedUsd.toFixed(6), "0.750000");
+  assert.deepEqual(callsFor(fake.calls, "episode.findUnique")[0], {
+    operation: "episode.findUnique",
+    args: {
+      where: { id: EPISODE_ID },
+      select: { id: true, generationBudgetUsd: true },
+    },
+    inTransaction: false,
+  });
+  assert.deepEqual(callsFor(fake.calls, "generation.findMany")[0], {
+    operation: "generation.findMany",
+    args: {
+      where: { shot: { episodeId: EPISODE_ID } },
+      select: {
+        status: true,
+        estimatedCostUsd: true,
+        actualCostUsd: true,
+      },
+    },
+    inTransaction: false,
+  });
+});
+
+test("setEpisodeGenerationBudget updates only an episode still in a mutable state", async () => {
+  const allowedStatuses = [
+    RovelleEpisodeStatus.DRAFT,
+    RovelleEpisodeStatus.BRIEF_APPROVED,
+    RovelleEpisodeStatus.PREPRODUCTION,
+    RovelleEpisodeStatus.READY_TO_GENERATE,
+    RovelleEpisodeStatus.GENERATING,
+    RovelleEpisodeStatus.REVIEW_REQUIRED,
+  ];
+
+  for (const status of allowedStatuses) {
+    const fake = createRepository({
+      episode: {
+        id: EPISODE_ID,
+        status,
+        generationBudgetUsd: null,
+      },
+    });
+    const repository = fake.repository as GenerationRepository & {
+      setEpisodeGenerationBudget(
+        episodeId: string,
+        budgetUsd: Prisma.Decimal | null,
+      ): Promise<"updated" | "not_found" | "invalid_state">;
+    };
+
+    assert.equal(
+      await repository.setEpisodeGenerationBudget(
+        EPISODE_ID,
+        new Prisma.Decimal("2.500000"),
+      ),
+      "updated",
+    );
+    assert.deepEqual(callsFor(fake.calls, "episode.updateMany")[0], {
+      operation: "episode.updateMany",
+      args: {
+        where: {
+          id: EPISODE_ID,
+          status: {
+            in: allowedStatuses,
+          },
+        },
+        data: { generationBudgetUsd: new Prisma.Decimal("2.500000") },
+      },
+      inTransaction: false,
+    });
+  }
+});
+
+test("setEpisodeGenerationBudget distinguishes missing and immutable episodes", async () => {
+  const immutableStatuses = [
+    RovelleEpisodeStatus.GENERATION_APPROVED,
+    RovelleEpisodeStatus.RENDERING,
+    RovelleEpisodeStatus.FINAL_REVIEW,
+    RovelleEpisodeStatus.PUBLISH_READY,
+    RovelleEpisodeStatus.PUBLISHING,
+    RovelleEpisodeStatus.PUBLISHED,
+    RovelleEpisodeStatus.PAUSED,
+    RovelleEpisodeStatus.CANCELLED,
+    RovelleEpisodeStatus.FAILED,
+  ];
+
+  for (const status of immutableStatuses) {
+    const fake = createRepository({
+      generationBudgetUpdateCount: 0,
+      episode: { id: EPISODE_ID, status, generationBudgetUsd: null },
+    });
+    const repository = fake.repository as GenerationRepository & {
+      setEpisodeGenerationBudget(
+        episodeId: string,
+        budgetUsd: Prisma.Decimal | null,
+      ): Promise<"updated" | "not_found" | "invalid_state">;
+    };
+
+    assert.equal(
+      await repository.setEpisodeGenerationBudget(EPISODE_ID, null),
+      "invalid_state",
+    );
+  }
+
+  const missing = createRepository({
+    generationBudgetUpdateCount: 0,
+    episode: null,
+  });
+  const repository = missing.repository as GenerationRepository & {
+    setEpisodeGenerationBudget(
+      episodeId: string,
+      budgetUsd: Prisma.Decimal | null,
+    ): Promise<"updated" | "not_found" | "invalid_state">;
+  };
+  assert.equal(
+    await repository.setEpisodeGenerationBudget(EPISODE_ID, null),
+    "not_found",
+  );
+});
 
 test("createAttempt atomically reserves the output and allocates the next attempt", async () => {
   const fake = createRepository({ latestAttempt: 4 });
@@ -335,6 +536,190 @@ test("createAttempt atomically reserves the output and allocates the next attemp
   });
 });
 
+test("createAttempt enforces the episode budget from all prior attempts before allocating output", async () => {
+  const cases: Array<{
+    name: string;
+    budget: string | null;
+    requested: string;
+    attempts: RovelleShotGeneration[];
+    committed: string;
+    expected: "created" | "budget_exceeded";
+  }> = [
+    {
+      name: "allows an episode with no budget",
+      budget: null,
+      requested: "100.000000",
+      attempts: [],
+      committed: "0.000000",
+      expected: "created",
+    },
+    {
+      name: "allows projected cost exactly at the budget",
+      budget: "10.000000",
+      requested: "2.000000",
+      attempts: [
+        {
+          ...generation,
+          status: RovelleGenerationStatus.SUBMITTED,
+          estimatedCostUsd: new Prisma.Decimal("8.000000"),
+        },
+      ],
+      committed: "8.000000",
+      expected: "created",
+    },
+    {
+      name: "rejects a cost above the Decimal budget boundary",
+      budget: "10.000000",
+      requested: "2.000001",
+      attempts: [
+        {
+          ...generation,
+          status: RovelleGenerationStatus.SUBMITTED,
+          estimatedCostUsd: new Prisma.Decimal("8.000000"),
+        },
+      ],
+      committed: "8.000000",
+      expected: "budget_exceeded",
+    },
+    {
+      name: "rejects a positive request against a zero budget",
+      budget: "0.000000",
+      requested: "0.000001",
+      attempts: [],
+      committed: "0.000000",
+      expected: "budget_exceeded",
+    },
+    {
+      name: "does not reserve a submission failure",
+      budget: "2.000000",
+      requested: "2.000000",
+      attempts: [
+        {
+          ...generation,
+          status: RovelleGenerationStatus.SUBMISSION_FAILED,
+          estimatedCostUsd: new Prisma.Decimal("8.000000"),
+          actualCostUsd: new Prisma.Decimal("4.000000"),
+        },
+      ],
+      committed: "0.000000",
+      expected: "created",
+    },
+    {
+      name: "reserves a submitted estimate with no actual provider cost",
+      budget: "10.000000",
+      requested: "2.000000",
+      attempts: [
+        {
+          ...generation,
+          status: RovelleGenerationStatus.SUBMITTED,
+          estimatedCostUsd: new Prisma.Decimal("8.000000"),
+          actualCostUsd: null,
+        },
+      ],
+      committed: "8.000000",
+      expected: "created",
+    },
+    {
+      name: "uses completed actual cost instead of estimate",
+      budget: "10.000000",
+      requested: "2.000000",
+      attempts: [
+        {
+          ...generation,
+          status: RovelleGenerationStatus.COMPLETED,
+          estimatedCostUsd: new Prisma.Decimal("80.000000"),
+          actualCostUsd: new Prisma.Decimal("8.000000"),
+        },
+      ],
+      committed: "8.000000",
+      expected: "created",
+    },
+    {
+      name: "uses failed actual cost instead of estimate",
+      budget: "10.000000",
+      requested: "2.000000",
+      attempts: [
+        {
+          ...generation,
+          status: RovelleGenerationStatus.FAILED,
+          estimatedCostUsd: new Prisma.Decimal("80.000000"),
+          actualCostUsd: new Prisma.Decimal("8.000000"),
+        },
+      ],
+      committed: "8.000000",
+      expected: "created",
+    },
+    {
+      name: "reserves a created attempt estimate",
+      budget: "10.000000",
+      requested: "2.000000",
+      attempts: [
+        {
+          ...generation,
+          status: RovelleGenerationStatus.CREATED,
+          estimatedCostUsd: new Prisma.Decimal("8.000000"),
+          actualCostUsd: null,
+        },
+      ],
+      committed: "8.000000",
+      expected: "created",
+    },
+  ];
+
+  for (const scenario of cases) {
+    const budgetUsd =
+      scenario.budget === null ? null : new Prisma.Decimal(scenario.budget);
+    const fake = createRepository({
+      shot: {
+        ...generationWithState().shot,
+        episode: {
+          ...generationWithState().shot.episode,
+          generationBudgetUsd: budgetUsd,
+        },
+      },
+      episodeAttempts: scenario.attempts,
+    });
+
+    const result = await fake.repository.createAttempt(
+      input({ estimatedCostUsd: new Prisma.Decimal(scenario.requested) }),
+    );
+
+    assert.equal(result.status, scenario.expected, scenario.name);
+    assert.deepEqual(callsFor(fake.calls, "generation.findMany")[0], {
+      operation: "generation.findMany",
+      args: {
+        where: { shot: { episodeId: EPISODE_ID } },
+        select: {
+          status: true,
+          estimatedCostUsd: true,
+          actualCostUsd: true,
+        },
+      },
+      inTransaction: true,
+    });
+    if (scenario.expected === "budget_exceeded") {
+      const budgetResult = result as typeof result & {
+        budgetUsd: Prisma.Decimal;
+        committedUsd: Prisma.Decimal;
+        requestedEstimateUsd: Prisma.Decimal;
+        projectedUsd: Prisma.Decimal;
+      };
+      assert.equal(callsFor(fake.calls, "asset.create").length, 0);
+      assert.equal(callsFor(fake.calls, "generation.create").length, 0);
+      assert.equal(budgetResult.budgetUsd.toFixed(6), scenario.budget);
+      assert.equal(budgetResult.committedUsd.toFixed(6), scenario.committed);
+      assert.equal(
+        budgetResult.requestedEstimateUsd.toFixed(6),
+        scenario.requested,
+      );
+      assert.equal(
+        budgetResult.projectedUsd.toFixed(6),
+        scenario.budget === "0.000000" ? "0.000001" : "10.000001",
+      );
+    }
+  }
+});
+
 test("createAttempt returns the existing client request without allocating another attempt", async () => {
   const fake = createRepository({ existing: generation });
 
@@ -343,6 +728,7 @@ test("createAttempt returns the existing client request without allocating anoth
     generation,
   });
   assert.equal(callsFor(fake.calls, "shot.findUnique").length, 0);
+  assert.equal(callsFor(fake.calls, "generation.findMany").length, 0);
   assert.equal(callsFor(fake.calls, "generation.aggregate").length, 0);
   assert.equal(callsFor(fake.calls, "asset.create").length, 0);
   assert.equal(callsFor(fake.calls, "generation.create").length, 0);

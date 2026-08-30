@@ -2,6 +2,7 @@ import * as assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   BadGatewayException,
+  ConflictException,
   InternalServerErrorException,
   NotFoundException,
 } from "@nestjs/common";
@@ -65,6 +66,7 @@ function generation(
     status: RovelleGenerationStatus.CREATED,
     outputAssetId: OUTPUT_ASSET_ID,
     estimatedCostUsd: new Prisma.Decimal("0.575000"),
+    currency: "USD",
     pricingSource: "RUNWARE_SEEDANCE_2_5_2026_08_28",
     actualCostUsd: null,
     errorCode: null,
@@ -286,6 +288,62 @@ test("returns an existing client request without preflight or provider submissio
   });
 
   assert.equal(result.id, GENERATION_ID);
+  assert.deepEqual(events, ["existing"]);
+  assert.equal(preflight.calls.length, 0);
+  assert.equal(provider.calls.length, 0);
+});
+
+test("maps an authoritative budget rejection to a safe 409 before signed URLs or provider spend", async () => {
+  const { service, repository, assets, storage, provider, events } =
+    createService();
+  repository.createResult = {
+    status: "budget_exceeded",
+    budgetUsd: new Prisma.Decimal("10.000000"),
+    committedUsd: new Prisma.Decimal("8.000000"),
+    requestedEstimateUsd: new Prisma.Decimal("2.500000"),
+    projectedUsd: new Prisma.Decimal("10.500000"),
+  };
+
+  await assert.rejects(
+    () =>
+      service.submitShot(SHOT_ID, { requestId: REQUEST_ID, profile: "DRAFT" }),
+    (error: unknown) => {
+      if (!(error instanceof ConflictException)) return false;
+      assert.equal(error.getStatus(), 409);
+      assert.deepEqual(error.getResponse(), {
+        message: "Episode generation budget would be exceeded",
+        budgetUsd: "10.000000",
+        committedUsd: "8.000000",
+        requestedEstimateUsd: "2.500000",
+        projectedUsd: "10.500000",
+      });
+      return true;
+    },
+  );
+
+  assert.deepEqual(events, ["existing", "create"]);
+  assert.equal(assets.calls.length, 0);
+  assert.equal(storage.keys.length, 0);
+  assert.equal(provider.calls.length, 0);
+});
+
+test("returns a previously accepted request even when its current budget would reject a new attempt", async () => {
+  const { service, repository, preflight, provider, events } = createService();
+  repository.existing = generation({ status: RovelleGenerationStatus.SUBMITTED });
+  repository.createResult = {
+    status: "budget_exceeded",
+    budgetUsd: new Prisma.Decimal("1.000000"),
+    committedUsd: new Prisma.Decimal("1.000000"),
+    requestedEstimateUsd: new Prisma.Decimal("0.575000"),
+    projectedUsd: new Prisma.Decimal("1.575000"),
+  };
+
+  const result = await service.submitShot(SHOT_ID, {
+    requestId: REQUEST_ID,
+    profile: "DRAFT",
+  });
+
+  assert.equal(result.status, RovelleGenerationStatus.SUBMITTED);
   assert.deepEqual(events, ["existing"]);
   assert.equal(preflight.calls.length, 0);
   assert.equal(provider.calls.length, 0);

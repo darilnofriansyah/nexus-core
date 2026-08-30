@@ -79,6 +79,37 @@ enum RovelleGenerationStatus {
   CANCELLED
 }
 
+enum RovelleReviewerType {
+  HUMAN
+  AI
+}
+
+enum RovelleReviewDecision {
+  APPROVE
+  REJECT
+  REGENERATE
+  RECOMMEND_APPROVE
+  RECOMMEND_REJECT
+}
+
+enum RovelleRenderProfile {
+  VERTICAL_SHORT_V1
+}
+
+enum RovelleRenderStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+enum RovelleRenderJobStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+}
+
 enum RovelleCanonEntityType {
   CHARACTER
   ENVIRONMENT
@@ -97,9 +128,11 @@ model RovelleEpisode {
   status                RovelleEpisodeStatus     @default(DRAFT)
   brief                 Json?                    @map("brief_json")
   targetDurationSeconds Int?                     @map("target_duration_seconds")
+  generationBudgetUsd   Decimal?                 @map("generation_budget_usd") @db.Decimal(12, 6)
   shots                 RovelleShot[]
   assets                RovelleAsset[]
   canonPins             RovelleEpisodeCanonPin[]
+  renders               RovelleRender[]
   createdAt             DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt             DateTime                 @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -108,18 +141,20 @@ model RovelleEpisode {
 }
 
 model RovelleShot {
-  id                    String                @id @default(uuid()) @db.Uuid
-  episodeId             String                @map("episode_id") @db.Uuid
+  id                    String                  @id @default(uuid()) @db.Uuid
+  episodeId             String                  @map("episode_id") @db.Uuid
   sequence              Int
-  name                  String?               @db.VarChar(120)
-  direction             String                @db.Text
-  targetDurationSeconds Int?                  @map("target_duration_seconds")
-  status                RovelleShotStatus     @default(DRAFT)
-  episode               RovelleEpisode        @relation(fields: [episodeId], references: [id], onDelete: Cascade)
+  name                  String?                 @db.VarChar(120)
+  direction             String                  @db.Text
+  targetDurationSeconds Int?                    @map("target_duration_seconds")
+  status                RovelleShotStatus       @default(DRAFT)
+  approvedGenerationId  String?                 @unique @map("approved_generation_id") @db.Uuid
+  episode               RovelleEpisode          @relation(fields: [episodeId], references: [id], onDelete: Cascade)
   canonPins             RovelleShotCanonPin[]
   generationAttempts    RovelleShotGeneration[]
-  createdAt             DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt             DateTime              @updatedAt @map("updated_at") @db.Timestamptz(6)
+  approvedGeneration    RovelleShotGeneration?  @relation("ApprovedShotGeneration", fields: [approvedGenerationId], references: [id], onDelete: Restrict)
+  createdAt             DateTime                @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime                @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@unique([episodeId, sequence])
   @@index([episodeId, status])
@@ -127,20 +162,21 @@ model RovelleShot {
 }
 
 model RovelleAsset {
-  id               String              @id @default(uuid()) @db.Uuid
-  episodeId        String?             @map("episode_id") @db.Uuid
-  assetType        RovelleAssetType    @map("asset_type")
-  status           RovelleAssetStatus  @default(RESERVED)
-  mediaType        String              @map("media_type") @db.VarChar(127)
-  storageKey       String              @unique @map("storage_key") @db.VarChar(512)
-  originalFilename String?             @map("original_filename") @db.VarChar(255)
-  byteSize         BigInt?             @map("byte_size")
-  etag             String?             @db.VarChar(128)
-  episode          RovelleEpisode?     @relation(fields: [episodeId], references: [id], onDelete: SetNull)
-  canonAssets      RovelleCanonAsset[]
+  id                 String                  @id @default(uuid()) @db.Uuid
+  episodeId          String?                 @map("episode_id") @db.Uuid
+  assetType          RovelleAssetType        @map("asset_type")
+  status             RovelleAssetStatus      @default(RESERVED)
+  mediaType          String                  @map("media_type") @db.VarChar(127)
+  storageKey         String                  @unique @map("storage_key") @db.VarChar(512)
+  originalFilename   String?                 @map("original_filename") @db.VarChar(255)
+  byteSize           BigInt?                 @map("byte_size")
+  etag               String?                 @db.VarChar(128)
+  episode            RovelleEpisode?         @relation(fields: [episodeId], references: [id], onDelete: SetNull)
+  canonAssets        RovelleCanonAsset[]
   generationAttempts RovelleShotGeneration[]
-  createdAt        DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt        DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
+  renderOutput       RovelleRender?          @relation("RenderOutputAsset")
+  createdAt          DateTime                @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime                @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@index([episodeId])
   @@index([assetType, status])
@@ -162,6 +198,7 @@ model RovelleShotGeneration {
   status           RovelleGenerationStatus   @default(CREATED)
   outputAssetId    String                    @unique @map("output_asset_id") @db.Uuid
   estimatedCostUsd Decimal                   @map("estimated_cost_usd") @db.Decimal(12, 6)
+  currency         String                    @default("USD") @db.Char(3)
   pricingSource    String                    @map("pricing_source") @db.VarChar(120)
   actualCostUsd    Decimal?                  @map("actual_cost_usd") @db.Decimal(12, 6)
   errorCode        String?                   @map("error_code") @db.VarChar(120)
@@ -170,6 +207,8 @@ model RovelleShotGeneration {
   completedAt      DateTime?                 @map("completed_at") @db.Timestamptz(6)
   shot             RovelleShot               @relation(fields: [shotId], references: [id], onDelete: Cascade)
   outputAsset      RovelleAsset              @relation(fields: [outputAssetId], references: [id], onDelete: Restrict)
+  reviews          RovelleReview[]
+  approvedByShot   RovelleShot?              @relation("ApprovedShotGeneration")
   createdAt        DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt        DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -177,6 +216,83 @@ model RovelleShotGeneration {
   @@index([shotId, status])
   @@index([status, createdAt])
   @@map("rovelle_shot_generations")
+}
+
+model RovelleRender {
+  id              String               @id @default(uuid()) @db.Uuid
+  clientRequestId String               @unique @map("client_request_id") @db.Uuid
+  episodeId       String               @map("episode_id") @db.Uuid
+  attempt         Int
+  profile         RovelleRenderProfile @default(VERTICAL_SHORT_V1)
+  status          RovelleRenderStatus  @default(QUEUED)
+
+  specVersion Int    @default(1) @map("spec_version")
+  spec        Json   @map("spec_json")
+  specHash    String @map("spec_hash") @db.Char(64)
+
+  outputAssetId String @unique @map("output_asset_id") @db.Uuid
+
+  episode     RovelleEpisode @relation(fields: [episodeId], references: [id], onDelete: Cascade)
+  outputAsset RovelleAsset   @relation("RenderOutputAsset", fields: [outputAssetId], references: [id], onDelete: Restrict)
+
+  jobs RovelleRenderJob[]
+
+  completedAt DateTime? @map("completed_at") @db.Timestamptz(6)
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([episodeId, attempt])
+  @@index([episodeId, status])
+  @@index([status, createdAt])
+  @@map("rovelle_renders")
+}
+
+model RovelleRenderJob {
+  id              String                 @id @default(uuid()) @db.Uuid
+  clientRequestId String                 @unique @map("client_request_id") @db.Uuid
+  renderId        String                 @map("render_id") @db.Uuid
+  attempt         Int
+  status          RovelleRenderJobStatus @default(QUEUED)
+
+  availableAt DateTime @default(now()) @map("available_at") @db.Timestamptz(6)
+
+  workerId       String?   @map("worker_id") @db.VarChar(120)
+  leaseToken     String?   @map("lease_token") @db.Uuid
+  claimedAt      DateTime? @map("claimed_at") @db.Timestamptz(6)
+  heartbeatAt    DateTime? @map("heartbeat_at") @db.Timestamptz(6)
+  leaseExpiresAt DateTime? @map("lease_expires_at") @db.Timestamptz(6)
+
+  startedAt  DateTime? @map("started_at") @db.Timestamptz(6)
+  finishedAt DateTime? @map("finished_at") @db.Timestamptz(6)
+
+  errorCode    String? @map("error_code") @db.VarChar(120)
+  errorMessage String? @map("error_message") @db.Text
+
+  render RovelleRender @relation(fields: [renderId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([renderId, attempt])
+  @@index([status, availableAt, createdAt])
+  @@index([renderId, status])
+  @@index([leaseExpiresAt])
+  @@map("rovelle_render_jobs")
+}
+
+model RovelleReview {
+  id              String                @id @default(uuid()) @db.Uuid
+  clientRequestId String                @unique @map("client_request_id") @db.Uuid
+  generationId    String                @map("generation_id") @db.Uuid
+  reviewerType    RovelleReviewerType   @default(HUMAN) @map("reviewer_type")
+  decision        RovelleReviewDecision
+  notes           String?               @db.Text
+  generation      RovelleShotGeneration @relation(fields: [generationId], references: [id], onDelete: Restrict)
+  createdAt       DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([generationId, createdAt])
+  @@index([reviewerType, decision, createdAt])
+  @@map("rovelle_reviews")
 }
 
 model RovelleCanonEntity {

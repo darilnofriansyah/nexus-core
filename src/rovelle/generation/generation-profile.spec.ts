@@ -124,6 +124,7 @@ describe('Rovelle video generation profiles', () => {
       status: RovelleGenerationStatus.SUBMITTED,
       outputAssetId: '123e4567-e89b-42d3-a456-426614174003',
       estimatedCostUsd: new Prisma.Decimal('0.460000'),
+      currency: 'USD',
       pricingSource: 'RUNWARE_SEEDANCE_2_5_2026_08_28',
       actualCostUsd: new Prisma.Decimal('1.245'),
       errorCode: null,

@@ -31,6 +31,7 @@ const episode: RovelleEpisode = {
   status: RovelleEpisodeStatus.DRAFT,
   brief: null,
   targetDurationSeconds: 60,
+  generationBudgetUsd: null,
   createdAt: new Date("2026-08-27T00:00:00.000Z"),
   updatedAt: new Date("2026-08-27T00:00:00.000Z"),
 };
@@ -43,6 +44,7 @@ const shot: RovelleShot = {
   direction: "Open on the basket.",
   targetDurationSeconds: 10,
   status: RovelleShotStatus.DRAFT,
+  approvedGenerationId: null,
   createdAt: new Date("2026-08-27T00:00:00.000Z"),
   updatedAt: new Date("2026-08-27T00:00:00.000Z"),
 };

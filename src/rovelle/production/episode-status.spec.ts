@@ -56,6 +56,65 @@ describe('episode status transitions', () => {
     );
   });
 
+  test('allows review-required episodes to resume or finish generation review', () => {
+    assert.equal(
+      canTransitionEpisode(
+        RovelleEpisodeStatus.REVIEW_REQUIRED,
+        RovelleEpisodeStatus.GENERATING,
+      ),
+      true,
+    );
+    assert.equal(
+      canTransitionEpisode(
+        RovelleEpisodeStatus.REVIEW_REQUIRED,
+        RovelleEpisodeStatus.GENERATION_APPROVED,
+      ),
+      true,
+    );
+    assert.equal(
+      canTransitionEpisode(
+        RovelleEpisodeStatus.GENERATION_APPROVED,
+        RovelleEpisodeStatus.GENERATING,
+      ),
+      false,
+    );
+    assert.equal(
+      canTransitionEpisode(
+        RovelleEpisodeStatus.GENERATION_APPROVED,
+        RovelleEpisodeStatus.RENDERING,
+      ),
+      true,
+    );
+    assert.equal(
+      canTransitionEpisode(
+        RovelleEpisodeStatus.RENDERING,
+        RovelleEpisodeStatus.FINAL_REVIEW,
+      ),
+      true,
+    );
+    assert.equal(
+      canTransitionEpisode(
+        RovelleEpisodeStatus.FINAL_REVIEW,
+        RovelleEpisodeStatus.PUBLISH_READY,
+      ),
+      false,
+    );
+    assert.equal(
+      canTransitionEpisode(
+        RovelleEpisodeStatus.FINAL_REVIEW,
+        RovelleEpisodeStatus.RENDERING,
+      ),
+      false,
+    );
+    assert.equal(
+      canTransitionEpisode(
+        RovelleEpisodeStatus.RENDERING,
+        RovelleEpisodeStatus.PUBLISH_READY,
+      ),
+      false,
+    );
+  });
+
   test('throws a bad request error for an invalid transition', () => {
     assert.throws(
       () =>
