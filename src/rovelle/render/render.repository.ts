@@ -285,7 +285,7 @@ export class RenderRepository {
         sequence: shot.sequence,
         shotId: shot.id,
         generationId: shot.approvedGenerationId!,
-        targetDurationSeconds: shot.targetDurationSeconds ?? 0,
+        targetDurationSeconds: shot.targetDurationSeconds!,
         video: snapshotAsset(shot.approvedGeneration!.outputAsset),
       })),
       audio: snapshotAsset(audio),
@@ -358,6 +358,7 @@ function hasAuthoritativeApprovedGeneration(
   shot: {
     id: string;
     approvedGenerationId: string | null;
+    targetDurationSeconds: number | null;
     approvedGeneration: {
       id: string;
       shotId: string;
@@ -367,6 +368,7 @@ function hasAuthoritativeApprovedGeneration(
         status: RovelleAssetStatus;
         assetType: RovelleAssetType;
         mediaType: string;
+        byteSize: bigint | null;
         etag: string | null;
       };
     } | null;
@@ -375,6 +377,13 @@ function hasAuthoritativeApprovedGeneration(
 ): boolean {
   const generation = shot.approvedGeneration;
   if (!generation || shot.approvedGenerationId !== generation.id) return false;
+  if (
+    shot.targetDurationSeconds === null ||
+    !Number.isFinite(shot.targetDurationSeconds) ||
+    shot.targetDurationSeconds <= 0
+  ) {
+    return false;
+  }
   if (generation.shotId !== shot.id || generation.status !== RovelleGenerationStatus.COMPLETED) {
     return false;
   }
@@ -384,6 +393,7 @@ function hasAuthoritativeApprovedGeneration(
     output.status === RovelleAssetStatus.AVAILABLE &&
     output.assetType === RovelleAssetType.GENERATION &&
     output.mediaType.startsWith("video/") &&
+    output.byteSize !== null &&
     hasSafeSnapshotMetadata(output)
   );
 }

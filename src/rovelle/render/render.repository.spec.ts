@@ -587,6 +587,29 @@ test("createQueuedRender rejects every non-authoritative approved shot source", 
   }
 });
 
+test("createQueuedRender rejects invalid shot durations and unsized approved video", async () => {
+  const invalidCases = [
+    shot({ targetDurationSeconds: null }),
+    shot({ targetDurationSeconds: 0 }),
+    shot({ targetDurationSeconds: -1 }),
+    shot({ targetDurationSeconds: Number.POSITIVE_INFINITY }),
+    shot({
+      approvedGeneration: approvedGeneration({
+        outputAsset: asset({ byteSize: null }),
+      }),
+    }),
+  ];
+
+  for (const source of invalidCases) {
+    const fake = createRepository({ shots: [source] });
+    assert.deepEqual(await fake.repository.createQueuedRender(input()), {
+      status: "approved_generation_invalid",
+      shotId: SHOT_ID,
+    });
+    assert.equal(callsFor(fake.calls, "asset.create").length, 0);
+  }
+});
+
 test("createQueuedRender validates audio and optional captions from the episode", async () => {
   const audioCases = [
     audio({ episodeId: null }),
