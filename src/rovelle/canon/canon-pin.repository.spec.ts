@@ -54,6 +54,7 @@ const episode: RovelleEpisode = {
   brief: null,
   targetDurationSeconds: 60,
   generationBudgetUsd: null,
+  approvedRenderId: null,
   createdAt,
   updatedAt,
 };

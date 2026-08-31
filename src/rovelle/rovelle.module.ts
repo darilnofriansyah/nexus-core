@@ -2,6 +2,7 @@ import { Module } from "@nestjs/common";
 import { AssetsModule } from "./assets/assets.module";
 import { CanonModule } from "./canon/canon.module";
 import { GenerationModule } from "./generation/generation.module";
+import { FinalReviewModule } from "./final-review/final-review.module";
 import { ProductionModule } from "./production/production.module";
 import { RenderModule } from "./render/render.module";
 
@@ -12,6 +13,7 @@ import { RenderModule } from "./render/render.module";
     CanonModule,
     GenerationModule,
     RenderModule,
+    FinalReviewModule,
   ],
 })
 export class RovelleModule {}

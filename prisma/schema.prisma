@@ -92,6 +92,12 @@ enum RovelleReviewDecision {
   RECOMMEND_REJECT
 }
 
+enum RovelleRenderReviewDecision {
+  APPROVE
+  REJECT
+  RERENDER
+}
+
 enum RovelleRenderProfile {
   VERTICAL_SHORT_V1
 }
@@ -132,7 +138,9 @@ model RovelleEpisode {
   shots                 RovelleShot[]
   assets                RovelleAsset[]
   canonPins             RovelleEpisodeCanonPin[]
-  renders               RovelleRender[]
+  approvedRenderId      String?                  @unique @map("approved_render_id") @db.Uuid
+  approvedRender        RovelleRender?           @relation("ApprovedEpisodeRender", fields: [approvedRenderId], references: [id], onDelete: Restrict)
+  renders               RovelleRender[]          @relation("EpisodeRenders")
   createdAt             DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt             DateTime                 @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -232,8 +240,10 @@ model RovelleRender {
 
   outputAssetId String @unique @map("output_asset_id") @db.Uuid
 
-  episode     RovelleEpisode @relation(fields: [episodeId], references: [id], onDelete: Cascade)
-  outputAsset RovelleAsset   @relation("RenderOutputAsset", fields: [outputAssetId], references: [id], onDelete: Restrict)
+  episode           RovelleEpisode        @relation("EpisodeRenders", fields: [episodeId], references: [id], onDelete: Cascade)
+  outputAsset       RovelleAsset          @relation("RenderOutputAsset", fields: [outputAssetId], references: [id], onDelete: Restrict)
+  approvedByEpisode RovelleEpisode?       @relation("ApprovedEpisodeRender")
+  reviews           RovelleRenderReview[]
 
   jobs RovelleRenderJob[]
 
@@ -278,6 +288,21 @@ model RovelleRenderJob {
   @@index([renderId, status])
   @@index([leaseExpiresAt])
   @@map("rovelle_render_jobs")
+}
+
+model RovelleRenderReview {
+  id              String                      @id @default(uuid()) @db.Uuid
+  clientRequestId String                      @unique @map("client_request_id") @db.Uuid
+  renderId        String                      @map("render_id") @db.Uuid
+  reviewerType    RovelleReviewerType         @default(HUMAN) @map("reviewer_type")
+  decision        RovelleRenderReviewDecision
+  notes           String?                     @db.Text
+  render          RovelleRender               @relation(fields: [renderId], references: [id], onDelete: Restrict)
+  createdAt       DateTime                    @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([renderId, createdAt])
+  @@index([reviewerType, decision, createdAt])
+  @@map("rovelle_render_reviews")
 }
 
 model RovelleReview {
