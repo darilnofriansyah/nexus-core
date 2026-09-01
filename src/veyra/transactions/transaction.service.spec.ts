@@ -5209,7 +5209,7 @@ test("uses most-used category history for deterministic email expenses", async (
       };
     },
   } as unknown as BudgetService;
-  const { service } = createService(
+  const { calls, service } = createService(
     [
       [],
       [{ canonical_name: "Kopi Tuku Canonical" }],
@@ -5230,6 +5230,20 @@ test("uses most-used category history for deterministic email expenses", async (
   assert.equal(result.status, "confirmed");
   assert.equal(result.transaction?.category, "Shopping");
   assert.deepEqual(assignments, ["Shopping"]);
+  const historyQuery = calls.find(({ text }) =>
+    /FROM transactions t/.test(text),
+  );
+  assert.ok(historyQuery);
+  assert.match(historyQuery.text, /t\.user_id = \$1/);
+  assert.match(historyQuery.text, /t\.status = 'confirmed'/);
+  assert.match(historyQuery.text, /t\.transaction_type = 'expense'/);
+  assert.match(historyQuery.text, /c\.is_active = true/);
+  assert.match(historyQuery.text, /lower\(c\.name\) <> 'uncategorized'/);
+  assert.deepEqual(historyQuery.values, [
+    "1",
+    "Kopi Tuku Canonical",
+    "Kopi Tuku",
+  ]);
 });
 
 test("returns needs_review when category history has a tie", async () => {
@@ -6664,6 +6678,51 @@ test("confirmed hard-coded email learns merchant and approves its review", async
   const { calls, service } = createService([
     [hardcodedTransaction],
     [{ ...hardcodedTransaction, status: "confirmed" }],
+    [{ id: "import-1" }],
+    [],
+    [],
+    [],
+    [],
+    [],
+  ]);
+  spyOnWatchdog(service);
+
+  const result = await service.confirmTransaction({
+    transactionId: "123",
+    userId: "1",
+  });
+
+  assert.equal(result.status, "confirmed");
+  assert.equal(
+    calls.filter(({ text }) => /INSERT INTO merchant_aliases/.test(text))
+      .length,
+    1,
+  );
+  assert.equal(
+    calls.filter(({ text }) => /INSERT INTO category_rules/.test(text)).length,
+    1,
+  );
+  assert.equal(
+    calls.filter(({ text }) => /UPDATE merchant_review_queue/.test(text))
+      .length,
+    1,
+  );
+});
+
+test("confirmed learned email learns merchant and approves its review", async () => {
+  const learnedTransaction = {
+    ...pendingAiTransaction,
+    merchant: "SHOPEE.CO.ID",
+    merchant_normalized: "SHOPEE.CO.ID",
+    category: "Shopping",
+    raw_payload: {
+      parserSource: "learned",
+      email: { binding: { contentHash: "a".repeat(64) } },
+    },
+  };
+  const { calls, service } = createService([
+    [learnedTransaction],
+    [{ ...learnedTransaction, status: "confirmed" }],
     [{ id: "import-1" }],
     [],
     [],
