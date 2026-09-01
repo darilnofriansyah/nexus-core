@@ -4923,6 +4923,7 @@ test("uses a learned template after hard-coded parsers and skips AI", async () =
     [
       [],
       [{ canonical_name: "Kopi Tuku" }],
+      [],
       [{ category: "Food" }],
       [{ id: "import-1" }],
       [{ id: "101" }],
@@ -4954,6 +4955,7 @@ test("learned auto-save succeeds when marking the template match fails", async (
     [
       [],
       [{ canonical_name: "Kopi Tuku" }],
+      [],
       [{ category: "Food" }],
       [{ id: "import-1" }],
       [{ id: "101" }],
@@ -5134,6 +5136,7 @@ test("hard-coded parser handles confirmed Krom QRIS email without learned lookup
     [
       [],
       [{ canonical_name: "Kopi Tuku Canonical" }],
+      [],
       [{ category: "Food" }],
       [{ id: "import-1" }],
       [{ id: "tx-email" }],
@@ -5168,11 +5171,13 @@ test("hard-coded parser handles confirmed Krom QRIS email without learned lookup
   assert.equal(result.transaction?.merchant, "Kopi Tuku");
   assert.equal(result.transaction?.merchantNormalized, "Kopi Tuku Canonical");
   assert.match(result.telegram.text, /Merchant: Kopi Tuku Canonical/);
-  assert.equal(calls.length, 8);
-  assert.match(calls[2].text, /FROM category_rules/);
+  assert.equal(calls.length, 9);
+  assert.match(calls[2].text, /FROM transactions/);
   assert.deepEqual(calls[2].values, ["1", "Kopi Tuku Canonical", "Kopi Tuku"]);
-  assert.match(calls[4].text, /INSERT INTO transactions/);
-  assert.deepEqual(calls[4].values.slice(0, 9), [
+  assert.match(calls[3].text, /FROM category_rules/);
+  assert.deepEqual(calls[3].values, ["1", "Kopi Tuku Canonical", "Kopi Tuku"]);
+  assert.match(calls[5].text, /INSERT INTO transactions/);
+  assert.deepEqual(calls[5].values.slice(0, 9), [
     "1",
     "expense",
     25000,
@@ -5184,16 +5189,97 @@ test("hard-coded parser handles confirmed Krom QRIS email without learned lookup
     97,
   ]);
   assert.equal(
-    (calls[4].values[9] as Record<string, unknown>).parserSource,
+    (calls[5].values[9] as Record<string, unknown>).parserSource,
     "hardcoded",
   );
   assert.deepEqual(templates.calls, []);
+});
+
+test("uses most-used category history for deterministic email expenses", async () => {
+  const assignments: string[] = [];
+  const budgetService = {
+    resolveExpenseAssignment: async (request: { category: string }) => {
+      assignments.push(request.category);
+      return {
+        status: "resolved" as const,
+        category: request.category,
+        needsCategoryReview: false,
+        pocketId: "42",
+        pocketName: "Monthly Transactions",
+      };
+    },
+  } as unknown as BudgetService;
+  const { service } = createService(
+    [
+      [],
+      [{ canonical_name: "Kopi Tuku Canonical" }],
+      [
+        { category: "Shopping", usage_count: 8 },
+        { category: "Groceries", usage_count: 2 },
+      ],
+      [{ id: "import-history-winner" }],
+      [{ id: "tx-history-winner" }],
+      [],
+      [],
+    ],
+    budgetService,
+  );
+
+  const result = await service.handleEmailTransaction(kromQrisRequest());
+
+  assert.equal(result.status, "confirmed");
+  assert.equal(result.transaction?.category, "Shopping");
+  assert.deepEqual(assignments, ["Shopping"]);
+});
+
+test("returns needs_review when category history has a tie", async () => {
+  const { calls, service } = createService([
+    [],
+    [{ canonical_name: "Kopi Tuku Canonical" }],
+    [
+      { category: "Groceries", usage_count: 3 },
+      { category: "Shopping", usage_count: 3 },
+    ],
+    [{ id: "import-history-tie" }],
+    [{ id: "tx-history-tie" }],
+    [{ id: "import-history-tie" }],
+    [],
+  ]);
+
+  const result = await service.handleEmailTransaction(kromQrisRequest());
+
+  assert.equal(result.status, "needs_review");
+  assert.equal(result.reason, "category choice is ambiguous");
+  assert.equal(result.transaction?.status, "pending");
+  assert.equal(
+    calls.some(({ text }) => /FROM category_rules/.test(text)),
+    false,
+  );
+});
+
+test("no category history falls back to the category rule", async () => {
+  const { service } = createService([
+    [],
+    [{ canonical_name: "Kopi Tuku Canonical" }],
+    [],
+    [{ category: "Food" }],
+    [{ id: "import-history-fallback" }],
+    [{ id: "tx-history-fallback" }],
+    [],
+    [],
+  ]);
+
+  const result = await service.handleEmailTransaction(kromQrisRequest());
+
+  assert.equal(result.status, "confirmed");
+  assert.equal(result.transaction?.category, "Food");
 });
 
 function emailRows() {
   return [
     [],
     [{ canonical_name: "Kopi Tuku Canonical" }],
+    [],
     [{ category: "Food" }],
     [{ id: "import-1" }],
     [{ id: "tx-email" }],
@@ -5224,6 +5310,7 @@ test("confirmed email expense writes default pocket_id", async () => {
     [
       [],
       [{ canonical_name: "Kopi Tuku Canonical" }],
+      [],
       [{ category: "Food" }],
       [{ id: "import-1" }],
       [{ id: "tx-email" }],
@@ -5250,6 +5337,7 @@ test("email with unknown category stays pending for category review", async () =
     [
       [],
       [{ canonical_name: "Kopi Tuku Canonical" }],
+      [],
       [{ category: "Food" }],
       [{ id: "import-1" }],
       [{ id: "tx-pending" }],
@@ -5296,6 +5384,7 @@ test("falls back to emailHtml when emailText is not parseable", async () => {
   const { calls, service } = createService([
     [],
     [{ canonical_name: "Kopi Tuku Canonical" }],
+    [],
     [{ category: "Food" }],
     [{ id: "import-html" }],
     [{ id: "tx-email-html" }],
@@ -5330,6 +5419,7 @@ test("directly confirmed email credit-card expense adds cycle usage", async () =
   const { service, transactionCalls } = createService([
     [],
     [{ canonical_name: "Toko Buku" }],
+    [],
     [{ category: "Shopping" }],
     [{ id: "import-credit-card" }],
     [{ id: "tx-credit-card" }],
@@ -5368,6 +5458,7 @@ test("returns needs_review for BCA known template without category", async () =>
   const { calls, service } = createService([
     [],
     [{ canonical_name: "Toko Buku" }],
+    [],
     [],
     [{ id: "import-review" }],
     [{ id: "125" }],
@@ -5411,9 +5502,9 @@ test("returns needs_review for BCA known template without category", async () =>
   assert.ok(
     callbacks.some((callback) => callback?.startsWith("cancel_transaction:")),
   );
-  assert.match(calls[3].text, /INSERT INTO transaction_imports/);
-  assert.match(calls[4].text, /INSERT INTO transactions/);
-  assert.match(calls[6].text, /INSERT INTO email_parse_attempts/);
+  assert.match(calls[4].text, /INSERT INTO transaction_imports/);
+  assert.match(calls[5].text, /INSERT INTO transactions/);
+  assert.match(calls[7].text, /INSERT INTO email_parse_attempts/);
 });
 
 test("returns needs_review for known email when merchant alias is missing", async () => {
@@ -5925,6 +6016,7 @@ test("email confirmed save exposes watchdog-free base message", async () => {
   const { service } = createService([
     [],
     [{ canonical_name: "Kopi Tuku Canonical" }],
+    [],
     [{ category: "Food" }],
     [{ id: "import-1" }],
     [{ id: "tx-email" }],
@@ -8147,10 +8239,22 @@ test("category confirmation triggers watchdog", async () => {
 test("production category options use active user categories", async () => {
   const dependencies = createCategoryServiceWithCategories([
     { id: "10", name: "Food" },
-    { id: "11", name: "Uncategorized" },
+    { id: "11", name: "Shopping" },
+    { id: "12", name: "Groceries" },
   ]);
+  const pendingShopee = {
+    ...transaction,
+    merchant: "SHOPEE.CO.ID",
+    merchant_normalized: "SHOPEE.CO.ID",
+  };
   const { service } = createService(
-    [[transaction]],
+    [
+      [pendingShopee],
+      [
+        { category: "Shopping", usage_count: 8 },
+        { category: "Groceries", usage_count: 3 },
+      ],
+    ],
     dependencies.budgetService,
     undefined,
     undefined,
@@ -8167,8 +8271,8 @@ test("production category options use active user categories", async () => {
   assert.deepEqual(
     result.replyMarkup?.inline_keyboard
       .flat()
-      .map(({ callback_data }) => callback_data),
-    ["catid:10:101", "catid:11:101"],
+      .map(({ text }) => text),
+    ["Shopping", "Groceries", "Food"],
   );
 });
 

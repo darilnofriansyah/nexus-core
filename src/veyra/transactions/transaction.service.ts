@@ -161,6 +161,16 @@ interface CategoryRuleRow extends QueryResultRow {
   category: string;
 }
 
+interface EmailCategoryHistoryRow extends QueryResultRow {
+  category: string;
+  usage_count: string | number;
+}
+
+type EmailCategoryResolution =
+  | { kind: "resolved"; category: string }
+  | { kind: "ambiguous"; categories: string[] }
+  | { kind: "none" };
+
 interface TelegramUserRow extends QueryResultRow {
   id: string | number;
   telegram_id: string | number | null;
@@ -1017,19 +1027,22 @@ export class TransactionService {
     }
 
     const merchantNormalized = merchantAlias;
-    const category = await this.resolveEmailCategory({
+    const categoryResolution = await this.resolveEmailCategory({
       userId: validated.userId,
       merchant,
       merchantNormalized,
       templateKey: parsed.templateKey,
     });
 
-    if (!category) {
+    if (categoryResolution.kind !== "resolved") {
       return this.recordDeterministicEmailReview({
         request: validated,
         provider: parsed.provider,
         templateKey: parsed.templateKey,
-        reason: "category could not be resolved",
+        reason:
+          categoryResolution.kind === "ambiguous"
+            ? "category choice is ambiguous"
+            : "category could not be resolved",
         parsed,
         detection,
         merchant,
@@ -1038,6 +1051,7 @@ export class TransactionService {
       });
     }
 
+    const category = categoryResolution.category;
     const rawPayload = this.buildEmailRawPayload(validated, parsed);
     const transactionDate = this.normalizeTransactionDate(
       parsed.transactionDate ?? validated.email.date,
@@ -4051,12 +4065,60 @@ export class TransactionService {
     };
   }
 
+  private async findEmailCategoryHistory(
+    userId: string,
+    merchantNormalized: string,
+    merchant: string,
+  ): Promise<EmailCategoryHistoryRow[]> {
+    const result = await this.database.query<EmailCategoryHistoryRow>(
+      `
+        SELECT c.name AS category,
+               COUNT(*)::int AS usage_count
+        FROM transactions t
+        JOIN categories c
+          ON c.user_id = t.user_id
+         AND c.is_active = true
+         AND lower(c.name) = lower(t.category)
+        WHERE t.user_id = $1
+          AND t.status = 'confirmed'
+          AND t.transaction_type = 'expense'
+          AND lower(c.name) <> 'uncategorized'
+          AND (
+            lower(COALESCE(NULLIF(t.merchant_normalized, ''), t.merchant)) = lower($2)
+            OR lower(COALESCE(NULLIF(t.merchant_normalized, ''), t.merchant)) = lower($3)
+          )
+        GROUP BY c.id, c.name
+        ORDER BY usage_count DESC, lower(c.name)
+      `,
+      [userId, merchantNormalized, merchant],
+    );
+
+    return result.rows;
+  }
+
   private async resolveEmailCategory(input: {
     userId: string;
     merchant: string;
     merchantNormalized: string;
     templateKey: string;
-  }): Promise<string | null> {
+  }): Promise<EmailCategoryResolution> {
+    const history = await this.findEmailCategoryHistory(
+      input.userId,
+      input.merchantNormalized,
+      input.merchant,
+    );
+
+    if (history.length > 0) {
+      const highest = Number(history[0].usage_count);
+      const winners = history
+        .filter((row) => Number(row.usage_count) === highest)
+        .map((row) => row.category);
+
+      return winners.length === 1
+        ? { kind: "resolved", category: winners[0] }
+        : { kind: "ambiguous", categories: winners };
+    }
+
     const result = await this.database.query<CategoryRuleRow>(
       `
         SELECT category
@@ -4076,16 +4138,23 @@ export class TransactionService {
     const ruleCategory = result.rows[0]?.category;
 
     if (ruleCategory) {
-      return ruleCategory;
+      return { kind: "resolved", category: ruleCategory };
     }
 
     const fallbackCategory = this.emailFallbackCategory(input.templateKey);
 
     if (!fallbackCategory) {
-      return null;
+      return { kind: "none" };
     }
 
-    return this.findExistingBudgetCategory(input.userId, fallbackCategory);
+    const existingCategory = await this.findExistingBudgetCategory(
+      input.userId,
+      fallbackCategory,
+    );
+
+    return existingCategory
+      ? { kind: "resolved", category: existingCategory }
+      : { kind: "none" };
   }
 
   private emailFallbackCategory(templateKey: string): string | null {
@@ -4865,16 +4934,36 @@ export class TransactionService {
       };
     }
 
-    const categoryOptions =
-      callbackMode === PRODUCTION_CALLBACK_MODE && transactionId
-        ? (await this.requireCategoryService().listActive(userId)).map(
-            (category) => ({
-              categoryId: category.id,
-              label: category.name,
-              category: category.name,
-            }),
+    let categoryOptions: CategoryOption[] = this.defaultCategoryOptions();
+
+    if (callbackMode === PRODUCTION_CALLBACK_MODE && transactionId) {
+      const history = transaction
+        ? await this.findEmailCategoryHistory(
+            userId,
+            transaction.merchant_normalized ?? transaction.merchant ?? "",
+            transaction.merchant ?? transaction.merchant_normalized ?? "",
           )
-        : this.defaultCategoryOptions();
+        : [];
+      const historyRank = new Map(
+        history.map((row, index) => [row.category.toLowerCase(), index]),
+      );
+      const activeCategories = await this.requireCategoryService().listActive(
+        userId,
+      );
+      activeCategories.sort((left, right) => {
+        const leftRank = historyRank.get(left.name.toLowerCase());
+        const rightRank = historyRank.get(right.name.toLowerCase());
+        if (leftRank === undefined && rightRank === undefined) return 0;
+        if (leftRank === undefined) return 1;
+        if (rightRank === undefined) return -1;
+        return leftRank - rightRank;
+      });
+      categoryOptions = activeCategories.map((category) => ({
+        categoryId: category.id,
+        label: category.name,
+        category: category.name,
+      }));
+    }
     const source = transaction ?? pendingTransaction;
 
     return {
