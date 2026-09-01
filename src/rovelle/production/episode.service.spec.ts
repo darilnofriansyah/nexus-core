@@ -20,6 +20,7 @@ const draftEpisode: EpisodeWithShots = {
   brief: { premise: 'Count berries' },
   targetDurationSeconds: 30,
   generationBudgetUsd: null,
+  approvedRenderId: null,
   createdAt: new Date('2026-08-27T00:00:00.000Z'),
   updatedAt: new Date('2026-08-27T00:00:00.000Z'),
   shots: [],

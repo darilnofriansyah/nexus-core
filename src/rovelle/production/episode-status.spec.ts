@@ -97,7 +97,7 @@ describe('episode status transitions', () => {
         RovelleEpisodeStatus.FINAL_REVIEW,
         RovelleEpisodeStatus.PUBLISH_READY,
       ),
-      false,
+      true,
     );
     assert.equal(
       canTransitionEpisode(
@@ -113,6 +113,48 @@ describe('episode status transitions', () => {
       ),
       false,
     );
+  });
+
+  test('allows only the final-review outcomes and preserves render boundaries', () => {
+    assert.equal(
+      canTransitionEpisode(
+        RovelleEpisodeStatus.FINAL_REVIEW,
+        RovelleEpisodeStatus.PUBLISH_READY,
+      ),
+      true,
+    );
+    assert.equal(
+      canTransitionEpisode(
+        RovelleEpisodeStatus.FINAL_REVIEW,
+        RovelleEpisodeStatus.GENERATION_APPROVED,
+      ),
+      true,
+    );
+    assert.equal(
+      canTransitionEpisode(
+        RovelleEpisodeStatus.GENERATION_APPROVED,
+        RovelleEpisodeStatus.RENDERING,
+      ),
+      true,
+    );
+    assert.equal(
+      canTransitionEpisode(
+        RovelleEpisodeStatus.RENDERING,
+        RovelleEpisodeStatus.FINAL_REVIEW,
+      ),
+      true,
+    );
+
+    for (const [from, to] of [
+      [RovelleEpisodeStatus.PUBLISH_READY, RovelleEpisodeStatus.FINAL_REVIEW],
+      [
+        RovelleEpisodeStatus.PUBLISH_READY,
+        RovelleEpisodeStatus.GENERATION_APPROVED,
+      ],
+      [RovelleEpisodeStatus.FINAL_REVIEW, RovelleEpisodeStatus.RENDERING],
+    ] as const) {
+      assert.equal(canTransitionEpisode(from, to), false);
+    }
   });
 
   test('throws a bad request error for an invalid transition', () => {
