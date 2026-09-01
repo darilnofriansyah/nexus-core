@@ -4923,6 +4923,7 @@ test("uses a learned template after hard-coded parsers and skips AI", async () =
     [
       [],
       [{ canonical_name: "Kopi Tuku" }],
+      [],
       [{ category: "Food" }],
       [{ id: "import-1" }],
       [{ id: "101" }],
@@ -4954,6 +4955,7 @@ test("learned auto-save succeeds when marking the template match fails", async (
     [
       [],
       [{ canonical_name: "Kopi Tuku" }],
+      [],
       [{ category: "Food" }],
       [{ id: "import-1" }],
       [{ id: "101" }],
@@ -5134,6 +5136,7 @@ test("hard-coded parser handles confirmed Krom QRIS email without learned lookup
     [
       [],
       [{ canonical_name: "Kopi Tuku Canonical" }],
+      [],
       [{ category: "Food" }],
       [{ id: "import-1" }],
       [{ id: "tx-email" }],
@@ -5168,11 +5171,13 @@ test("hard-coded parser handles confirmed Krom QRIS email without learned lookup
   assert.equal(result.transaction?.merchant, "Kopi Tuku");
   assert.equal(result.transaction?.merchantNormalized, "Kopi Tuku Canonical");
   assert.match(result.telegram.text, /Merchant: Kopi Tuku Canonical/);
-  assert.equal(calls.length, 8);
-  assert.match(calls[2].text, /FROM category_rules/);
+  assert.equal(calls.length, 9);
+  assert.match(calls[2].text, /FROM transactions/);
   assert.deepEqual(calls[2].values, ["1", "Kopi Tuku Canonical", "Kopi Tuku"]);
-  assert.match(calls[4].text, /INSERT INTO transactions/);
-  assert.deepEqual(calls[4].values.slice(0, 9), [
+  assert.match(calls[3].text, /FROM category_rules/);
+  assert.deepEqual(calls[3].values, ["1", "Kopi Tuku Canonical", "Kopi Tuku"]);
+  assert.match(calls[5].text, /INSERT INTO transactions/);
+  assert.deepEqual(calls[5].values.slice(0, 9), [
     "1",
     "expense",
     25000,
@@ -5184,16 +5189,111 @@ test("hard-coded parser handles confirmed Krom QRIS email without learned lookup
     97,
   ]);
   assert.equal(
-    (calls[4].values[9] as Record<string, unknown>).parserSource,
+    (calls[5].values[9] as Record<string, unknown>).parserSource,
     "hardcoded",
   );
   assert.deepEqual(templates.calls, []);
+});
+
+test("uses most-used category history for deterministic email expenses", async () => {
+  const assignments: string[] = [];
+  const budgetService = {
+    resolveExpenseAssignment: async (request: { category: string }) => {
+      assignments.push(request.category);
+      return {
+        status: "resolved" as const,
+        category: request.category,
+        needsCategoryReview: false,
+        pocketId: "42",
+        pocketName: "Monthly Transactions",
+      };
+    },
+  } as unknown as BudgetService;
+  const { calls, service } = createService(
+    [
+      [],
+      [{ canonical_name: "Kopi Tuku Canonical" }],
+      [
+        { category: "Shopping", usage_count: 8 },
+        { category: "Groceries", usage_count: 2 },
+      ],
+      [{ id: "import-history-winner" }],
+      [{ id: "tx-history-winner" }],
+      [],
+      [],
+    ],
+    budgetService,
+  );
+
+  const result = await service.handleEmailTransaction(kromQrisRequest());
+
+  assert.equal(result.status, "confirmed");
+  assert.equal(result.transaction?.category, "Shopping");
+  assert.deepEqual(assignments, ["Shopping"]);
+  const historyQuery = calls.find(({ text }) =>
+    /FROM transactions t/.test(text),
+  );
+  assert.ok(historyQuery);
+  assert.match(historyQuery.text, /t\.user_id = \$1/);
+  assert.match(historyQuery.text, /t\.status = 'confirmed'/);
+  assert.match(historyQuery.text, /t\.transaction_type = 'expense'/);
+  assert.match(historyQuery.text, /c\.is_active = true/);
+  assert.match(historyQuery.text, /lower\(c\.name\) <> 'uncategorized'/);
+  assert.deepEqual(historyQuery.values, [
+    "1",
+    "Kopi Tuku Canonical",
+    "Kopi Tuku",
+  ]);
+});
+
+test("returns needs_review when category history has a tie", async () => {
+  const { calls, service } = createService([
+    [],
+    [{ canonical_name: "Kopi Tuku Canonical" }],
+    [
+      { category: "Groceries", usage_count: 3 },
+      { category: "Shopping", usage_count: 3 },
+    ],
+    [{ id: "import-history-tie" }],
+    [{ id: "tx-history-tie" }],
+    [{ id: "import-history-tie" }],
+    [],
+  ]);
+
+  const result = await service.handleEmailTransaction(kromQrisRequest());
+
+  assert.equal(result.status, "needs_review");
+  assert.equal(result.reason, "category choice is ambiguous");
+  assert.equal(result.transaction?.status, "pending");
+  assert.equal(
+    calls.some(({ text }) => /FROM category_rules/.test(text)),
+    false,
+  );
+});
+
+test("no category history falls back to the category rule", async () => {
+  const { service } = createService([
+    [],
+    [{ canonical_name: "Kopi Tuku Canonical" }],
+    [],
+    [{ category: "Food" }],
+    [{ id: "import-history-fallback" }],
+    [{ id: "tx-history-fallback" }],
+    [],
+    [],
+  ]);
+
+  const result = await service.handleEmailTransaction(kromQrisRequest());
+
+  assert.equal(result.status, "confirmed");
+  assert.equal(result.transaction?.category, "Food");
 });
 
 function emailRows() {
   return [
     [],
     [{ canonical_name: "Kopi Tuku Canonical" }],
+    [],
     [{ category: "Food" }],
     [{ id: "import-1" }],
     [{ id: "tx-email" }],
@@ -5224,6 +5324,7 @@ test("confirmed email expense writes default pocket_id", async () => {
     [
       [],
       [{ canonical_name: "Kopi Tuku Canonical" }],
+      [],
       [{ category: "Food" }],
       [{ id: "import-1" }],
       [{ id: "tx-email" }],
@@ -5245,18 +5346,35 @@ test("confirmed email expense writes default pocket_id", async () => {
   );
 });
 
-test("confirmed email with unknown category uses Uncategorized", async () => {
+test("email with unknown category stays pending for category review", async () => {
   const { calls, service } = createService(
-    emailRows(),
+    [
+      [],
+      [{ canonical_name: "Kopi Tuku Canonical" }],
+      [],
+      [{ category: "Food" }],
+      [{ id: "import-1" }],
+      [{ id: "tx-pending" }],
+      [{ id: "import-1" }],
+      [],
+    ],
     createResolvedBudgetService("42", "Main Pocket", "Uncategorized"),
   );
 
-  await service.handleEmailTransaction(kromQrisRequest());
+  const result = await service.handleEmailTransaction(kromQrisRequest());
 
-  const insert = calls.find(({ text }) =>
-    /INSERT INTO transactions/.test(text),
+  assert.equal(result.status, "needs_review");
+  assert.equal(result.reason, "category must be selected before confirmation");
+  assert.equal(result.transaction?.status, "pending");
+  assert.equal(result.transaction?.category, "Uncategorized");
+  assert.equal(result.transaction?.pocket_id, "42");
+  assert.equal(
+    calls.some(
+      ({ text }) =>
+        /INSERT INTO transactions/.test(text) && /'confirmed'/.test(text),
+    ),
+    false,
   );
-  assert.ok(insert?.values.includes("Uncategorized"));
 });
 
 test("email expense without resolvable default stays pending for pocket review", async () => {
@@ -5280,6 +5398,7 @@ test("falls back to emailHtml when emailText is not parseable", async () => {
   const { calls, service } = createService([
     [],
     [{ canonical_name: "Kopi Tuku Canonical" }],
+    [],
     [{ category: "Food" }],
     [{ id: "import-html" }],
     [{ id: "tx-email-html" }],
@@ -5314,6 +5433,7 @@ test("directly confirmed email credit-card expense adds cycle usage", async () =
   const { service, transactionCalls } = createService([
     [],
     [{ canonical_name: "Toko Buku" }],
+    [],
     [{ category: "Shopping" }],
     [{ id: "import-credit-card" }],
     [{ id: "tx-credit-card" }],
@@ -5352,6 +5472,7 @@ test("returns needs_review for BCA known template without category", async () =>
   const { calls, service } = createService([
     [],
     [{ canonical_name: "Toko Buku" }],
+    [],
     [],
     [{ id: "import-review" }],
     [{ id: "125" }],
@@ -5395,15 +5516,17 @@ test("returns needs_review for BCA known template without category", async () =>
   assert.ok(
     callbacks.some((callback) => callback?.startsWith("cancel_transaction:")),
   );
-  assert.match(calls[3].text, /INSERT INTO transaction_imports/);
-  assert.match(calls[4].text, /INSERT INTO transactions/);
-  assert.match(calls[6].text, /INSERT INTO email_parse_attempts/);
+  assert.match(calls[4].text, /INSERT INTO transaction_imports/);
+  assert.match(calls[5].text, /INSERT INTO transactions/);
+  assert.match(calls[7].text, /INSERT INTO email_parse_attempts/);
 });
 
 test("returns needs_review for known email when merchant alias is missing", async () => {
   const { calls, service } = createService([
     [],
     [],
+    [],
+    [{ id: "queue-alias-review" }],
     [{ id: "import-alias-review" }],
     [{ id: "126" }],
     [{ id: "import-alias-review" }],
@@ -5448,12 +5571,103 @@ test("returns needs_review for known email when merchant alias is missing", asyn
   );
   assert.equal(result.parsed?.merchant, "SHOPEE.CO.ID");
   assert.match(result.telegram.text, /Merchant: SHOPEE\.CO\.ID/);
-  assert.equal(calls.length, 6);
+  const queueUpdate = calls.find(({ text }) =>
+    /UPDATE merchant_review_queue/.test(text),
+  );
+  const queueInsert = calls.find(({ text }) =>
+    /INSERT INTO merchant_review_queue/.test(text),
+  );
+  assert.ok(queueUpdate);
+  assert.ok(queueInsert);
+  assert.deepEqual(queueUpdate.values, [
+    "SHOPEE.CO.ID",
+    null,
+    result.parsed?.confidence ?? null,
+    "SHOPEE.CO.ID",
+  ]);
   assert.match(calls[1].text, /FROM merchant_aliases/);
-  assert.doesNotMatch(calls[2].text, /FROM category_rules/);
-  assert.match(calls[2].text, /INSERT INTO transaction_imports/);
-  assert.match(calls[3].text, /INSERT INTO transactions/);
-  assert.match(calls[5].text, /INSERT INTO email_parse_attempts/);
+  assert.doesNotMatch(calls[4].text, /FROM category_rules/);
+  assert.match(calls[4].text, /INSERT INTO transaction_imports/);
+  assert.match(calls[5].text, /INSERT INTO transactions/);
+  assert.match(calls[7].text, /INSERT INTO email_parse_attempts/);
+});
+
+test("increments an existing merchant review queue entry without inserting", async () => {
+  const { calls, service } = createService([
+    [],
+    [],
+    [{ id: "queue-1" }],
+    [{ id: "import-alias-review-repeat" }],
+    [{ id: "127" }],
+    [{ id: "import-alias-review-repeat" }],
+    [],
+  ]);
+
+  const result = await service.handleEmailTransaction({
+    telegramUserId: "976684739",
+    userId: 1,
+    source: "email",
+    email: {
+      messageId: "gmail-bca-missing-alias-repeat",
+      from: "card@bca.co.id",
+      subject: "Notifikasi Transaksi",
+      date: "2026-06-25T00:05:42+07:00",
+      emailText:
+        "Notifikasi Transaksi Merchant / ATM SHOPEE.CO.ID Jenis Transaksi E-COMMERCE Sejumlah : Rp243.000,00",
+    },
+  });
+
+  assert.equal(result.status, "needs_review");
+  assert.equal(result.transaction?.status, "pending");
+  assert.equal(
+    calls.some(({ text }) => /UPDATE merchant_review_queue/.test(text)),
+    true,
+  );
+  assert.equal(
+    calls.some(({ text }) => /INSERT INTO merchant_review_queue/.test(text)),
+    false,
+  );
+  assert.equal(
+    calls.some(({ text }) => /INSERT INTO transactions/.test(text)),
+    true,
+  );
+});
+
+test("queue failure still creates pending merchant review", async () => {
+  const { calls, service } = createService([
+    [],
+    [],
+    new Error("queue unavailable"),
+    [{ id: "import-alias-review-queue-failure" }],
+    [{ id: "128" }],
+    [{ id: "import-alias-review-queue-failure" }],
+    [],
+  ]);
+
+  const result = await service.handleEmailTransaction({
+    telegramUserId: "976684739",
+    userId: 1,
+    source: "email",
+    email: {
+      messageId: "gmail-bca-missing-alias-queue-failure",
+      from: "card@bca.co.id",
+      subject: "Notifikasi Transaksi",
+      date: "2026-06-25T00:05:42+07:00",
+      emailText:
+        "Notifikasi Transaksi Merchant / ATM SHOPEE.CO.ID Jenis Transaksi E-COMMERCE Sejumlah : Rp243.000,00",
+    },
+  });
+
+  assert.equal(result.status, "needs_review");
+  assert.equal(result.transaction?.status, "pending");
+  assert.equal(
+    calls.some(({ text }) => /UPDATE merchant_review_queue/.test(text)),
+    true,
+  );
+  assert.equal(
+    calls.some(({ text }) => /INSERT INTO transactions/.test(text)),
+    true,
+  );
 });
 
 test("returns needs_ai for a likely Mandiri transaction with no parser", async () => {
@@ -5674,6 +5888,10 @@ test("returns duplicate for existing Gmail message import", async () => {
   assert.equal(result.transaction, undefined);
   assert.equal(result.aiRequest, undefined);
   assert.deepEqual(templates.calls, []);
+  assert.equal(
+    calls.some(({ text }) => /merchant_review_queue/.test(text)),
+    false,
+  );
   assert.equal(calls.length, 1);
 });
 
@@ -5812,6 +6030,7 @@ test("email confirmed save exposes watchdog-free base message", async () => {
   const { service } = createService([
     [],
     [{ canonical_name: "Kopi Tuku Canonical" }],
+    [],
     [{ category: "Food" }],
     [{ id: "import-1" }],
     [{ id: "tx-email" }],
@@ -6101,6 +6320,7 @@ test("only the winning pending email confirmation activates its template", async
       [confirmedTransaction],
       [{ id: "import-1" }],
       [{ raw_payload: confirmedTransaction.raw_payload }],
+      [],
       [],
       [],
       [],
@@ -6442,6 +6662,221 @@ test("confirmed AI email learns a global alias and user category rule", async ()
   assert.deepEqual(categoryInsert?.values, ["1", "Kopi Tuku", "Food"]);
 });
 
+test("confirmed hard-coded email learns merchant and approves its review", async () => {
+  const hardcodedTransaction = {
+    ...pendingAiTransaction,
+    merchant: "SHOPEE.CO.ID",
+    merchant_normalized: "SHOPEE.CO.ID",
+    category: "Shopping",
+    raw_payload: {
+      parserSource: "hardcoded",
+      email: {
+        binding: { contentHash: "a".repeat(64) },
+      },
+    },
+  };
+  const { calls, service } = createService([
+    [hardcodedTransaction],
+    [{ ...hardcodedTransaction, status: "confirmed" }],
+    [{ id: "import-1" }],
+    [],
+    [],
+    [],
+    [],
+    [],
+  ]);
+  spyOnWatchdog(service);
+
+  const result = await service.confirmTransaction({
+    transactionId: "123",
+    userId: "1",
+  });
+
+  assert.equal(result.status, "confirmed");
+  assert.equal(
+    calls.filter(({ text }) => /INSERT INTO merchant_aliases/.test(text))
+      .length,
+    1,
+  );
+  assert.equal(
+    calls.filter(({ text }) => /INSERT INTO category_rules/.test(text)).length,
+    1,
+  );
+  assert.equal(
+    calls.filter(({ text }) => /UPDATE merchant_review_queue/.test(text))
+      .length,
+    1,
+  );
+});
+
+test("confirmed learned email learns merchant and approves its review", async () => {
+  const learnedTransaction = {
+    ...pendingAiTransaction,
+    merchant: "SHOPEE.CO.ID",
+    merchant_normalized: "SHOPEE.CO.ID",
+    category: "Shopping",
+    raw_payload: {
+      parserSource: "learned",
+      email: { binding: { contentHash: "a".repeat(64) } },
+    },
+  };
+  const { calls, service } = createService([
+    [learnedTransaction],
+    [{ ...learnedTransaction, status: "confirmed" }],
+    [{ id: "import-1" }],
+    [],
+    [],
+    [],
+    [],
+    [],
+  ]);
+  spyOnWatchdog(service);
+
+  const result = await service.confirmTransaction({
+    transactionId: "123",
+    userId: "1",
+  });
+
+  assert.equal(result.status, "confirmed");
+  assert.equal(
+    calls.filter(({ text }) => /INSERT INTO merchant_aliases/.test(text))
+      .length,
+    1,
+  );
+  assert.equal(
+    calls.filter(({ text }) => /INSERT INTO category_rules/.test(text)).length,
+    1,
+  );
+  assert.equal(
+    calls.filter(({ text }) => /UPDATE merchant_review_queue/.test(text))
+      .length,
+    1,
+  );
+});
+
+test("confirmed email does not overwrite global alias", async () => {
+  const existingAliasTransaction = {
+    ...pendingAiTransaction,
+    raw_payload: {
+      parserSource: "hardcoded",
+      email: {
+        binding: { contentHash: "b".repeat(64) },
+      },
+    },
+  };
+  const { calls, service } = createService([
+    [existingAliasTransaction],
+    [{ ...existingAliasTransaction, status: "confirmed" }],
+    [{ id: "import-1" }],
+    [{ id: "alias-1", canonical_name: "Existing Canonical" }],
+    [],
+    [],
+    [],
+  ]);
+  spyOnWatchdog(service);
+
+  await service.confirmTransaction({ transactionId: "123", userId: "1" });
+
+  assert.equal(
+    calls.some(({ text }) => /UPDATE merchant_aliases/.test(text)),
+    false,
+  );
+});
+
+test("does not learn rejected or unbound confirmed email transactions", async () => {
+  const baseTransaction = {
+    ...pendingAiTransaction,
+    raw_payload: {
+      parserSource: "hardcoded",
+      email: {
+        binding: { contentHash: "c".repeat(64) },
+      },
+    },
+  };
+  const cases = [
+    {
+      name: "rejected transaction",
+      action: "cancel" as const,
+      rawPayload: baseTransaction.raw_payload,
+      status: "rejected" as const,
+      expectedStatus: "rejected",
+    },
+    {
+      name: "missing binding",
+      action: "confirm" as const,
+      rawPayload: {
+        parserSource: "hardcoded",
+        email: {},
+      },
+      status: "confirmed" as const,
+      expectedStatus: "confirmed",
+    },
+    {
+      name: "invalid binding",
+      action: "confirm" as const,
+      rawPayload: {
+        parserSource: "hardcoded",
+        email: {
+          binding: { contentHash: "not-a-hash" },
+        },
+      },
+      status: "confirmed" as const,
+      expectedStatus: "confirmed",
+    },
+    {
+      name: "uncategorized transaction",
+      action: "confirm" as const,
+      rawPayload: baseTransaction.raw_payload,
+      status: "confirmed" as const,
+      category: "Uncategorized",
+      transactionType: "income",
+      expectedStatus: "confirmed",
+    },
+  ];
+
+  for (const scenario of cases) {
+    const pending = {
+      ...baseTransaction,
+      ...(scenario.category ? { category: scenario.category } : {}),
+      ...(scenario.transactionType
+        ? { transaction_type: scenario.transactionType }
+        : {}),
+      raw_payload: scenario.rawPayload,
+    };
+    const { calls, service } = createService([
+      [pending],
+      [{ ...pending, status: scenario.status }],
+      [{ id: `import-${scenario.name}` }],
+    ]);
+    spyOnWatchdog(service);
+
+    const result =
+      scenario.action === "cancel"
+        ? await service.cancelTransaction({ transactionId: "123", userId: "1" })
+        : await service.confirmTransaction({
+            transactionId: "123",
+            userId: "1",
+          });
+
+    assert.equal(result.status, scenario.expectedStatus, scenario.name);
+    assert.equal(
+      calls.some(({ text }) => /INSERT INTO merchant_aliases/.test(text)),
+      false,
+      scenario.name,
+    );
+    assert.equal(
+      calls.some(({ text }) => /INSERT INTO category_rules/.test(text)),
+      false,
+      scenario.name,
+    );
+    assert.equal(
+      calls.some(({ text }) => /UPDATE merchant_review_queue/.test(text)),
+      false,
+      scenario.name,
+    );
+  }
+});
+
 test("confirmation succeeds when template activation fails", async () => {
   const templates = createTemplateRepository([], new Error("db unavailable"));
   const { service, transactionEvents } = createService(
@@ -6495,6 +6930,7 @@ test("an already confirmed Save retries only pending template activation", async
       [confirmedWithPendingActivation],
       [{ id: "import-1" }],
       [{ raw_payload: confirmedWithPendingActivation.raw_payload }],
+      [],
       [],
       [],
       [],
@@ -7862,10 +8298,22 @@ test("category confirmation triggers watchdog", async () => {
 test("production category options use active user categories", async () => {
   const dependencies = createCategoryServiceWithCategories([
     { id: "10", name: "Food" },
-    { id: "11", name: "Uncategorized" },
+    { id: "11", name: "Shopping" },
+    { id: "12", name: "Groceries" },
   ]);
+  const pendingShopee = {
+    ...transaction,
+    merchant: "SHOPEE.CO.ID",
+    merchant_normalized: "SHOPEE.CO.ID",
+  };
   const { service } = createService(
-    [[transaction]],
+    [
+      [pendingShopee],
+      [
+        { category: "Shopping", usage_count: 8 },
+        { category: "Groceries", usage_count: 3 },
+      ],
+    ],
     dependencies.budgetService,
     undefined,
     undefined,
@@ -7882,8 +8330,8 @@ test("production category options use active user categories", async () => {
   assert.deepEqual(
     result.replyMarkup?.inline_keyboard
       .flat()
-      .map(({ callback_data }) => callback_data),
-    ["catid:10:101", "catid:11:101"],
+      .map(({ text }) => text),
+    ["Shopping", "Groceries", "Food"],
   );
 });
 

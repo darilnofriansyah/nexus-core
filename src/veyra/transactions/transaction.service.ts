@@ -161,6 +161,16 @@ interface CategoryRuleRow extends QueryResultRow {
   category: string;
 }
 
+interface EmailCategoryHistoryRow extends QueryResultRow {
+  category: string;
+  usage_count: string | number;
+}
+
+type EmailCategoryResolution =
+  | { kind: "resolved"; category: string }
+  | { kind: "ambiguous"; categories: string[] }
+  | { kind: "none" };
+
 interface TelegramUserRow extends QueryResultRow {
   id: string | number;
   telegram_id: string | number | null;
@@ -995,6 +1005,13 @@ export class TransactionService {
     const merchantAlias = await this.findMerchantAliasCanonicalName(merchant);
 
     if (!merchantAlias) {
+      await this.recordMerchantReviewCandidate({
+        merchantName: merchant,
+        suggestedCategory: null,
+        confidence: parsed.confidence ?? null,
+        suggestedMerchantName:
+          this.cleanString(parsed.merchantNormalized ?? undefined) ?? merchant,
+      });
       return this.recordDeterministicEmailReview({
         request: validated,
         provider: parsed.provider,
@@ -1010,19 +1027,22 @@ export class TransactionService {
     }
 
     const merchantNormalized = merchantAlias;
-    const category = await this.resolveEmailCategory({
+    const categoryResolution = await this.resolveEmailCategory({
       userId: validated.userId,
       merchant,
       merchantNormalized,
       templateKey: parsed.templateKey,
     });
 
-    if (!category) {
+    if (categoryResolution.kind !== "resolved") {
       return this.recordDeterministicEmailReview({
         request: validated,
         provider: parsed.provider,
         templateKey: parsed.templateKey,
-        reason: "category could not be resolved",
+        reason:
+          categoryResolution.kind === "ambiguous"
+            ? "category choice is ambiguous"
+            : "category could not be resolved",
         parsed,
         detection,
         merchant,
@@ -1031,6 +1051,7 @@ export class TransactionService {
       });
     }
 
+    const category = categoryResolution.category;
     const rawPayload = this.buildEmailRawPayload(validated, parsed);
     const transactionDate = this.normalizeTransactionDate(
       parsed.transactionDate ?? validated.email.date,
@@ -1054,6 +1075,27 @@ export class TransactionService {
         merchant,
         merchantNormalized,
         category: assignment.category,
+      });
+    }
+
+    if (
+      assignment?.needsCategoryReview ||
+      this.cleanString(assignment?.category)?.toLowerCase() === "uncategorized"
+    ) {
+      return this.recordDeterministicEmailReview({
+        request: validated,
+        provider: parsed.provider,
+        templateKey: parsed.templateKey,
+        reason: "category must be selected before confirmation",
+        parsed,
+        detection,
+        merchant,
+        merchantNormalized,
+        category: "Uncategorized",
+        pocketId:
+          assignment?.status === "resolved" ? assignment.pocketId : null,
+        pocketName:
+          assignment?.status === "resolved" ? assignment.pocketName : null,
       });
     }
 
@@ -3493,6 +3535,8 @@ export class TransactionService {
     merchant: string;
     merchantNormalized: string;
     category: string;
+    pocketId?: string | null;
+    pocketName?: string | null;
   }): Promise<EmailTransactionHandleResponseDto> {
     const rawPayload = this.buildEmailRawPayload(input.request, input.parsed);
     const transactionDate = this.normalizeTransactionDate(
@@ -3537,7 +3581,7 @@ export class TransactionService {
             confidence,
             raw_payload
           )
-          VALUES ($1, $2, $3, $4, $5, $6, NULL, $7, 'email', NULL, 'pending', $8, $9)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'email', NULL, 'pending', $9, $10)
           RETURNING id
         `,
         [
@@ -3547,6 +3591,7 @@ export class TransactionService {
           input.merchant,
           input.merchantNormalized,
           input.category,
+          input.pocketId ?? null,
           transactionDate,
           input.parsed.confidence,
           rawPayload,
@@ -3595,8 +3640,8 @@ export class TransactionService {
         merchant: input.merchant,
         merchantNormalized: input.merchantNormalized,
         category: input.category,
-        pocket_id: null,
-        pocket_name: null,
+        pocket_id: input.pocketId ?? null,
+        pocket_name: input.pocketName ?? null,
         transactionDate,
         source: "email" as const,
         status: "pending" as const,
@@ -4020,12 +4065,60 @@ export class TransactionService {
     };
   }
 
+  private async findEmailCategoryHistory(
+    userId: string,
+    merchantNormalized: string,
+    merchant: string,
+  ): Promise<EmailCategoryHistoryRow[]> {
+    const result = await this.database.query<EmailCategoryHistoryRow>(
+      `
+        SELECT c.name AS category,
+               COUNT(*)::int AS usage_count
+        FROM transactions t
+        JOIN categories c
+          ON c.user_id = t.user_id
+         AND c.is_active = true
+         AND lower(c.name) = lower(t.category)
+        WHERE t.user_id = $1
+          AND t.status = 'confirmed'
+          AND t.transaction_type = 'expense'
+          AND lower(c.name) <> 'uncategorized'
+          AND (
+            lower(COALESCE(NULLIF(t.merchant_normalized, ''), t.merchant)) = lower($2)
+            OR lower(COALESCE(NULLIF(t.merchant_normalized, ''), t.merchant)) = lower($3)
+          )
+        GROUP BY c.id, c.name
+        ORDER BY usage_count DESC, lower(c.name)
+      `,
+      [userId, merchantNormalized, merchant],
+    );
+
+    return result.rows;
+  }
+
   private async resolveEmailCategory(input: {
     userId: string;
     merchant: string;
     merchantNormalized: string;
     templateKey: string;
-  }): Promise<string | null> {
+  }): Promise<EmailCategoryResolution> {
+    const history = await this.findEmailCategoryHistory(
+      input.userId,
+      input.merchantNormalized,
+      input.merchant,
+    );
+
+    if (history.length > 0) {
+      const highest = Number(history[0].usage_count);
+      const winners = history
+        .filter((row) => Number(row.usage_count) === highest)
+        .map((row) => row.category);
+
+      return winners.length === 1
+        ? { kind: "resolved", category: winners[0] }
+        : { kind: "ambiguous", categories: winners };
+    }
+
     const result = await this.database.query<CategoryRuleRow>(
       `
         SELECT category
@@ -4045,16 +4138,23 @@ export class TransactionService {
     const ruleCategory = result.rows[0]?.category;
 
     if (ruleCategory) {
-      return ruleCategory;
+      return { kind: "resolved", category: ruleCategory };
     }
 
     const fallbackCategory = this.emailFallbackCategory(input.templateKey);
 
     if (!fallbackCategory) {
-      return null;
+      return { kind: "none" };
     }
 
-    return this.findExistingBudgetCategory(input.userId, fallbackCategory);
+    const existingCategory = await this.findExistingBudgetCategory(
+      input.userId,
+      fallbackCategory,
+    );
+
+    return existingCategory
+      ? { kind: "resolved", category: existingCategory }
+      : { kind: "none" };
   }
 
   private emailFallbackCategory(templateKey: string): string | null {
@@ -4834,16 +4934,36 @@ export class TransactionService {
       };
     }
 
-    const categoryOptions =
-      callbackMode === PRODUCTION_CALLBACK_MODE && transactionId
-        ? (await this.requireCategoryService().listActive(userId)).map(
-            (category) => ({
-              categoryId: category.id,
-              label: category.name,
-              category: category.name,
-            }),
+    let categoryOptions: CategoryOption[] = this.defaultCategoryOptions();
+
+    if (callbackMode === PRODUCTION_CALLBACK_MODE && transactionId) {
+      const history = transaction
+        ? await this.findEmailCategoryHistory(
+            userId,
+            transaction.merchant_normalized ?? transaction.merchant ?? "",
+            transaction.merchant ?? transaction.merchant_normalized ?? "",
           )
-        : this.defaultCategoryOptions();
+        : [];
+      const historyRank = new Map(
+        history.map((row, index) => [row.category.toLowerCase(), index]),
+      );
+      const activeCategories = await this.requireCategoryService().listActive(
+        userId,
+      );
+      activeCategories.sort((left, right) => {
+        const leftRank = historyRank.get(left.name.toLowerCase());
+        const rightRank = historyRank.get(right.name.toLowerCase());
+        if (leftRank === undefined && rightRank === undefined) return 0;
+        if (leftRank === undefined) return 1;
+        if (rightRank === undefined) return -1;
+        return leftRank - rightRank;
+      });
+      categoryOptions = activeCategories.map((category) => ({
+        categoryId: category.id,
+        label: category.name,
+        category: category.name,
+      }));
+    }
     const source = transaction ?? pendingTransaction;
 
     return {
@@ -6468,6 +6588,63 @@ export class TransactionService {
     );
   }
 
+  private async recordMerchantReviewCandidate(input: {
+    merchantName: string;
+    suggestedCategory: string | null;
+    confidence: number | null;
+    suggestedMerchantName: string;
+  }): Promise<void> {
+    try {
+      const updated = await this.database.query<{ id: string | number }>(
+        `
+          UPDATE merchant_review_queue
+          SET occurrence_count = COALESCE(occurrence_count, 0) + 1,
+              suggested_category = COALESCE($2, suggested_category),
+              confidence = COALESCE($3, confidence),
+              suggested_merchant_name = COALESCE($4, suggested_merchant_name)
+          WHERE lower(merchant_name) = lower($1)
+          RETURNING id
+        `,
+        [
+          input.merchantName,
+          input.suggestedCategory,
+          input.confidence,
+          input.suggestedMerchantName,
+        ],
+      );
+
+      if (updated.rows[0]) return;
+
+      await this.database.query(
+        `
+          INSERT INTO merchant_review_queue (
+            merchant_name,
+            suggested_category,
+            confidence,
+            suggested_merchant_name
+          )
+          VALUES ($1, $2, $3, $4)
+          ON CONFLICT (merchant_name) DO UPDATE SET
+            occurrence_count = COALESCE(merchant_review_queue.occurrence_count, 0) + 1,
+            suggested_category = COALESCE(EXCLUDED.suggested_category, merchant_review_queue.suggested_category),
+            confidence = COALESCE(EXCLUDED.confidence, merchant_review_queue.confidence),
+            suggested_merchant_name = COALESCE(EXCLUDED.suggested_merchant_name, merchant_review_queue.suggested_merchant_name)
+        `,
+        [
+          input.merchantName,
+          input.suggestedCategory,
+          input.confidence,
+          input.suggestedMerchantName,
+        ],
+      );
+    } catch (error) {
+      this.logger.error(
+        `Failed to queue merchant review ${input.merchantName}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+    }
+  }
+
   private async updateEmailImportStatus(
     transaction: TransactionRow,
     status: "pending" | "confirmed" | "rejected",
@@ -6492,14 +6669,17 @@ export class TransactionService {
     transaction: TransactionRow,
   ): Promise<void> {
     const rawPayload = this.readRecord(transaction.raw_payload);
+    const parserSource = this.cleanString(rawPayload.parserSource);
 
     if (
       transaction.source !== "email" ||
-      rawPayload.parserSource !== "ai" ||
+      !parserSource ||
+      !["hardcoded", "learned", "ai"].includes(parserSource) ||
       !this.hasStoredEmailContentBinding(rawPayload) ||
       !transaction.merchant ||
       !transaction.merchant_normalized ||
-      !transaction.category
+      !transaction.category ||
+      transaction.category.toLowerCase() === "uncategorized"
     ) {
       return;
     }
@@ -6512,6 +6692,11 @@ export class TransactionService {
       await this.upsertCategoryRule({
         userId: String(transaction.user_id),
         merchantPattern: transaction.merchant_normalized,
+        category: transaction.category,
+      });
+      await this.approveMerchantReviewCandidate({
+        merchantName: transaction.merchant,
+        canonicalName: transaction.merchant_normalized,
         category: transaction.category,
       });
     } catch (error) {
@@ -6550,20 +6735,9 @@ export class TransactionService {
         `
           INSERT INTO merchant_aliases (alias_name, canonical_name)
           VALUES ($1, $2)
+          ON CONFLICT (alias_name) DO NOTHING
         `,
         [aliasName, canonicalName],
-      );
-      return;
-    }
-
-    if (row.canonical_name !== canonicalName) {
-      await this.database.query(
-        `
-          UPDATE merchant_aliases
-          SET canonical_name = $1
-          WHERE id = $2
-        `,
-        [canonicalName, String(row.id)],
       );
     }
   }
@@ -6606,6 +6780,24 @@ export class TransactionService {
         [input.category, String(row.id)],
       );
     }
+  }
+
+  private async approveMerchantReviewCandidate(input: {
+    merchantName: string;
+    canonicalName: string;
+    category: string;
+  }): Promise<void> {
+    await this.database.query(
+      `
+        UPDATE merchant_review_queue
+        SET status = 'approved',
+            reviewed_category = $2,
+            reviewed_at = now(),
+            suggested_merchant_name = COALESCE(suggested_merchant_name, $3)
+        WHERE lower(merchant_name) = lower($1)
+      `,
+      [input.merchantName, input.category, input.canonicalName],
+    );
   }
 
   private async transitionPendingEmailTransaction(input: {

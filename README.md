@@ -1577,7 +1577,18 @@ notification titles. Indonesian cancellation markers such as `PEMBATALAN` and
 `dibatalkan` produce `transactionType = "reversal"`; the n8n HTTP Request
 payload does not change.
 
-Confirmed saves insert into `transactions` with `source = "email"` and `status = "confirmed"` only when the parser returns a valid transaction, amount is positive, merchant is known or an allowed fallback, and category resolves from `category_rules` or an allowed existing fallback budget category. A valid deterministic parse that still needs sender-authentication, merchant, alias, or category review creates one pending transaction and returns the normal confirmation actions. Expense reviews with an unresolved merchant or category must be corrected before Save; income retains its existing optional merchant/category behavior. Redelivery, including the loser of a concurrent import race, resumes the same pending transaction instead of escalating it to AI.
+Confirmed saves insert into `transactions` with `source = "email"` and `status = "confirmed"` only when the parser returns a valid transaction, amount is positive, merchant is known or an allowed fallback, and category resolves from the user's confirmed category history, `category_rules`, or an allowed existing fallback budget category. A unique highest category-history count auto-resolves; tied highest counts return `needs_review` with `reason = "category choice is ambiguous"`. A valid deterministic parse that still needs sender-authentication, merchant, alias, or category review creates one pending transaction and returns the normal confirmation actions. Expense reviews with an unresolved merchant or category must be corrected before Save; income retains its existing optional merchant/category behavior. Redelivery, including the loser of a concurrent import race, resumes the same pending transaction instead of escalating it to AI.
+
+Unknown deterministic merchants are added to `merchant_review_queue` and stay
+pending. After a user selects a category and confirms, Core learns the global
+merchant alias and the user's category preference. Later emails use the user's
+confirmed category history; a unique highest count auto-resolves, while tied
+counts return `needs_review` with `reason = "category choice is ambiguous"`.
+
+An email expense whose category assignment returns `needsCategoryReview` or
+`Uncategorized` never auto-saves. Core returns a pending transaction with
+`reason = "category must be selected before confirmation"` and n8n sends the
+existing category-selection buttons.
 
 Initial Gmail HTTP Request body:
 
@@ -1655,7 +1666,7 @@ Possible statuses are `confirmed`, `needs_review`, `needs_ai`, `duplicate`, `ign
 
 `needs_ai` is the internal rollback handoff when neither deterministic path produced a usable result and no AI service is injected. In the normal application module, Core sends the already validated Gmail request to its AI service and feeds the structured result through the same identity-bound review validator used by `resolve-review`. A valid candidate returns `needs_review`; an inference failure returns `needs_review` / `ai_failed` without inserting a transaction or template.
 
-This endpoint can replace deterministic email parser Code nodes, the high-confidence direct insert branch, and the initial n8n AI round trip. Gmail triggers, email fetching/refetching, Telegram sends, retries, callback routing, and correction collection remain in n8n. The existing correction flow may continue calling AI in n8n until it receives its own migration slice.
+This endpoint can replace deterministic email parser Code nodes, the high-confidence direct insert branch, and the initial n8n AI round trip. Gmail triggers, email fetching/refetching, the Core HTTP Request payload, Telegram sends, retries, callback routing, and correction collection remain unchanged in n8n. Any existing n8n queue-upsert side effect should remain until a separately approved production workflow change removes it. The existing correction flow may continue calling AI in n8n until it receives its own migration slice.
 
 ### `POST /api/veyra/transactions/email/source-reference`
 
