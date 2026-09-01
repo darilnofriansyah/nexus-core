@@ -1057,6 +1057,27 @@ export class TransactionService {
       });
     }
 
+    if (
+      assignment?.needsCategoryReview ||
+      this.cleanString(assignment?.category)?.toLowerCase() === "uncategorized"
+    ) {
+      return this.recordDeterministicEmailReview({
+        request: validated,
+        provider: parsed.provider,
+        templateKey: parsed.templateKey,
+        reason: "category must be selected before confirmation",
+        parsed,
+        detection,
+        merchant,
+        merchantNormalized,
+        category: "Uncategorized",
+        pocketId:
+          assignment?.status === "resolved" ? assignment.pocketId : null,
+        pocketName:
+          assignment?.status === "resolved" ? assignment.pocketName : null,
+      });
+    }
+
     const transaction = await this.saveConfirmedEmailTransaction({
       request: validated,
       parsed,
@@ -3493,6 +3514,8 @@ export class TransactionService {
     merchant: string;
     merchantNormalized: string;
     category: string;
+    pocketId?: string | null;
+    pocketName?: string | null;
   }): Promise<EmailTransactionHandleResponseDto> {
     const rawPayload = this.buildEmailRawPayload(input.request, input.parsed);
     const transactionDate = this.normalizeTransactionDate(
@@ -3537,7 +3560,7 @@ export class TransactionService {
             confidence,
             raw_payload
           )
-          VALUES ($1, $2, $3, $4, $5, $6, NULL, $7, 'email', NULL, 'pending', $8, $9)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'email', NULL, 'pending', $9, $10)
           RETURNING id
         `,
         [
@@ -3547,6 +3570,7 @@ export class TransactionService {
           input.merchant,
           input.merchantNormalized,
           input.category,
+          input.pocketId ?? null,
           transactionDate,
           input.parsed.confidence,
           rawPayload,
@@ -3595,8 +3619,8 @@ export class TransactionService {
         merchant: input.merchant,
         merchantNormalized: input.merchantNormalized,
         category: input.category,
-        pocket_id: null,
-        pocket_name: null,
+        pocket_id: input.pocketId ?? null,
+        pocket_name: input.pocketName ?? null,
         transactionDate,
         source: "email" as const,
         status: "pending" as const,

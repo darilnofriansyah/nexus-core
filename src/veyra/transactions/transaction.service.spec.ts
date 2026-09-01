@@ -5245,18 +5245,34 @@ test("confirmed email expense writes default pocket_id", async () => {
   );
 });
 
-test("confirmed email with unknown category uses Uncategorized", async () => {
+test("email with unknown category stays pending for category review", async () => {
   const { calls, service } = createService(
-    emailRows(),
+    [
+      [],
+      [{ canonical_name: "Kopi Tuku Canonical" }],
+      [{ category: "Food" }],
+      [{ id: "import-1" }],
+      [{ id: "tx-pending" }],
+      [{ id: "import-1" }],
+      [],
+    ],
     createResolvedBudgetService("42", "Main Pocket", "Uncategorized"),
   );
 
-  await service.handleEmailTransaction(kromQrisRequest());
+  const result = await service.handleEmailTransaction(kromQrisRequest());
 
-  const insert = calls.find(({ text }) =>
-    /INSERT INTO transactions/.test(text),
+  assert.equal(result.status, "needs_review");
+  assert.equal(result.reason, "category must be selected before confirmation");
+  assert.equal(result.transaction?.status, "pending");
+  assert.equal(result.transaction?.category, "Uncategorized");
+  assert.equal(result.transaction?.pocket_id, "42");
+  assert.equal(
+    calls.some(
+      ({ text }) =>
+        /INSERT INTO transactions/.test(text) && /'confirmed'/.test(text),
+    ),
+    false,
   );
-  assert.ok(insert?.values.includes("Uncategorized"));
 });
 
 test("email expense without resolvable default stays pending for pocket review", async () => {
