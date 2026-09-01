@@ -6580,14 +6580,17 @@ export class TransactionService {
     transaction: TransactionRow,
   ): Promise<void> {
     const rawPayload = this.readRecord(transaction.raw_payload);
+    const parserSource = this.cleanString(rawPayload.parserSource);
 
     if (
       transaction.source !== "email" ||
-      rawPayload.parserSource !== "ai" ||
+      !parserSource ||
+      !["hardcoded", "learned", "ai"].includes(parserSource) ||
       !this.hasStoredEmailContentBinding(rawPayload) ||
       !transaction.merchant ||
       !transaction.merchant_normalized ||
-      !transaction.category
+      !transaction.category ||
+      transaction.category.toLowerCase() === "uncategorized"
     ) {
       return;
     }
@@ -6600,6 +6603,11 @@ export class TransactionService {
       await this.upsertCategoryRule({
         userId: String(transaction.user_id),
         merchantPattern: transaction.merchant_normalized,
+        category: transaction.category,
+      });
+      await this.approveMerchantReviewCandidate({
+        merchantName: transaction.merchant,
+        canonicalName: transaction.merchant_normalized,
         category: transaction.category,
       });
     } catch (error) {
@@ -6638,20 +6646,9 @@ export class TransactionService {
         `
           INSERT INTO merchant_aliases (alias_name, canonical_name)
           VALUES ($1, $2)
+          ON CONFLICT (alias_name) DO NOTHING
         `,
         [aliasName, canonicalName],
-      );
-      return;
-    }
-
-    if (row.canonical_name !== canonicalName) {
-      await this.database.query(
-        `
-          UPDATE merchant_aliases
-          SET canonical_name = $1
-          WHERE id = $2
-        `,
-        [canonicalName, String(row.id)],
       );
     }
   }
@@ -6694,6 +6691,24 @@ export class TransactionService {
         [input.category, String(row.id)],
       );
     }
+  }
+
+  private async approveMerchantReviewCandidate(input: {
+    merchantName: string;
+    canonicalName: string;
+    category: string;
+  }): Promise<void> {
+    await this.database.query(
+      `
+        UPDATE merchant_review_queue
+        SET status = 'approved',
+            reviewed_category = $2,
+            reviewed_at = now(),
+            suggested_merchant_name = COALESCE(suggested_merchant_name, $3)
+        WHERE lower(merchant_name) = lower($1)
+      `,
+      [input.merchantName, input.category, input.canonicalName],
+    );
   }
 
   private async transitionPendingEmailTransaction(input: {

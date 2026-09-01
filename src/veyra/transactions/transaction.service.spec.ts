@@ -6219,6 +6219,7 @@ test("only the winning pending email confirmation activates its template", async
       [],
       [],
       [],
+      [],
       [pendingAiTransaction],
       [],
       [confirmedTransaction],
@@ -6555,6 +6556,176 @@ test("confirmed AI email learns a global alias and user category rule", async ()
   assert.deepEqual(categoryInsert?.values, ["1", "Kopi Tuku", "Food"]);
 });
 
+test("confirmed hard-coded email learns merchant and approves its review", async () => {
+  const hardcodedTransaction = {
+    ...pendingAiTransaction,
+    merchant: "SHOPEE.CO.ID",
+    merchant_normalized: "SHOPEE.CO.ID",
+    category: "Shopping",
+    raw_payload: {
+      parserSource: "hardcoded",
+      email: {
+        binding: { contentHash: "a".repeat(64) },
+      },
+    },
+  };
+  const { calls, service } = createService([
+    [hardcodedTransaction],
+    [{ ...hardcodedTransaction, status: "confirmed" }],
+    [{ id: "import-1" }],
+    [],
+    [],
+    [],
+    [],
+    [],
+  ]);
+  spyOnWatchdog(service);
+
+  const result = await service.confirmTransaction({
+    transactionId: "123",
+    userId: "1",
+  });
+
+  assert.equal(result.status, "confirmed");
+  assert.equal(
+    calls.filter(({ text }) => /INSERT INTO merchant_aliases/.test(text))
+      .length,
+    1,
+  );
+  assert.equal(
+    calls.filter(({ text }) => /INSERT INTO category_rules/.test(text)).length,
+    1,
+  );
+  assert.equal(
+    calls.filter(({ text }) => /UPDATE merchant_review_queue/.test(text))
+      .length,
+    1,
+  );
+});
+
+test("confirmed email does not overwrite global alias", async () => {
+  const existingAliasTransaction = {
+    ...pendingAiTransaction,
+    raw_payload: {
+      parserSource: "hardcoded",
+      email: {
+        binding: { contentHash: "b".repeat(64) },
+      },
+    },
+  };
+  const { calls, service } = createService([
+    [existingAliasTransaction],
+    [{ ...existingAliasTransaction, status: "confirmed" }],
+    [{ id: "import-1" }],
+    [{ id: "alias-1", canonical_name: "Existing Canonical" }],
+    [],
+    [],
+    [],
+  ]);
+  spyOnWatchdog(service);
+
+  await service.confirmTransaction({ transactionId: "123", userId: "1" });
+
+  assert.equal(
+    calls.some(({ text }) => /UPDATE merchant_aliases/.test(text)),
+    false,
+  );
+});
+
+test("does not learn rejected or unbound confirmed email transactions", async () => {
+  const baseTransaction = {
+    ...pendingAiTransaction,
+    raw_payload: {
+      parserSource: "hardcoded",
+      email: {
+        binding: { contentHash: "c".repeat(64) },
+      },
+    },
+  };
+  const cases = [
+    {
+      name: "rejected transaction",
+      action: "cancel" as const,
+      rawPayload: baseTransaction.raw_payload,
+      status: "rejected" as const,
+      expectedStatus: "rejected",
+    },
+    {
+      name: "missing binding",
+      action: "confirm" as const,
+      rawPayload: {
+        parserSource: "hardcoded",
+        email: {},
+      },
+      status: "confirmed" as const,
+      expectedStatus: "confirmed",
+    },
+    {
+      name: "invalid binding",
+      action: "confirm" as const,
+      rawPayload: {
+        parserSource: "hardcoded",
+        email: {
+          binding: { contentHash: "not-a-hash" },
+        },
+      },
+      status: "confirmed" as const,
+      expectedStatus: "confirmed",
+    },
+    {
+      name: "uncategorized transaction",
+      action: "confirm" as const,
+      rawPayload: baseTransaction.raw_payload,
+      status: "confirmed" as const,
+      category: "Uncategorized",
+      transactionType: "income",
+      expectedStatus: "confirmed",
+    },
+  ];
+
+  for (const scenario of cases) {
+    const pending = {
+      ...baseTransaction,
+      ...(scenario.category ? { category: scenario.category } : {}),
+      ...(scenario.transactionType
+        ? { transaction_type: scenario.transactionType }
+        : {}),
+      raw_payload: scenario.rawPayload,
+    };
+    const { calls, service } = createService([
+      [pending],
+      [{ ...pending, status: scenario.status }],
+      [{ id: `import-${scenario.name}` }],
+    ]);
+    spyOnWatchdog(service);
+
+    const result =
+      scenario.action === "cancel"
+        ? await service.cancelTransaction({ transactionId: "123", userId: "1" })
+        : await service.confirmTransaction({
+            transactionId: "123",
+            userId: "1",
+          });
+
+    assert.equal(result.status, scenario.expectedStatus, scenario.name);
+    assert.equal(
+      calls.some(({ text }) => /INSERT INTO merchant_aliases/.test(text)),
+      false,
+      scenario.name,
+    );
+    assert.equal(
+      calls.some(({ text }) => /INSERT INTO category_rules/.test(text)),
+      false,
+      scenario.name,
+    );
+    assert.equal(
+      calls.some(({ text }) => /UPDATE merchant_review_queue/.test(text)),
+      false,
+      scenario.name,
+    );
+  }
+});
+
 test("confirmation succeeds when template activation fails", async () => {
   const templates = createTemplateRepository([], new Error("db unavailable"));
   const { service, transactionEvents } = createService(
@@ -6608,6 +6779,7 @@ test("an already confirmed Save retries only pending template activation", async
       [confirmedWithPendingActivation],
       [{ id: "import-1" }],
       [{ raw_payload: confirmedWithPendingActivation.raw_payload }],
+      [],
       [],
       [],
       [],
