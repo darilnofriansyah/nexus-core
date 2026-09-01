@@ -5420,6 +5420,8 @@ test("returns needs_review for known email when merchant alias is missing", asyn
   const { calls, service } = createService([
     [],
     [],
+    [],
+    [{ id: "queue-alias-review" }],
     [{ id: "import-alias-review" }],
     [{ id: "126" }],
     [{ id: "import-alias-review" }],
@@ -5464,12 +5466,103 @@ test("returns needs_review for known email when merchant alias is missing", asyn
   );
   assert.equal(result.parsed?.merchant, "SHOPEE.CO.ID");
   assert.match(result.telegram.text, /Merchant: SHOPEE\.CO\.ID/);
-  assert.equal(calls.length, 6);
+  const queueUpdate = calls.find(({ text }) =>
+    /UPDATE merchant_review_queue/.test(text),
+  );
+  const queueInsert = calls.find(({ text }) =>
+    /INSERT INTO merchant_review_queue/.test(text),
+  );
+  assert.ok(queueUpdate);
+  assert.ok(queueInsert);
+  assert.deepEqual(queueUpdate.values, [
+    "SHOPEE.CO.ID",
+    null,
+    result.parsed?.confidence ?? null,
+    "SHOPEE.CO.ID",
+  ]);
   assert.match(calls[1].text, /FROM merchant_aliases/);
-  assert.doesNotMatch(calls[2].text, /FROM category_rules/);
-  assert.match(calls[2].text, /INSERT INTO transaction_imports/);
-  assert.match(calls[3].text, /INSERT INTO transactions/);
-  assert.match(calls[5].text, /INSERT INTO email_parse_attempts/);
+  assert.doesNotMatch(calls[4].text, /FROM category_rules/);
+  assert.match(calls[4].text, /INSERT INTO transaction_imports/);
+  assert.match(calls[5].text, /INSERT INTO transactions/);
+  assert.match(calls[7].text, /INSERT INTO email_parse_attempts/);
+});
+
+test("increments an existing merchant review queue entry without inserting", async () => {
+  const { calls, service } = createService([
+    [],
+    [],
+    [{ id: "queue-1" }],
+    [{ id: "import-alias-review-repeat" }],
+    [{ id: "127" }],
+    [{ id: "import-alias-review-repeat" }],
+    [],
+  ]);
+
+  const result = await service.handleEmailTransaction({
+    telegramUserId: "976684739",
+    userId: 1,
+    source: "email",
+    email: {
+      messageId: "gmail-bca-missing-alias-repeat",
+      from: "card@bca.co.id",
+      subject: "Notifikasi Transaksi",
+      date: "2026-06-25T00:05:42+07:00",
+      emailText:
+        "Notifikasi Transaksi Merchant / ATM SHOPEE.CO.ID Jenis Transaksi E-COMMERCE Sejumlah : Rp243.000,00",
+    },
+  });
+
+  assert.equal(result.status, "needs_review");
+  assert.equal(result.transaction?.status, "pending");
+  assert.equal(
+    calls.some(({ text }) => /UPDATE merchant_review_queue/.test(text)),
+    true,
+  );
+  assert.equal(
+    calls.some(({ text }) => /INSERT INTO merchant_review_queue/.test(text)),
+    false,
+  );
+  assert.equal(
+    calls.some(({ text }) => /INSERT INTO transactions/.test(text)),
+    true,
+  );
+});
+
+test("queue failure still creates pending merchant review", async () => {
+  const { calls, service } = createService([
+    [],
+    [],
+    new Error("queue unavailable"),
+    [{ id: "import-alias-review-queue-failure" }],
+    [{ id: "128" }],
+    [{ id: "import-alias-review-queue-failure" }],
+    [],
+  ]);
+
+  const result = await service.handleEmailTransaction({
+    telegramUserId: "976684739",
+    userId: 1,
+    source: "email",
+    email: {
+      messageId: "gmail-bca-missing-alias-queue-failure",
+      from: "card@bca.co.id",
+      subject: "Notifikasi Transaksi",
+      date: "2026-06-25T00:05:42+07:00",
+      emailText:
+        "Notifikasi Transaksi Merchant / ATM SHOPEE.CO.ID Jenis Transaksi E-COMMERCE Sejumlah : Rp243.000,00",
+    },
+  });
+
+  assert.equal(result.status, "needs_review");
+  assert.equal(result.transaction?.status, "pending");
+  assert.equal(
+    calls.some(({ text }) => /UPDATE merchant_review_queue/.test(text)),
+    true,
+  );
+  assert.equal(
+    calls.some(({ text }) => /INSERT INTO transactions/.test(text)),
+    true,
+  );
 });
 
 test("returns needs_ai for a likely Mandiri transaction with no parser", async () => {
@@ -5690,6 +5783,10 @@ test("returns duplicate for existing Gmail message import", async () => {
   assert.equal(result.transaction, undefined);
   assert.equal(result.aiRequest, undefined);
   assert.deepEqual(templates.calls, []);
+  assert.equal(
+    calls.some(({ text }) => /merchant_review_queue/.test(text)),
+    false,
+  );
   assert.equal(calls.length, 1);
 });
 

@@ -995,6 +995,13 @@ export class TransactionService {
     const merchantAlias = await this.findMerchantAliasCanonicalName(merchant);
 
     if (!merchantAlias) {
+      await this.recordMerchantReviewCandidate({
+        merchantName: merchant,
+        suggestedCategory: null,
+        confidence: parsed.confidence ?? null,
+        suggestedMerchantName:
+          this.cleanString(parsed.merchantNormalized ?? undefined) ?? merchant,
+      });
       return this.recordDeterministicEmailReview({
         request: validated,
         provider: parsed.provider,
@@ -6490,6 +6497,63 @@ export class TransactionService {
       String(transaction.user_id),
       query,
     );
+  }
+
+  private async recordMerchantReviewCandidate(input: {
+    merchantName: string;
+    suggestedCategory: string | null;
+    confidence: number | null;
+    suggestedMerchantName: string;
+  }): Promise<void> {
+    try {
+      const updated = await this.database.query<{ id: string | number }>(
+        `
+          UPDATE merchant_review_queue
+          SET occurrence_count = COALESCE(occurrence_count, 0) + 1,
+              suggested_category = COALESCE($2, suggested_category),
+              confidence = COALESCE($3, confidence),
+              suggested_merchant_name = COALESCE($4, suggested_merchant_name)
+          WHERE lower(merchant_name) = lower($1)
+          RETURNING id
+        `,
+        [
+          input.merchantName,
+          input.suggestedCategory,
+          input.confidence,
+          input.suggestedMerchantName,
+        ],
+      );
+
+      if (updated.rows[0]) return;
+
+      await this.database.query(
+        `
+          INSERT INTO merchant_review_queue (
+            merchant_name,
+            suggested_category,
+            confidence,
+            suggested_merchant_name
+          )
+          VALUES ($1, $2, $3, $4)
+          ON CONFLICT (merchant_name) DO UPDATE SET
+            occurrence_count = COALESCE(merchant_review_queue.occurrence_count, 0) + 1,
+            suggested_category = COALESCE(EXCLUDED.suggested_category, merchant_review_queue.suggested_category),
+            confidence = COALESCE(EXCLUDED.confidence, merchant_review_queue.confidence),
+            suggested_merchant_name = COALESCE(EXCLUDED.suggested_merchant_name, merchant_review_queue.suggested_merchant_name)
+        `,
+        [
+          input.merchantName,
+          input.suggestedCategory,
+          input.confidence,
+          input.suggestedMerchantName,
+        ],
+      );
+    } catch (error) {
+      this.logger.error(
+        `Failed to queue merchant review ${input.merchantName}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+    }
   }
 
   private async updateEmailImportStatus(
