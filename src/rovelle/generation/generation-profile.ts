@@ -14,8 +14,8 @@ export const GENERATION_PROFILES = Object.freeze({
   DRAFT: Object.freeze({
     width: 1280,
     height: 720,
-    usdPerSecond: "0.0275",
-    pricingSource: "RUNWARE_VIDU_2_0_720P_4S_2026_09_06",
+    usdPerSecond: "0.055",
+    pricingSource: "RUNWARE_VIDU_2_0_720P_4S_OBSERVED_2026_09_07",
   }),
 } satisfies Readonly<Record<GenerationProfile, GenerationProfileSpec>>);
 

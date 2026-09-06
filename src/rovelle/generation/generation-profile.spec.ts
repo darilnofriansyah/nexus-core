@@ -31,13 +31,13 @@ describe("Rovelle video generation profiles", () => {
     assert.deepEqual(getGenerationProfile("DRAFT"), {
       width: 1280,
       height: 720,
-      usdPerSecond: "0.0275",
-      pricingSource: "RUNWARE_VIDU_2_0_720P_4S_2026_09_06",
+      usdPerSecond: "0.055",
+      pricingSource: "RUNWARE_VIDU_2_0_720P_4S_OBSERVED_2026_09_07",
     });
   });
 
   test("estimates the Vidu 2 four-second draft without binary rounding", () => {
-    assert.equal(estimateGenerationCostUsd("DRAFT", 4), "0.110000");
+    assert.equal(estimateGenerationCostUsd("DRAFT", 4), "0.220000");
   });
 
   test("keeps profile specifications frozen at runtime", () => {
@@ -120,9 +120,9 @@ describe("Rovelle video generation profiles", () => {
       request: { width: 1280 },
       status: RovelleGenerationStatus.SUBMITTED,
       outputAssetId: "123e4567-e89b-42d3-a456-426614174003",
-      estimatedCostUsd: new Prisma.Decimal("0.110000"),
+      estimatedCostUsd: new Prisma.Decimal("0.220000"),
       currency: "USD",
-      pricingSource: "RUNWARE_VIDU_2_0_720P_4S_2026_09_06",
+      pricingSource: "RUNWARE_VIDU_2_0_720P_4S_OBSERVED_2026_09_07",
       actualCostUsd: new Prisma.Decimal("1.245"),
       errorCode: null,
       errorMessage: null,
@@ -145,7 +145,7 @@ describe("Rovelle video generation profiles", () => {
       providerTaskId: generation.providerTaskId,
       status: generation.status,
       outputAssetId: generation.outputAssetId,
-      estimatedCostUsd: "0.110000",
+      estimatedCostUsd: "0.220000",
       pricingSource: generation.pricingSource,
       actualCostUsd: "1.245000",
       errorCode: null,

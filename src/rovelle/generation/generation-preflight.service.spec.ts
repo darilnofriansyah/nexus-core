@@ -196,8 +196,8 @@ test("preflight returns only prepared metadata and a prompt without mutating sta
   assert.deepEqual(prepared.budget, {
     budgetUsd: null,
     committedUsd: "0.000000",
-    requestedEstimateUsd: "0.110000",
-    projectedUsd: "0.110000",
+    requestedEstimateUsd: "0.220000",
+    projectedUsd: "0.220000",
     withinBudget: true,
   });
   assert.equal(prisma.calls, 1);
@@ -227,30 +227,30 @@ test("preflight exposes Decimal budget visibility after profile and duration cos
       expected: {
         budgetUsd: null,
         committedUsd: "8.000000",
-        requestedEstimateUsd: "0.110000",
-        projectedUsd: "8.110000",
+        requestedEstimateUsd: "0.220000",
+        projectedUsd: "8.220000",
         withinBudget: true,
       },
     },
     {
-      budgetUsd: "8.110000",
+      budgetUsd: "8.220000",
       committedUsd: "8.000000",
       expected: {
-        budgetUsd: "8.110000",
+        budgetUsd: "8.220000",
         committedUsd: "8.000000",
-        requestedEstimateUsd: "0.110000",
-        projectedUsd: "8.110000",
+        requestedEstimateUsd: "0.220000",
+        projectedUsd: "8.220000",
         withinBudget: true,
       },
     },
     {
-      budgetUsd: "8.109999",
+      budgetUsd: "8.219999",
       committedUsd: "8.000000",
       expected: {
-        budgetUsd: "8.109999",
+        budgetUsd: "8.219999",
         committedUsd: "8.000000",
-        requestedEstimateUsd: "0.110000",
-        projectedUsd: "8.110000",
+        requestedEstimateUsd: "0.220000",
+        projectedUsd: "8.220000",
         withinBudget: false,
       },
     },

@@ -9,6 +9,7 @@ export type RunwareWebhookEvent =
       taskId: string;
       providerOutputId: string | null;
       costUsd: string | null;
+      videoUrl: string | null;
     }
   | {
       kind: "failure";

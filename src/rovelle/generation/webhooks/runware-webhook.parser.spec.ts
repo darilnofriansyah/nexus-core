@@ -1,7 +1,6 @@
 import * as assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { BadRequestException } from "@nestjs/common";
-import type { RunwareWebhookEvent } from "./runware-webhook.dto";
 import { parseRunwareWebhook } from "./runware-webhook.parser";
 
 const TASK_ID = "123e4567-e89b-42d3-a456-426614174000";
@@ -12,28 +11,41 @@ function assertBadRequest(action: () => unknown): void {
 }
 
 describe("Runware webhook parser", () => {
-  test("normalizes a direct successful video callback", () => {
+  test("normalizes a direct successful video callback with its provider media URL", () => {
     const event = parseRunwareWebhook({
       taskType: "videoInference",
       taskUUID: TASK_ID,
       status: "success",
       videoUUID: VIDEO_ID,
-      videoURL: "https://provider.invalid/video.mp4",
+      videoURL: "https://vm.runware.ai/video/example.mp4",
       documentationURL: "https://provider.invalid/docs",
       providerURL: "https://attacker.invalid/redirect",
       cost: 1.25,
     });
 
-    const expected: RunwareWebhookEvent = {
+    const expected = {
       kind: "success",
       taskId: TASK_ID,
       providerOutputId: VIDEO_ID,
       costUsd: "1.25",
+      videoUrl: "https://vm.runware.ai/video/example.mp4",
     };
     assert.deepEqual(event, expected);
-    assert.equal("videoURL" in event, false);
+    assert.equal("videoUrl" in event, true);
     assert.equal("documentationURL" in event, false);
     assert.equal("providerURL" in event, false);
+  });
+
+  test("rejects a success callback with a non-Runware video URL", () => {
+    assertBadRequest(() =>
+      parseRunwareWebhook({
+        taskType: "videoInference",
+        taskUUID: TASK_ID,
+        status: "success",
+        videoUUID: VIDEO_ID,
+        videoURL: "https://attacker.invalid/video.mp4",
+      }),
+    );
   });
 
   test("infers success without status from a video output identity", () => {
@@ -48,6 +60,7 @@ describe("Runware webhook parser", () => {
         taskId: TASK_ID,
         providerOutputId: VIDEO_ID,
         costUsd: null,
+        videoUrl: null,
       },
     );
   });
@@ -162,6 +175,7 @@ describe("Runware webhook parser", () => {
         taskId: TASK_ID,
         providerOutputId: VIDEO_ID,
         costUsd: null,
+        videoUrl: null,
       },
     );
   });
@@ -225,9 +239,16 @@ describe("Runware webhook parser", () => {
       [],
       [{ taskType: "videoInference", taskUUID: TASK_ID, status: "success" }],
       { data: [] },
-      { data: [{ taskType: "videoInference" }, { taskType: "videoInference" }] },
+      {
+        data: [{ taskType: "videoInference" }, { taskType: "videoInference" }],
+      },
       { errors: [] },
-      { errors: [{ taskType: "videoInference" }, { taskType: "videoInference" }] },
+      {
+        errors: [
+          { taskType: "videoInference" },
+          { taskType: "videoInference" },
+        ],
+      },
       { data: [{}], errors: [{}] },
       null,
       "payload",

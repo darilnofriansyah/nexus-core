@@ -4,9 +4,7 @@ import type { RunwareWebhookEvent } from "./runware-webhook.dto";
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-export function parseRunwareWebhook(
-  input: unknown,
-): RunwareWebhookEvent {
+export function parseRunwareWebhook(input: unknown): RunwareWebhookEvent {
   const { item, source } = unwrapSingleItem(input);
   if (item.taskType !== "videoInference") {
     throw new BadRequestException("taskType must be videoInference");
@@ -19,11 +17,12 @@ export function parseRunwareWebhook(
   const status = item.status;
   const isFailure =
     status === "error" ||
-    (status === undefined &&
-      (hasOwn(item, "code") || hasOwn(item, "message")));
+    (status === undefined && (hasOwn(item, "code") || hasOwn(item, "message")));
 
   if ((source === "errors" && !isFailure) || (source === "data" && isFailure)) {
-    throw new BadRequestException("webhook result does not match its container");
+    throw new BadRequestException(
+      "webhook result does not match its container",
+    );
   }
 
   if (status === "processing") {
@@ -36,6 +35,7 @@ export function parseRunwareWebhook(
       taskId,
       providerOutputId,
       costUsd,
+      videoUrl: normalizeVideoUrl(item.videoURL),
     };
   }
 
@@ -53,6 +53,7 @@ export function parseRunwareWebhook(
       taskId,
       providerOutputId,
       costUsd,
+      videoUrl: normalizeVideoUrl(item.videoURL),
     };
   }
 
@@ -129,6 +130,31 @@ function normalizeOutputId(value: unknown): string | null {
   }
 
   throw new BadRequestException("videoUUID must be an opaque identity");
+}
+
+function normalizeVideoUrl(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new BadRequestException("videoURL must be a Runware HTTPS URL");
+  }
+
+  let videoUrl: URL;
+  try {
+    videoUrl = new URL(value.trim());
+  } catch {
+    throw new BadRequestException("videoURL must be a Runware HTTPS URL");
+  }
+
+  if (
+    videoUrl.protocol !== "https:" ||
+    videoUrl.hostname.toLowerCase() !== "vm.runware.ai" ||
+    videoUrl.username ||
+    videoUrl.password
+  ) {
+    throw new BadRequestException("videoURL must be a Runware HTTPS URL");
+  }
+
+  return videoUrl.toString();
 }
 
 function normalizeProgress(value: unknown): number | null {

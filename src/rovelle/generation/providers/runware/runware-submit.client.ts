@@ -42,7 +42,6 @@ export interface RunwareVideoTask {
   outputType: "URL";
   outputFormat: "MP4";
   includeCost: true;
-  ttl: 60;
   uploadEndpoint: string;
 }
 

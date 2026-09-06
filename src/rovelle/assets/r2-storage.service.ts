@@ -3,22 +3,22 @@ import {
   HeadObjectCommand,
   PutObjectCommand,
   S3Client,
-} from '@aws-sdk/client-s3';
+} from "@aws-sdk/client-s3";
 import {
   Inject,
   Injectable,
   OnModuleDestroy,
   ServiceUnavailableException,
-} from '@nestjs/common';
-import { readEnv } from '../../config/env';
+} from "@nestjs/common";
+import { readEnv } from "../../config/env";
 import {
   R2_S3_CLIENT,
   R2_URL_SIGNER,
   R2UrlSigner,
-} from './r2-storage.providers';
+} from "./r2-storage.providers";
 
 export interface R2PresignedRequest {
-  method: 'PUT' | 'GET';
+  method: "PUT" | "GET";
   url: string;
   headers: Record<string, string>;
   expiresAt: string;
@@ -31,14 +31,14 @@ export interface R2ObjectMetadata {
 }
 
 function isNotFoundError(error: unknown): boolean {
-  if (!error || typeof error !== 'object') return false;
+  if (!error || typeof error !== "object") return false;
 
   const candidate = error as {
     name?: unknown;
     $metadata?: { httpStatusCode?: unknown };
   };
   return (
-    candidate.name === 'NotFound' || candidate.$metadata?.httpStatusCode === 404
+    candidate.name === "NotFound" || candidate.$metadata?.httpStatusCode === 404
   );
 }
 
@@ -53,7 +53,7 @@ export class R2StorageService implements OnModuleDestroy {
 
   assertConfigured(): S3Client {
     if (!this.client) {
-      throw new ServiceUnavailableException('R2 storage is not configured');
+      throw new ServiceUnavailableException("R2 storage is not configured");
     }
 
     return this.client;
@@ -74,14 +74,14 @@ export class R2StorageService implements OnModuleDestroy {
       }),
       {
         expiresIn: env.r2PresignTtlSeconds,
-        signableHeaders: new Set(['content-type']),
+        signableHeaders: new Set(["content-type"]),
       },
     );
 
     return {
-      method: 'PUT',
+      method: "PUT",
       url,
-      headers: { 'content-type': contentType },
+      headers: { "content-type": contentType },
       expiresAt: new Date(
         Date.now() + env.r2PresignTtlSeconds * 1000,
       ).toISOString(),
@@ -101,13 +101,31 @@ export class R2StorageService implements OnModuleDestroy {
     );
 
     return {
-      method: 'PUT',
+      method: "PUT",
       url,
       headers: {},
       expiresAt: new Date(
         Date.now() + env.r2PresignTtlSeconds * 1000,
       ).toISOString(),
     };
+  }
+
+  async putObject(
+    key: string,
+    contentType: string,
+    body: Uint8Array,
+  ): Promise<void> {
+    const env = readEnv();
+    const client = this.assertConfigured();
+
+    await client.send(
+      new PutObjectCommand({
+        Bucket: env.r2Bucket!,
+        Key: key,
+        ContentType: contentType,
+        Body: body,
+      }),
+    );
   }
 
   async createGetUrl(key: string): Promise<R2PresignedRequest> {
@@ -123,7 +141,7 @@ export class R2StorageService implements OnModuleDestroy {
     );
 
     return {
-      method: 'GET',
+      method: "GET",
       url,
       headers: {},
       expiresAt: new Date(
@@ -146,7 +164,7 @@ export class R2StorageService implements OnModuleDestroy {
 
       return {
         byteSize: BigInt(output.ContentLength ?? 0),
-        etag: output.ETag?.replace(/^"|"$/g, '') ?? null,
+        etag: output.ETag?.replace(/^"|"$/g, "") ?? null,
         contentType: output.ContentType ?? null,
       };
     } catch (error) {

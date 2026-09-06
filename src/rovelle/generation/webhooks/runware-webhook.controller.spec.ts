@@ -42,6 +42,7 @@ const successEvent: RunwareWebhookEvent = {
   taskId: TASK_ID,
   providerOutputId: "runware-output-id",
   costUsd: "0.25",
+  videoUrl: null,
 };
 
 function createController(

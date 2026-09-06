@@ -65,9 +65,9 @@ function generation(
     },
     status: RovelleGenerationStatus.CREATED,
     outputAssetId: OUTPUT_ASSET_ID,
-    estimatedCostUsd: new Prisma.Decimal("0.110000"),
+    estimatedCostUsd: new Prisma.Decimal("0.220000"),
     currency: "USD",
-    pricingSource: "RUNWARE_VIDU_2_0_720P_4S_2026_09_06",
+    pricingSource: "RUNWARE_VIDU_2_0_720P_4S_OBSERVED_2026_09_07",
     actualCostUsd: null,
     errorCode: null,
     errorMessage: null,
@@ -336,8 +336,8 @@ test("returns a previously accepted request even when its current budget would r
     status: "budget_exceeded",
     budgetUsd: new Prisma.Decimal("1.000000"),
     committedUsd: new Prisma.Decimal("1.000000"),
-    requestedEstimateUsd: new Prisma.Decimal("0.110000"),
-    projectedUsd: new Prisma.Decimal("1.110000"),
+    requestedEstimateUsd: new Prisma.Decimal("0.220000"),
+    projectedUsd: new Prisma.Decimal("1.220000"),
   };
 
   const result = await service.submitShot(SHOT_ID, {
@@ -371,10 +371,10 @@ test("persists the attempt before issuing ordered reference and output URLs", as
     repository.createInput?.outputStorageKey,
     `ringmaster/assets/${repository.createInput?.outputAssetId}`,
   );
-  assert.equal(repository.createInput?.estimatedCostUsd.toFixed(6), "0.110000");
+  assert.equal(repository.createInput?.estimatedCostUsd.toFixed(6), "0.220000");
   assert.equal(
     repository.createInput?.pricingSource,
-    "RUNWARE_VIDU_2_0_720P_4S_2026_09_06",
+    "RUNWARE_VIDU_2_0_720P_4S_OBSERVED_2026_09_07",
   );
   assert.deepEqual(events, [
     "existing",

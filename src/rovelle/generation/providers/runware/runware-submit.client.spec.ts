@@ -48,7 +48,6 @@ function task(): RunwareVideoTask {
     outputType: "URL",
     outputFormat: "MP4",
     includeCost: true,
-    ttl: 60,
     uploadEndpoint: "https://assets.test/upload",
   };
 }
@@ -128,7 +127,10 @@ test("normalizes a matching provider error", async () => {
 
 test("normalizes non-2xx responses", async () => {
   const fetchImpl: FetchStub = async () =>
-    response({ errors: [{ code: "INVALID_INPUT", message: "invalid task" }] }, 422);
+    response(
+      { errors: [{ code: "INVALID_INPUT", message: "invalid task" }] },
+      422,
+    );
 
   await assert.rejects(
     () => client(fetchImpl).submit(task()),
@@ -143,7 +145,13 @@ test("normalizes non-2xx responses", async () => {
 
 test("normalizes malformed JSON", async () => {
   const fetchImpl: FetchStub = async () =>
-    ({ ok: true, status: 200, json: async () => { throw new Error("bad json"); } }) as unknown as Response;
+    ({
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw new Error("bad json");
+      },
+    }) as unknown as Response;
 
   await assert.rejects(
     () => client(fetchImpl).submit(task()),

@@ -373,6 +373,7 @@ describe(
         taskId,
         providerOutputId: "provider-output-id",
         costUsd,
+        videoUrl: null,
       };
     }
 
@@ -879,7 +880,7 @@ describe(
       assert.equal(row.attempt, 1);
       assert.equal(row.status, RovelleGenerationStatus.SUBMITTED);
       assert.equal(row.profile, RovelleGenerationProfile.DRAFT);
-      assert.equal(row.estimatedCostUsd.toFixed(6), "0.110000");
+      assert.equal(row.estimatedCostUsd.toFixed(6), "0.220000");
 
       const sanitized = row.request as {
         profile: string;

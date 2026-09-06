@@ -1,25 +1,23 @@
-import * as assert from 'node:assert/strict';
-import { afterEach, describe, test } from 'node:test';
+import * as assert from "node:assert/strict";
+import { afterEach, describe, test } from "node:test";
 import {
   GetObjectCommand,
   HeadObjectCommand,
   PutObjectCommand,
   S3Client,
-} from '@aws-sdk/client-s3';
-import { ServiceUnavailableException } from '@nestjs/common';
-import { R2UrlSigner } from './r2-storage.providers';
-import { R2StorageService } from './r2-storage.service';
+} from "@aws-sdk/client-s3";
+import { ServiceUnavailableException } from "@nestjs/common";
+import { R2UrlSigner } from "./r2-storage.providers";
+import { R2StorageService } from "./r2-storage.service";
 
 const r2EnvKeys = [
-  'R2_ACCOUNT_ID',
-  'R2_ACCESS_KEY_ID',
-  'R2_SECRET_ACCESS_KEY',
-  'R2_BUCKET',
-  'R2_PRESIGN_TTL_SECONDS',
+  "R2_ACCOUNT_ID",
+  "R2_ACCESS_KEY_ID",
+  "R2_SECRET_ACCESS_KEY",
+  "R2_BUCKET",
+  "R2_PRESIGN_TTL_SECONDS",
 ] as const;
-const originalR2Env = new Map(
-  r2EnvKeys.map((key) => [key, process.env[key]]),
-);
+const originalR2Env = new Map(r2EnvKeys.map((key) => [key, process.env[key]]));
 
 type StubCommand = PutObjectCommand | GetObjectCommand | HeadObjectCommand;
 
@@ -45,7 +43,7 @@ interface SignerCall {
   options: Parameters<R2UrlSigner>[2] | undefined;
 }
 
-function createSigner(url = 'https://signed.example/object'): {
+function createSigner(url = "https://signed.example/object"): {
   signer: R2UrlSigner;
   calls: SignerCall[];
 } {
@@ -63,19 +61,16 @@ function createSigner(url = 'https://signed.example/object'): {
 }
 
 function configureR2(ttl?: string): void {
-  process.env.R2_ACCOUNT_ID = 'account';
-  process.env.R2_ACCESS_KEY_ID = 'access-key';
-  process.env.R2_SECRET_ACCESS_KEY = 'secret-key';
-  process.env.R2_BUCKET = 'private-bucket';
+  process.env.R2_ACCOUNT_ID = "account";
+  process.env.R2_ACCESS_KEY_ID = "access-key";
+  process.env.R2_SECRET_ACCESS_KEY = "secret-key";
+  process.env.R2_BUCKET = "private-bucket";
   if (ttl === undefined) delete process.env.R2_PRESIGN_TTL_SECONDS;
   else process.env.R2_PRESIGN_TTL_SECONDS = ttl;
 }
 
 function createService(client: StubS3Client | null, signer: R2UrlSigner) {
-  return new R2StorageService(
-    client as unknown as S3Client | null,
-    signer,
-  );
+  return new R2StorageService(client as unknown as S3Client | null, signer);
 }
 
 afterEach(() => {
@@ -86,8 +81,8 @@ afterEach(() => {
   }
 });
 
-describe('R2 storage service', () => {
-  test('rejects every storage operation when R2 is unconfigured', async () => {
+describe("R2 storage service", () => {
+  test("rejects every storage operation when R2 is unconfigured", async () => {
     for (const key of r2EnvKeys) delete process.env[key];
     const { signer } = createSigner();
     const service = createService(null, signer);
@@ -97,165 +92,192 @@ describe('R2 storage service', () => {
       ServiceUnavailableException,
     );
     await assert.rejects(
-      () => service.createPutUrl('asset/key', 'image/png'),
+      () => service.createPutUrl("asset/key", "image/png"),
       ServiceUnavailableException,
     );
     await assert.rejects(
-      () => service.createGetUrl('asset/key'),
+      () => service.createGetUrl("asset/key"),
       ServiceUnavailableException,
     );
     await assert.rejects(
-      () => service.headObject('asset/key'),
+      () => service.headObject("asset/key"),
       ServiceUnavailableException,
     );
   });
 
-  test('signs PUT with the exact content type and returns that header', async () => {
-    configureR2('1200');
+  test("signs PUT with the exact content type and returns that header", async () => {
+    configureR2("1200");
     const client = new StubS3Client();
-    const { signer, calls } = createSigner('https://signed.example/put');
+    const { signer, calls } = createSigner("https://signed.example/put");
     const service = createService(client, signer);
     const before = Date.now();
 
     const result = await service.createPutUrl(
-      'episodes/episode-1/source.mp4',
-      'video/mp4',
+      "episodes/episode-1/source.mp4",
+      "video/mp4",
     );
     const after = Date.now();
 
     assert.equal(calls.length, 1);
     assert.ok(calls[0].command instanceof PutObjectCommand);
     assert.deepEqual(calls[0].command.input, {
-      Bucket: 'private-bucket',
-      Key: 'episodes/episode-1/source.mp4',
-      ContentType: 'video/mp4',
+      Bucket: "private-bucket",
+      Key: "episodes/episode-1/source.mp4",
+      ContentType: "video/mp4",
     });
     assert.deepEqual(calls[0].options, {
       expiresIn: 1200,
-      signableHeaders: new Set(['content-type']),
+      signableHeaders: new Set(["content-type"]),
     });
-    assert.equal(result.method, 'PUT');
-    assert.equal(result.url, 'https://signed.example/put');
-    assert.deepEqual(result.headers, { 'content-type': 'video/mp4' });
-    assert.ok(
-      Date.parse(result.expiresAt) >= before + 1200 * 1000,
-    );
+    assert.equal(result.method, "PUT");
+    assert.equal(result.url, "https://signed.example/put");
+    assert.deepEqual(result.headers, { "content-type": "video/mp4" });
+    assert.ok(Date.parse(result.expiresAt) >= before + 1200 * 1000);
     assert.ok(Date.parse(result.expiresAt) <= after + 1200 * 1000);
   });
 
-  test('signs GET with the bucket and key and no request headers', async () => {
+  test("signs GET with the bucket and key and no request headers", async () => {
     configureR2();
     const client = new StubS3Client();
-    const { signer, calls } = createSigner('https://signed.example/get');
+    const { signer, calls } = createSigner("https://signed.example/get");
     const service = createService(client, signer);
 
-    const result = await service.createGetUrl('episodes/episode-1/source.mp4');
+    const result = await service.createGetUrl("episodes/episode-1/source.mp4");
 
     assert.equal(calls.length, 1);
     assert.ok(calls[0].command instanceof GetObjectCommand);
     assert.deepEqual(calls[0].command.input, {
-      Bucket: 'private-bucket',
-      Key: 'episodes/episode-1/source.mp4',
+      Bucket: "private-bucket",
+      Key: "episodes/episode-1/source.mp4",
     });
     assert.deepEqual(calls[0].options, { expiresIn: 900 });
-    assert.equal(result.method, 'GET');
-    assert.equal(result.url, 'https://signed.example/get');
+    assert.equal(result.method, "GET");
+    assert.equal(result.url, "https://signed.example/get");
     assert.deepEqual(result.headers, {});
     assert.ok(Number.isFinite(Date.parse(result.expiresAt)));
   });
 
-  test('normalizes HEAD metadata and strips quoted ETags', async () => {
+  test("normalizes HEAD metadata and strips quoted ETags", async () => {
     configureR2();
     const client = new StubS3Client();
     client.response = {
       ContentLength: 42,
       ETag: '"etag-42"',
-      ContentType: 'image/png',
+      ContentType: "image/png",
     };
     const { signer } = createSigner();
     const service = createService(client, signer);
 
-    const result = await service.headObject('episodes/episode-1/source.png');
+    const result = await service.headObject("episodes/episode-1/source.png");
 
     assert.ok(client.commands[0] instanceof HeadObjectCommand);
     assert.deepEqual(client.commands[0].input, {
-      Bucket: 'private-bucket',
-      Key: 'episodes/episode-1/source.png',
+      Bucket: "private-bucket",
+      Key: "episodes/episode-1/source.png",
     });
     assert.deepEqual(result, {
       byteSize: 42n,
-      etag: 'etag-42',
-      contentType: 'image/png',
+      etag: "etag-42",
+      contentType: "image/png",
     });
   });
 
-  test('returns null for NotFound and HTTP 404 errors', async () => {
+  test("stores generated video bytes with the registered content type", async () => {
     configureR2();
     const client = new StubS3Client();
     const { signer } = createSigner();
     const service = createService(client, signer);
 
-    client.error = Object.assign(new Error('missing'), { name: 'NotFound' });
-    assert.equal(await service.headObject('missing-by-name'), null);
+    await (
+      service as unknown as {
+        putObject(
+          key: string,
+          contentType: string,
+          body: Uint8Array,
+        ): Promise<void>;
+      }
+    ).putObject(
+      "episodes/episode-1/output.mp4",
+      "video/mp4",
+      new Uint8Array([1, 2, 3]),
+    );
 
-    client.error = Object.assign(new Error('missing'), {
+    assert.ok(client.commands[0] instanceof PutObjectCommand);
+    assert.deepEqual(client.commands[0].input, {
+      Bucket: "private-bucket",
+      Key: "episodes/episode-1/output.mp4",
+      ContentType: "video/mp4",
+      Body: new Uint8Array([1, 2, 3]),
+    });
+  });
+
+  test("returns null for NotFound and HTTP 404 errors", async () => {
+    configureR2();
+    const client = new StubS3Client();
+    const { signer } = createSigner();
+    const service = createService(client, signer);
+
+    client.error = Object.assign(new Error("missing"), { name: "NotFound" });
+    assert.equal(await service.headObject("missing-by-name"), null);
+
+    client.error = Object.assign(new Error("missing"), {
       $metadata: { httpStatusCode: 404 },
     });
-    assert.equal(await service.headObject('missing-by-status'), null);
+    assert.equal(await service.headObject("missing-by-status"), null);
   });
 
-  test('rethrows forbidden and unexpected HEAD errors', async () => {
+  test("rethrows forbidden and unexpected HEAD errors", async () => {
     configureR2();
     const client = new StubS3Client();
     const { signer } = createSigner();
     const service = createService(client, signer);
-    const forbidden = Object.assign(new Error('forbidden'), {
+    const forbidden = Object.assign(new Error("forbidden"), {
       $metadata: { httpStatusCode: 403 },
     });
-    const unexpected = new Error('network failure');
+    const unexpected = new Error("network failure");
 
     client.error = forbidden;
     await assert.rejects(
-      () => service.headObject('forbidden'),
+      () => service.headObject("forbidden"),
       (error) => error === forbidden,
     );
 
     client.error = unexpected;
     await assert.rejects(
-      () => service.headObject('unexpected'),
+      () => service.headObject("unexpected"),
       (error) => error === unexpected,
     );
   });
 
-  test('signs provider PUT with only the bucket and key', async () => {
-    configureR2('1200');
+  test("signs provider PUT with only the bucket and key", async () => {
+    configureR2("1200");
     const client = new StubS3Client();
-    const { signer, calls } = createSigner('https://signed.example/provider-put');
+    const { signer, calls } = createSigner(
+      "https://signed.example/provider-put",
+    );
     const service = createService(client, signer);
     const before = Date.now();
 
     const result = await service.createProviderPutUrl(
-      'episodes/episode-1/provider-output.png',
+      "episodes/episode-1/provider-output.png",
     );
     const after = Date.now();
 
     assert.equal(calls.length, 1);
     assert.ok(calls[0].command instanceof PutObjectCommand);
     assert.deepEqual(calls[0].command.input, {
-      Bucket: 'private-bucket',
-      Key: 'episodes/episode-1/provider-output.png',
+      Bucket: "private-bucket",
+      Key: "episodes/episode-1/provider-output.png",
     });
     assert.deepEqual(calls[0].options, { expiresIn: 1200 });
-    assert.equal(result.method, 'PUT');
-    assert.equal(result.url, 'https://signed.example/provider-put');
+    assert.equal(result.method, "PUT");
+    assert.equal(result.url, "https://signed.example/provider-put");
     assert.deepEqual(result.headers, {});
-    assert.ok(
-      Date.parse(result.expiresAt) >= before + 1200 * 1000,
-    );
+    assert.ok(Date.parse(result.expiresAt) >= before + 1200 * 1000);
     assert.ok(Date.parse(result.expiresAt) <= after + 1200 * 1000);
   });
 
-  test('destroys the configured S3 client on module shutdown', () => {
+  test("destroys the configured S3 client on module shutdown", () => {
     configureR2();
     const client = new StubS3Client();
     const { signer } = createSigner();

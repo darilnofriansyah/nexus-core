@@ -80,9 +80,9 @@ ready shots may then submit while that episode is `GENERATING`.
 
 ## Profiles and price estimate
 
-| Profile | Dimensions | Fixed estimate    |
-| ------- | ---------- | ----------------- |
-| `DRAFT` | 1280x720   | USD 0.0275/second |
+| Profile | Dimensions | Fixed estimate   |
+| ------- | ---------- | ---------------- |
+| `DRAFT` | 1280x720   | USD 0.055/second |
 
 Vidu 2 reference-image generations use exactly one 4-second duration and one
 through three reference images. Core stores the estimate as an exact
@@ -93,7 +93,9 @@ six-decimal value with pricing source.
 Core creates short-lived presigned GET URLs in memory for canon references.
 It also creates a provider-owned presigned PUT URL in memory for the reserved
 output asset. That PUT signature deliberately has no required `Content-Type`,
-so Runware can upload its MP4 response.
+so Runware can upload its MP4 response. If that direct upload is absent when
+the authenticated success callback arrives, Core immediately copies the
+validated Runware MP4 URL into the same private R2 object before completion.
 
 Presigned reference URLs, output URLs, authorization values, and
 `RUNWARE_API_KEY` are never stored in `request_json`, returned by the
@@ -109,6 +111,6 @@ retried automatically.
 
 Automated tests use fake Runware and R2 implementations and spend no credits.
 A real smoke is separate: it needs explicit approval for one DRAFT, 4-second
-submission (documented estimate USD 0.110000), configured private R2 and
+submission (observed estimate USD 0.220000), configured private R2 and
 Runware key, and a real ready shot with required locked canon. Do not run it
 until that approval is given.

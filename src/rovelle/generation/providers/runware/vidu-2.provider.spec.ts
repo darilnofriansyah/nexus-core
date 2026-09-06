@@ -75,7 +75,6 @@ test("submits the exact Vidu 2 task payload", async () => {
       outputType: "URL",
       outputFormat: "MP4",
       includeCost: true,
-      ttl: 60,
       uploadEndpoint: BASE_REQUEST.uploadUrl,
       webhookURL:
         "https://core.test/api/rovelle/webhooks/runware?token=runware-webhook-token-0123456789abcdef",
@@ -362,7 +361,6 @@ test("does not merge caller webhook fields into the task or result", async () =>
     "positivePrompt",
     "taskType",
     "taskUUID",
-    "ttl",
     "uploadEndpoint",
     "webhookURL",
     "width",

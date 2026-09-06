@@ -79,6 +79,7 @@ function successEvent(
     taskId: TASK_ID,
     providerOutputId: "provider-output-id",
     costUsd: "0.250000",
+    videoUrl: null,
     ...changes,
   };
 }
@@ -163,17 +164,32 @@ class FakeGenerationRepository {
 
 class FakeStorageService {
   keys: string[] = [];
+  copyCalls: Array<{
+    key: string;
+    contentType: string;
+    body: Uint8Array;
+  }> = [];
   metadata: R2ObjectMetadata | null = {
     byteSize: 1024n,
     etag: "etag-1",
     contentType: "text/plain",
   };
+  uploadedMetadata: R2ObjectMetadata | null = null;
   error: unknown;
 
   async headObject(key: string): Promise<R2ObjectMetadata | null> {
     this.keys.push(key);
     if (this.error) throw this.error;
     return this.metadata;
+  }
+
+  async putObject(
+    key: string,
+    contentType: string,
+    body: Uint8Array,
+  ): Promise<void> {
+    this.copyCalls.push({ key, contentType, body });
+    this.metadata = this.uploadedMetadata;
   }
 }
 
@@ -319,6 +335,47 @@ describe("Runware webhook completion service", () => {
     );
     assert.deepEqual(repository.completeCalls, []);
     assert.deepEqual(repository.failCalls, []);
+  });
+
+  test("copies the Runware video to private R2 when its direct upload is absent", async () => {
+    const { repository, storage, service } = createService();
+    storage.metadata = null;
+    storage.uploadedMetadata = {
+      byteSize: 2048n,
+      etag: "uploaded-etag",
+      contentType: "video/mp4",
+    };
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(new Uint8Array([1, 2, 3]), {
+        status: 200,
+        headers: { "content-type": "video/mp4" },
+      })) as typeof fetch;
+
+    try {
+      const result = await service.handle({
+        ...successEvent(),
+        videoUrl: "https://vm.runware.ai/video/output.mp4",
+      } as unknown as RunwareWebhookEvent);
+
+      assert.deepEqual(result, {
+        accepted: true,
+        disposition: "completed",
+        generationId: GENERATION_ID,
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+
+    assert.deepEqual(storage.keys, [STORAGE_KEY, STORAGE_KEY]);
+    assert.deepEqual(storage.copyCalls, [
+      {
+        key: STORAGE_KEY,
+        contentType: "video/mp4",
+        body: new Uint8Array([1, 2, 3]),
+      },
+    ]);
+    assert.equal(repository.completeCalls.length, 1);
   });
 
   test("fails an empty R2 object with a stable output-empty code", async () => {

@@ -68,7 +68,6 @@ export class Vidu2Provider implements GenerationProvider {
       outputType: "URL",
       outputFormat: "MP4",
       includeCost: true,
-      ttl: 60,
       uploadEndpoint: request.uploadUrl,
       webhookURL,
     };

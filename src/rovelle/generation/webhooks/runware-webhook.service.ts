@@ -16,6 +16,7 @@ const EMPTY_OUTPUT_CODE = "OUTPUT_EMPTY";
 const EMPTY_OUTPUT_MESSAGE = "Runware output object is empty";
 const DEFAULT_ERROR_CODE = "RUNWARE_ERROR";
 const DEFAULT_ERROR_MESSAGE = "Runware generation failed";
+const VIDEO_MEDIA_TYPE = "video/mp4";
 
 export interface RunwareWebhookHandleResult {
   accepted: true;
@@ -64,14 +65,7 @@ export class RunwareWebhookService {
     event: Extract<RunwareWebhookEvent, { kind: "success" }>,
     generation: GenerationWithOutputAsset,
   ): Promise<RunwareWebhookHandleResult> {
-    const metadata = await this.storage.headObject(
-      generation.outputAsset.storageKey,
-    );
-    if (!metadata) {
-      throw new ServiceUnavailableException(
-        "Runware output is not available in R2 yet",
-      );
-    }
+    const metadata = await this.ensureOutputInR2(event, generation);
 
     if (metadata.byteSize === 0n) {
       const result = await this.repository.failGeneration(event.taskId, {
@@ -89,6 +83,55 @@ export class RunwareWebhookService {
       etag: metadata.etag,
     });
     return mutationResult(result, "completed");
+  }
+
+  private async ensureOutputInR2(
+    event: Extract<RunwareWebhookEvent, { kind: "success" }>,
+    generation: GenerationWithOutputAsset,
+  ) {
+    const storageKey = generation.outputAsset.storageKey;
+    const existing = await this.storage.headObject(storageKey);
+    if (existing) return existing;
+    if (!event.videoUrl) {
+      throw new ServiceUnavailableException(
+        "Runware output is not available in R2 yet",
+      );
+    }
+
+    await this.storage.putObject(
+      storageKey,
+      VIDEO_MEDIA_TYPE,
+      await this.downloadVideo(event.videoUrl),
+    );
+    const copied = await this.storage.headObject(storageKey);
+    if (copied) return copied;
+
+    throw new ServiceUnavailableException(
+      "Runware output is not available in R2 yet",
+    );
+  }
+
+  private async downloadVideo(videoUrl: string): Promise<Uint8Array> {
+    try {
+      const response = await fetch(videoUrl, { redirect: "error" });
+      const contentType = response.headers
+        .get("content-type")
+        ?.split(";", 1)[0]
+        ?.trim()
+        .toLowerCase();
+      if (!response.ok || contentType !== VIDEO_MEDIA_TYPE) {
+        throw new ServiceUnavailableException("Runware video download failed");
+      }
+
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      if (bytes.byteLength === 0) {
+        throw new ServiceUnavailableException("Runware video download failed");
+      }
+      return bytes;
+    } catch (error) {
+      if (error instanceof ServiceUnavailableException) throw error;
+      throw new ServiceUnavailableException("Runware video download failed");
+    }
   }
 
   private async handleFailure(
