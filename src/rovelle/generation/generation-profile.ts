@@ -1,51 +1,40 @@
-import { BadRequestException } from '@nestjs/common';
-import type { RovelleShotGeneration } from '../../generated/prisma/client';
+import { BadRequestException } from "@nestjs/common";
+import type { RovelleShotGeneration } from "../../generated/prisma/client";
 import type {
   GenerationAttemptDto,
   GenerationProfile,
   GenerationProfileSpec,
   SubmitShotGenerationRequestDto,
-} from './dto/generation.dto';
+} from "./dto/generation.dto";
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export const GENERATION_PROFILES = Object.freeze({
   DRAFT: Object.freeze({
-    width: 480,
-    height: 854,
-    usdPerSecond: '0.115',
-    pricingSource: 'RUNWARE_SEEDANCE_2_5_2026_08_28',
-  }),
-  PRODUCTION: Object.freeze({
-    width: 720,
-    height: 1280,
-    usdPerSecond: '0.249',
-    pricingSource: 'RUNWARE_SEEDANCE_2_5_2026_08_28',
+    width: 1280,
+    height: 720,
+    usdPerSecond: "0.0275",
+    pricingSource: "RUNWARE_VIDU_2_0_720P_4S_2026_09_06",
   }),
 } satisfies Readonly<Record<GenerationProfile, GenerationProfileSpec>>);
 
 export function normalizeSubmitGenerationRequest(
   input: unknown,
 ): SubmitShotGenerationRequestDto {
-  if (input === null || typeof input !== 'object' || Array.isArray(input)) {
-    throw new BadRequestException('request must be an object');
+  if (input === null || typeof input !== "object" || Array.isArray(input)) {
+    throw new BadRequestException("request must be an object");
   }
 
   const request = input as Record<string, unknown>;
   const requestId = request.requestId;
-  if (typeof requestId !== 'string' || !UUID_PATTERN.test(requestId.trim())) {
-    throw new BadRequestException('requestId must be a valid UUID');
+  if (typeof requestId !== "string" || !UUID_PATTERN.test(requestId.trim())) {
+    throw new BadRequestException("requestId must be a valid UUID");
   }
 
   const profile = request.profile;
-  if (
-    typeof profile !== 'string' ||
-    !Object.prototype.hasOwnProperty.call(GENERATION_PROFILES, profile)
-  ) {
-    throw new BadRequestException(
-      'profile must be DRAFT or PRODUCTION',
-    );
+  if (typeof profile !== "string" || profile !== "DRAFT") {
+    throw new BadRequestException("profile must be DRAFT");
   }
 
   return {
@@ -57,11 +46,8 @@ export function normalizeSubmitGenerationRequest(
 export function getGenerationProfile(
   profile: GenerationProfile,
 ): GenerationProfileSpec {
-  if (
-    typeof profile !== 'string' ||
-    !Object.prototype.hasOwnProperty.call(GENERATION_PROFILES, profile)
-  ) {
-    throw new BadRequestException('profile must be DRAFT or PRODUCTION');
+  if (typeof profile !== "string" || profile !== "DRAFT") {
+    throw new BadRequestException("profile must be DRAFT");
   }
 
   return GENERATION_PROFILES[profile];
@@ -73,22 +59,19 @@ export function estimateGenerationCostUsd(
 ): string {
   const { usdPerSecond } = getGenerationProfile(profile);
   if (
-    typeof durationSeconds !== 'number' ||
+    typeof durationSeconds !== "number" ||
     !Number.isInteger(durationSeconds) ||
-    durationSeconds < 4 ||
-    durationSeconds > 30
+    durationSeconds !== 4
   ) {
-    throw new BadRequestException(
-      'durationSeconds must be an integer from 4 to 30',
-    );
+    throw new BadRequestException("durationSeconds must be 4 for Vidu 2");
   }
 
-  const [whole, fraction = ''] = usdPerSecond.split('.');
+  const [whole, fraction = ""] = usdPerSecond.split(".");
   const scale = fraction.length;
   const units = BigInt(`${whole}${fraction}`) * BigInt(durationSeconds);
   const scaledUnits = units * 10n ** BigInt(6 - scale);
   const integerPart = scaledUnits / 1_000_000n;
-  const decimalPart = (scaledUnits % 1_000_000n).toString().padStart(6, '0');
+  const decimalPart = (scaledUnits % 1_000_000n).toString().padStart(6, "0");
 
   return `${integerPart}.${decimalPart}`;
 }

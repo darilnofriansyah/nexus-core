@@ -80,7 +80,7 @@ const CANON = [
   ),
 ];
 
-test("compiles a byte-identical prompt with sorted entities and preserved attachments", () => {
+test("compiles a byte-identical prompt with the primary asset from each canon type", () => {
   const compiler = new GenerationPromptCompiler();
   const input = {
     shotId: "shot-1",
@@ -99,14 +99,16 @@ test("compiles a byte-identical prompt with sorted entities and preserved attach
     [
       ["style-main", "rendering"],
       ["koko-main", "primary"],
-      ["koko-detail", "detail"],
       ["meadow-main", "location"],
     ],
   );
-  assert.match(first.prompt, /@Image1 — CLOVERVALE_STORYBOOK_STYLE V1 — rendering/);
+  assert.match(
+    first.prompt,
+    /@Image1 — CLOVERVALE_STORYBOOK_STYLE V1 — rendering/,
+  );
   assert.match(first.prompt, /@Image2 — KOKO V1 — primary/);
-  assert.match(first.prompt, /@Image3 — KOKO V1 — detail/);
-  assert.match(first.prompt, /@Image4 — MEADOW_VILLAGE V1 — location/);
+  assert.match(first.prompt, /@Image3 — MEADOW_VILLAGE V1 — location/);
+  assert.equal(first.prompt.includes("KOKO V1 — detail"), false);
   assert.equal(first.prompt.includes("http://"), false);
   assert.equal(first.prompt.includes("https://"), false);
 });

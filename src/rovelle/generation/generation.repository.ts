@@ -5,7 +5,6 @@ import {
   RovelleAssetType,
   RovelleEpisodeStatus,
   RovelleGenerationModality,
-  RovelleGenerationProfile,
   RovelleGenerationProvider,
   RovelleGenerationStatus,
   RovelleShotGeneration,
@@ -19,6 +18,7 @@ import {
   committedGenerationSpend,
 } from "../review/generation-cost";
 import { getGenerationProfile } from "./generation-profile";
+import type { GenerationProfile } from "./dto/generation.dto";
 
 const URL_PATTERN = /(?:\b[a-z][a-z\d+.-]*:(?=\S)|\/\/)/i;
 
@@ -74,7 +74,7 @@ export interface CreateGenerationAttemptInput {
   providerTaskId: string;
   outputAssetId: string;
   outputStorageKey: string;
-  profile: RovelleGenerationProfile;
+  profile: GenerationProfile;
   model: string;
   prompt: string;
   sanitizedRequest: Prisma.InputJsonValue;
@@ -751,7 +751,7 @@ function preTerminalGenerationStatuses(): {
 
 function normalizeSanitizedRequest(
   value: Prisma.InputJsonValue,
-  profile: RovelleGenerationProfile,
+  profile: GenerationProfile,
 ): Prisma.InputJsonObject {
   const request = requireJsonObject(value, "sanitizedRequest");
   assertKeys(request, [

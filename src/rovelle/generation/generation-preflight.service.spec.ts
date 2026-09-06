@@ -24,7 +24,11 @@ function pin(
   entityType: RovelleCanonEntityType,
   options: {
     status?: RovelleCanonVersionStatus;
-    assets?: Array<{ id: string; status?: RovelleAssetStatus; mediaType?: string }>;
+    assets?: Array<{
+      id: string;
+      status?: RovelleAssetStatus;
+      mediaType?: string;
+    }>;
   } = {},
 ): CanonPinDto {
   const assets = options.assets ?? [{ id: `${code}-asset` }];
@@ -143,7 +147,7 @@ function createPreflight(
     id: SHOT_ID,
     episodeId: EPISODE_ID,
     direction: "Koko finds a clover.",
-    targetDurationSeconds: options.duration ?? 8,
+    targetDurationSeconds: options.duration ?? 4,
     status: options.shotStatus ?? RovelleShotStatus.READY_TO_GENERATE,
     episode: {
       id: EPISODE_ID,
@@ -192,8 +196,8 @@ test("preflight returns only prepared metadata and a prompt without mutating sta
   assert.deepEqual(prepared.budget, {
     budgetUsd: null,
     committedUsd: "0.000000",
-    requestedEstimateUsd: "0.920000",
-    projectedUsd: "0.920000",
+    requestedEstimateUsd: "0.110000",
+    projectedUsd: "0.110000",
     withinBudget: true,
   });
   assert.equal(prisma.calls, 1);
@@ -223,30 +227,30 @@ test("preflight exposes Decimal budget visibility after profile and duration cos
       expected: {
         budgetUsd: null,
         committedUsd: "8.000000",
-        requestedEstimateUsd: "0.920000",
-        projectedUsd: "8.920000",
+        requestedEstimateUsd: "0.110000",
+        projectedUsd: "8.110000",
         withinBudget: true,
       },
     },
     {
-      budgetUsd: "8.920000",
+      budgetUsd: "8.110000",
       committedUsd: "8.000000",
       expected: {
-        budgetUsd: "8.920000",
+        budgetUsd: "8.110000",
         committedUsd: "8.000000",
-        requestedEstimateUsd: "0.920000",
-        projectedUsd: "8.920000",
+        requestedEstimateUsd: "0.110000",
+        projectedUsd: "8.110000",
         withinBudget: true,
       },
     },
     {
-      budgetUsd: "8.919999",
+      budgetUsd: "8.109999",
       committedUsd: "8.000000",
       expected: {
-        budgetUsd: "8.919999",
+        budgetUsd: "8.109999",
         committedUsd: "8.000000",
-        requestedEstimateUsd: "0.920000",
-        projectedUsd: "8.920000",
+        requestedEstimateUsd: "0.110000",
+        projectedUsd: "8.110000",
         withinBudget: false,
       },
     },
@@ -263,14 +267,20 @@ test("preflight exposes Decimal budget visibility after profile and duration cos
 
 test("preflight rejects an episode outside generation states", async () => {
   await assert.rejects(
-    () => createPreflight({ episodeStatus: RovelleEpisodeStatus.DRAFT }).service.preflight(SHOT_ID),
+    () =>
+      createPreflight({
+        episodeStatus: RovelleEpisodeStatus.DRAFT,
+      }).service.preflight(SHOT_ID),
     /episode must be READY_TO_GENERATE or GENERATING/,
   );
 });
 
 test("preflight rejects a shot outside READY_TO_GENERATE", async () => {
   await assert.rejects(
-    () => createPreflight({ shotStatus: RovelleShotStatus.DRAFT }).service.preflight(SHOT_ID),
+    () =>
+      createPreflight({
+        shotStatus: RovelleShotStatus.DRAFT,
+      }).service.preflight(SHOT_ID),
     /shot must be READY_TO_GENERATE/,
   );
 });
@@ -282,10 +292,10 @@ test("preflight rejects durations below four seconds", async () => {
   );
 });
 
-test("preflight rejects durations above thirty seconds", async () => {
+test("preflight rejects Vidu durations other than four seconds", async () => {
   await assert.rejects(
-    () => createPreflight({ duration: 31 }).service.preflight(SHOT_ID),
-    /duration must be an integer from 4 to 30/,
+    () => createPreflight({ duration: 5 }).service.preflight(SHOT_ID),
+    /durationSeconds must be 4 for Vidu 2/,
   );
 });
 
@@ -298,7 +308,10 @@ test("preflight rejects non-integer durations", async () => {
 
 test("preflight requires character, environment, and style canon", async () => {
   await assert.rejects(
-    () => createPreflight({ pins: validCanon().slice(0, 2) }).service.preflight(SHOT_ID),
+    () =>
+      createPreflight({ pins: validCanon().slice(0, 2) }).service.preflight(
+        SHOT_ID,
+      ),
     /CHARACTER, ENVIRONMENT, and STYLE/,
   );
 });

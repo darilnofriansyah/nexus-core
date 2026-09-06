@@ -35,26 +35,30 @@ export interface PromptCompilationInput {
 export class GenerationPromptCompiler {
   compile(input: PromptCompilationInput): PreparedShotGeneration {
     const references: PreparedReference[] = [];
+    const selectedEntityTypes = new Set<RovelleCanonEntityType>();
     const canonReferences = [...input.canon]
       .sort((left, right) => {
         const leftCode = left.version.entity.code;
         const rightCode = right.version.entity.code;
         return leftCode < rightCode ? -1 : leftCode > rightCode ? 1 : 0;
       })
-      .flatMap((pin) =>
-        pin.version.assets.map((attachment) => {
-          const reference: PreparedReference = {
-            assetId: attachment.asset.id,
-            entityCode: pin.version.entity.code,
-            entityType: pin.version.entity.entityType,
-            version: pin.version.version,
-            role: attachment.role,
-            mediaType: attachment.asset.mediaType,
-          };
-          references.push(reference);
-          return `@Image${references.length} — ${reference.entityCode} V${reference.version} — ${reference.role}\nDefinition: ${stableJson(pin.version.definition)}`;
-        }),
-      );
+      .flatMap((pin) => {
+        const entityType = pin.version.entity.entityType;
+        const attachment = pin.version.assets[0];
+        if (!attachment || selectedEntityTypes.has(entityType)) return [];
+
+        selectedEntityTypes.add(entityType);
+        const reference: PreparedReference = {
+          assetId: attachment.asset.id,
+          entityCode: pin.version.entity.code,
+          entityType,
+          version: pin.version.version,
+          role: attachment.role,
+          mediaType: attachment.asset.mediaType,
+        };
+        references.push(reference);
+        return `@Image${references.length} — ${reference.entityCode} V${reference.version} — ${reference.role}\nDefinition: ${stableJson(pin.version.definition)}`;
+      });
     const prompt = [
       "Create one continuous Clovervale animated storybook shot.",
       "",
@@ -91,12 +95,18 @@ export class GenerationPromptCompiler {
 }
 
 function stableJson(value: unknown): string {
-  if (value === null || typeof value === "string" || typeof value === "boolean") {
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "boolean"
+  ) {
     return JSON.stringify(value);
   }
   if (typeof value === "number") {
     if (!Number.isFinite(value)) {
-      throw new BadRequestException("canon definition must contain JSON values");
+      throw new BadRequestException(
+        "canon definition must contain JSON values",
+      );
     }
     return JSON.stringify(value);
   }

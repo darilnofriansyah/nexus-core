@@ -10,7 +10,7 @@ import { GenerationController } from "./generation.controller";
 import { GenerationModule } from "./generation.module";
 import { GenerationService } from "./generation.service";
 import { GENERATION_PROVIDER } from "./providers/generation-provider";
-import { Seedance25Provider } from "./providers/runware/seedance-2-5.provider";
+import { Vidu2Provider } from "./providers/runware/vidu-2.provider";
 import { RunwareSubmitClient } from "./providers/runware/runware-submit.client";
 import { GenerationPromptCompiler } from "./generation-prompt.compiler";
 import { GenerationPreflightService } from "./generation-preflight.service";
@@ -53,9 +53,7 @@ test("submits a shot generation and wraps the service result", async () => {
   const result = await controller.submitShot(shotId, request);
 
   assert.deepEqual(result, { ok: true, data });
-  assert.deepEqual(calls, [
-    { method: "submitShot", args: [shotId, request] },
-  ]);
+  assert.deepEqual(calls, [{ method: "submitShot", args: [shotId, request] }]);
 });
 
 test("lists shot generations and wraps the service result", async () => {
@@ -64,9 +62,7 @@ test("lists shot generations and wraps the service result", async () => {
   const result = await controller.listShotGenerations(shotId);
 
   assert.deepEqual(result, { ok: true, data: [data] });
-  assert.deepEqual(calls, [
-    { method: "listShotGenerations", args: [shotId] },
-  ]);
+  assert.deepEqual(calls, [{ method: "listShotGenerations", args: [shotId] }]);
 });
 
 test("gets a generation and wraps the service result", async () => {
@@ -75,13 +71,14 @@ test("gets a generation and wraps the service result", async () => {
   const result = await controller.getGeneration(generationId);
 
   assert.deepEqual(result, { ok: true, data });
-  assert.deepEqual(calls, [
-    { method: "getGeneration", args: [generationId] },
-  ]);
+  assert.deepEqual(calls, [{ method: "getGeneration", args: [generationId] }]);
 });
 
 test("exposes only the three authenticated generation routes", () => {
-  assert.equal(Reflect.getMetadata(PATH_METADATA, GenerationController), "rovelle");
+  assert.equal(
+    Reflect.getMetadata(PATH_METADATA, GenerationController),
+    "rovelle",
+  );
 
   const routes = [
     ["submitShot", "shots/:shotId/generations", RequestMethod.POST],
@@ -108,14 +105,23 @@ test("exposes only the three authenticated generation routes", () => {
   }
 });
 
-test("binds the generation provider token to Seedance and exports Phase 3B dependencies", () => {
-  const imports = Reflect.getMetadata(MODULE_METADATA.IMPORTS, GenerationModule);
+test("binds the generation provider token to Vidu and exports Phase 3B dependencies", () => {
+  const imports = Reflect.getMetadata(
+    MODULE_METADATA.IMPORTS,
+    GenerationModule,
+  );
   const controllers = Reflect.getMetadata(
     MODULE_METADATA.CONTROLLERS,
     GenerationModule,
   );
-  const providers = Reflect.getMetadata(MODULE_METADATA.PROVIDERS, GenerationModule);
-  const exports = Reflect.getMetadata(MODULE_METADATA.EXPORTS, GenerationModule);
+  const providers = Reflect.getMetadata(
+    MODULE_METADATA.PROVIDERS,
+    GenerationModule,
+  );
+  const exports = Reflect.getMetadata(
+    MODULE_METADATA.EXPORTS,
+    GenerationModule,
+  );
 
   assert.ok(imports);
   assert.ok(controllers.includes(GenerationController));
@@ -123,7 +129,7 @@ test("binds the generation provider token to Seedance and exports Phase 3B depen
   assert.ok(providers.includes(GenerationPreflightService));
   assert.ok(providers.includes(GenerationRepository));
   assert.ok(providers.includes(RunwareSubmitClient));
-  assert.ok(providers.includes(Seedance25Provider));
+  assert.ok(providers.includes(Vidu2Provider));
   assert.ok(providers.includes(GenerationService));
 
   const providerBinding = providers.find(
@@ -135,7 +141,7 @@ test("binds the generation provider token to Seedance and exports Phase 3B depen
   );
   assert.deepEqual(providerBinding, {
     provide: GENERATION_PROVIDER,
-    useExisting: Seedance25Provider,
+    useExisting: Vidu2Provider,
   });
   assert.ok(exports.includes(GenerationService));
   assert.ok(exports.includes(GenerationRepository));

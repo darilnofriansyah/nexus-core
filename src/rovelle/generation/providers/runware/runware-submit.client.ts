@@ -36,7 +36,7 @@ export interface RunwareVideoTask {
   height: number;
   duration: number;
   inputs: { referenceImages: string[] };
-  settings: { audio: false };
+  settings?: { audio: false };
   deliveryMethod: "async";
   numberResults: 1;
   outputType: "URL";
@@ -216,7 +216,10 @@ function findMatchingError(
   );
 }
 
-function findMatchingTaskId(value: unknown, taskUUID: string): string | undefined {
+function findMatchingTaskId(
+  value: unknown,
+  taskUUID: string,
+): string | undefined {
   if (!isRecord(value) || !Array.isArray(value.data)) return undefined;
   const match = value.data.find(
     (item): item is Record<string, unknown> =>
@@ -267,7 +270,12 @@ function retryableForStatus(status: number): boolean {
 }
 
 function retryableForCode(code: string): boolean {
-  return code === "RATE_LIMIT" || code === "TIMEOUT" || code === "NETWORK" || code === "PROVIDER";
+  return (
+    code === "RATE_LIMIT" ||
+    code === "TIMEOUT" ||
+    code === "NETWORK" ||
+    code === "PROVIDER"
+  );
 }
 
 function sanitizeMessage(message: string, apiKey: string): string {

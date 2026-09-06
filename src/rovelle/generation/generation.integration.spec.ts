@@ -184,7 +184,7 @@ describe(
         assetService,
         storage as unknown as R2StorageService,
         provider,
-        "bytedance:seedance@2.5",
+        "vidu:2@0",
       );
       webhookService = new RunwareWebhookService(
         generationRepository,
@@ -255,7 +255,7 @@ describe(
       const episode = await episodeService.createEpisode({
         code: `GEN-${randomUUID().replaceAll("-", "").slice(0, 20)}`,
         title: "Generation submission integration",
-        targetDurationSeconds: 5,
+        targetDurationSeconds: 4,
       });
       await episodeService.updateBrief(episode.id, {
         brief: { premise: "A storybook character crosses the meadow." },
@@ -267,7 +267,7 @@ describe(
           {
             sequence: 1,
             direction: "The character crosses the meadow.",
-            targetDurationSeconds: options.duration ?? 5,
+            targetDurationSeconds: options.duration ?? 4,
           },
         ],
       });
@@ -351,7 +351,7 @@ describe(
           episodeId,
           sequence,
           direction: "The character reaches the oak.",
-          targetDurationSeconds: 5,
+          targetDurationSeconds: 4,
           status: RovelleShotStatus.READY_TO_GENERATE,
         },
       });
@@ -879,7 +879,7 @@ describe(
       assert.equal(row.attempt, 1);
       assert.equal(row.status, RovelleGenerationStatus.SUBMITTED);
       assert.equal(row.profile, RovelleGenerationProfile.DRAFT);
-      assert.equal(row.estimatedCostUsd.toFixed(6), "0.575000");
+      assert.equal(row.estimatedCostUsd.toFixed(6), "0.110000");
 
       const sanitized = row.request as {
         profile: string;
@@ -889,9 +889,9 @@ describe(
         referenceAssetIds: string[];
       };
       assert.equal(sanitized.profile, "DRAFT");
-      assert.equal(sanitized.width, 480);
-      assert.equal(sanitized.height, 854);
-      assert.equal(sanitized.duration, 5);
+      assert.equal(sanitized.width, 1280);
+      assert.equal(sanitized.height, 720);
+      assert.equal(sanitized.duration, 4);
       assert.deepEqual(
         new Set(sanitized.referenceAssetIds),
         new Set(fixture.referenceAssetIds),
@@ -908,9 +908,9 @@ describe(
           (assetId) => `https://signed.invalid/ref-${assetId}`,
         ),
       );
-      assert.equal(provider.calls[0]?.width, 480);
-      assert.equal(provider.calls[0]?.height, 854);
-      assert.equal(provider.calls[0]?.duration, 5);
+      assert.equal(provider.calls[0]?.width, 1280);
+      assert.equal(provider.calls[0]?.height, 720);
+      assert.equal(provider.calls[0]?.duration, 4);
       assert.equal(
         provider.calls[0]?.uploadUrl,
         "https://signed.invalid/output",
@@ -961,7 +961,7 @@ describe(
           episodeId: fixture.episodeId,
           sequence: 2,
           direction: "The character reaches the oak.",
-          targetDurationSeconds: 5,
+          targetDurationSeconds: 4,
           status: RovelleShotStatus.READY_TO_GENERATE,
         },
       });
@@ -1140,7 +1140,7 @@ describe(
           episodeId: fixture.episodeId,
           sequence: 2,
           direction: "The character reaches the oak.",
-          targetDurationSeconds: 5,
+          targetDurationSeconds: 4,
           status: RovelleShotStatus.READY_TO_GENERATE,
         },
       });

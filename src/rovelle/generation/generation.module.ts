@@ -11,7 +11,7 @@ import { RunwareWebhookGuard } from "./webhooks/runware-webhook.guard";
 import { RunwareWebhookService } from "./webhooks/runware-webhook.service";
 import { GENERATION_PROVIDER } from "./providers/generation-provider";
 import { RunwareSubmitClient } from "./providers/runware/runware-submit.client";
-import { Seedance25Provider } from "./providers/runware/seedance-2-5.provider";
+import { Vidu2Provider } from "./providers/runware/vidu-2.provider";
 
 @Module({
   imports: [AssetsModule, CanonModule],
@@ -21,10 +21,10 @@ import { Seedance25Provider } from "./providers/runware/seedance-2-5.provider";
     GenerationPreflightService,
     GenerationRepository,
     RunwareSubmitClient,
-    Seedance25Provider,
+    Vidu2Provider,
     {
       provide: GENERATION_PROVIDER,
-      useExisting: Seedance25Provider,
+      useExisting: Vidu2Provider,
     },
     GenerationService,
     RunwareWebhookGuard,

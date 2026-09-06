@@ -30,11 +30,12 @@ type SeedanceConfig = Pick<
 
 type SeedanceRunwareTask = RunwareVideoTask & { webhookURL: string };
 
-const SUPPORTED_DIMENSIONS = new Set(["480x854", "720x1280"]);
+const SUPPORTED_DIMENSIONS = new Set(["1280x720"]);
 const MIN_WEBHOOK_TOKEN_LENGTH = 32;
+const VIDU_2_MODEL = "vidu:2@0";
 
 @Injectable()
-export class Seedance25Provider implements GenerationProvider {
+export class Vidu2Provider implements GenerationProvider {
   private readonly config: SeedanceConfig;
 
   constructor(
@@ -50,6 +51,7 @@ export class Seedance25Provider implements GenerationProvider {
     request: GenerationProviderSubmission,
   ): Promise<GenerationProviderSubmissionResult> {
     this.validate(request);
+    this.assertModel();
     const webhookURL = this.createWebhookUrl();
 
     const task: SeedanceRunwareTask = {
@@ -61,7 +63,6 @@ export class Seedance25Provider implements GenerationProvider {
       height: request.height,
       duration: request.duration,
       inputs: { referenceImages: [...request.referenceImageUrls] },
-      settings: { audio: false },
       deliveryMethod: "async",
       numberResults: 1,
       outputType: "URL",
@@ -135,6 +136,14 @@ export class Seedance25Provider implements GenerationProvider {
     return webhookUrl.toString();
   }
 
+  private assertModel(): void {
+    if (this.config.runwareVideoModel !== VIDU_2_MODEL) {
+      throw new ServiceUnavailableException(
+        "RUNWARE_VIDEO_MODEL must be vidu:2@0",
+      );
+    }
+  }
+
   private validate(request: GenerationProviderSubmission): void {
     if (
       !Array.isArray(request.referenceImageUrls) ||
@@ -142,8 +151,8 @@ export class Seedance25Provider implements GenerationProvider {
     ) {
       throw new BadRequestException("at least one reference image is required");
     }
-    if (request.referenceImageUrls.length > 30) {
-      throw new BadRequestException("at most 30 references are supported");
+    if (request.referenceImageUrls.length > 3) {
+      throw new BadRequestException("at most 3 references are supported");
     }
     if (
       request.referenceImageUrls.some(
@@ -162,29 +171,23 @@ export class Seedance25Provider implements GenerationProvider {
         "prompt must be between 2 and 10,000 characters",
       );
     }
-    if (
-      !Number.isInteger(request.duration) ||
-      request.duration < 4 ||
-      request.duration > 30
-    ) {
-      throw new BadRequestException(
-        "duration must be an integer from 4 to 30",
-      );
+    if (!Number.isInteger(request.duration) || request.duration !== 4) {
+      throw new BadRequestException("duration must be 4 seconds for Vidu 2");
     }
     if (
       typeof request.width !== "number" ||
       typeof request.height !== "number" ||
       !SUPPORTED_DIMENSIONS.has(`${request.width}x${request.height}`)
     ) {
-      throw new BadRequestException(
-        "dimensions must be 480x854 or 720x1280",
-      );
+      throw new BadRequestException("dimensions must be 1280x720 for Vidu 2");
     }
   }
 }
 
 function isLoopback(hostname: string): boolean {
-  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]";
+  return (
+    hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]"
+  );
 }
 
 function hasUserInfo(baseUrl: string): boolean {

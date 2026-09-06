@@ -48,14 +48,14 @@ function generation(
     provider: RovelleGenerationProvider.RUNWARE,
     modality: RovelleGenerationModality.VIDEO,
     profile: RovelleGenerationProfile.DRAFT,
-    model: "bytedance:seedance@2.5",
+    model: "vidu:2@0",
     providerTaskId: TASK_ID,
     prompt: "Make Koko walk through the garden.",
     request: {
       profile: "DRAFT",
-      width: 480,
-      height: 854,
-      duration: 5,
+      width: 1280,
+      height: 720,
+      duration: 4,
       audio: false,
       referenceAssetIds: REFERENCE_IDS,
       referenceCanonVersions: [
@@ -65,9 +65,9 @@ function generation(
     },
     status: RovelleGenerationStatus.CREATED,
     outputAssetId: OUTPUT_ASSET_ID,
-    estimatedCostUsd: new Prisma.Decimal("0.575000"),
+    estimatedCostUsd: new Prisma.Decimal("0.110000"),
     currency: "USD",
-    pricingSource: "RUNWARE_SEEDANCE_2_5_2026_08_28",
+    pricingSource: "RUNWARE_VIDU_2_0_720P_4S_2026_09_06",
     actualCostUsd: null,
     errorCode: null,
     errorMessage: null,
@@ -84,7 +84,7 @@ function prepared(): PreparedShotGeneration {
     shotId: SHOT_ID,
     episodeId: EPISODE_ID,
     direction: "Koko walks through the garden.",
-    duration: 5,
+    duration: 4,
     prompt: "Make Koko walk through the garden.",
     references: [
       {
@@ -329,13 +329,15 @@ test("maps an authoritative budget rejection to a safe 409 before signed URLs or
 
 test("returns a previously accepted request even when its current budget would reject a new attempt", async () => {
   const { service, repository, preflight, provider, events } = createService();
-  repository.existing = generation({ status: RovelleGenerationStatus.SUBMITTED });
+  repository.existing = generation({
+    status: RovelleGenerationStatus.SUBMITTED,
+  });
   repository.createResult = {
     status: "budget_exceeded",
     budgetUsd: new Prisma.Decimal("1.000000"),
     committedUsd: new Prisma.Decimal("1.000000"),
-    requestedEstimateUsd: new Prisma.Decimal("0.575000"),
-    projectedUsd: new Prisma.Decimal("1.575000"),
+    requestedEstimateUsd: new Prisma.Decimal("0.110000"),
+    projectedUsd: new Prisma.Decimal("1.110000"),
   };
 
   const result = await service.submitShot(SHOT_ID, {
@@ -369,10 +371,10 @@ test("persists the attempt before issuing ordered reference and output URLs", as
     repository.createInput?.outputStorageKey,
     `ringmaster/assets/${repository.createInput?.outputAssetId}`,
   );
-  assert.equal(repository.createInput?.estimatedCostUsd.toFixed(6), "0.575000");
+  assert.equal(repository.createInput?.estimatedCostUsd.toFixed(6), "0.110000");
   assert.equal(
     repository.createInput?.pricingSource,
-    "RUNWARE_SEEDANCE_2_5_2026_08_28",
+    "RUNWARE_VIDU_2_0_720P_4S_2026_09_06",
   );
   assert.deepEqual(events, [
     "existing",
@@ -400,9 +402,9 @@ test("submits only prompt, settings, and temporary URLs to the provider", async 
     {
       taskId: repository.createInput?.providerTaskId,
       prompt: "Make Koko walk through the garden.",
-      duration: 5,
-      width: 480,
-      height: 854,
+      duration: 4,
+      width: 1280,
+      height: 720,
       referenceImageUrls: [
         "https://signed.example/read-1",
         "https://signed.example/read-2",
@@ -432,9 +434,9 @@ test("stores the allowlisted request snapshot without temporary URLs", async () 
 
   assert.deepEqual(repository.createInput?.sanitizedRequest, {
     profile: "DRAFT",
-    width: 480,
-    height: 854,
-    duration: 5,
+    width: 1280,
+    height: 720,
+    duration: 4,
     audio: false,
     referenceAssetIds: REFERENCE_IDS,
     referenceCanonVersions: [

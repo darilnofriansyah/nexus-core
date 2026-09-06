@@ -52,8 +52,7 @@ export function readEnv(): CoreApiEnv {
     runwareApiKey: process.env.RUNWARE_API_KEY,
     runwareApiBaseUrl:
       process.env.RUNWARE_API_BASE_URL ?? "https://api.runware.ai/v1",
-    runwareVideoModel:
-      process.env.RUNWARE_VIDEO_MODEL ?? "bytedance:seedance@2.5",
+    runwareVideoModel: process.env.RUNWARE_VIDEO_MODEL ?? "vidu:2@0",
     runwareSubmitTimeoutMs: Number(
       process.env.RUNWARE_SUBMIT_TIMEOUT_MS ?? 15000,
     ),

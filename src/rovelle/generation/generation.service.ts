@@ -10,10 +10,7 @@ import {
   Optional,
 } from "@nestjs/common";
 import { readEnv } from "../../config/env";
-import {
-  Prisma,
-  RovelleGenerationProfile,
-} from "../../generated/prisma/client";
+import { Prisma } from "../../generated/prisma/client";
 import { AssetService } from "../assets/asset.service";
 import { buildAssetStorageKey } from "../assets/asset-validation";
 import { R2StorageService } from "../assets/r2-storage.service";
@@ -60,10 +57,7 @@ export class GenerationService {
     );
     if (existing) return toGenerationAttemptDto(existing);
 
-    const prepared = await this.preflight.preflight(
-      shotId,
-      normalized.profile,
-    );
+    const prepared = await this.preflight.preflight(shotId, normalized.profile);
     const profile = getGenerationProfile(normalized.profile);
     const estimatedCostUsd = new Prisma.Decimal(
       estimateGenerationCostUsd(normalized.profile, prepared.duration),
@@ -78,7 +72,7 @@ export class GenerationService {
       providerTaskId,
       outputAssetId,
       outputStorageKey,
-      profile: normalized.profile as RovelleGenerationProfile,
+      profile: normalized.profile,
       model: this.model,
       prompt: prepared.prompt,
       sanitizedRequest: sanitizedRequest(normalized.profile, prepared),

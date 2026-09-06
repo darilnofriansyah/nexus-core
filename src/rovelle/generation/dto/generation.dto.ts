@@ -3,9 +3,9 @@ import type {
   RovelleGenerationProfile,
   RovelleGenerationProvider,
   RovelleGenerationStatus,
-} from '../../../generated/prisma/client';
+} from "../../../generated/prisma/client";
 
-export type GenerationProfile = 'DRAFT' | 'PRODUCTION';
+export type GenerationProfile = "DRAFT";
 
 export interface SubmitShotGenerationRequestDto {
   requestId: string;

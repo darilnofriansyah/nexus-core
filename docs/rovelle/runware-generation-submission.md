@@ -1,7 +1,7 @@
 # Rovelle Runware generation submission
 
-Phase 3A submits one Clovervale shot from Core directly to Runware Seedance
-2.5. Core returns after Runware accepts the asynchronous task; it does not
+Phase 3A submits one Clovervale shot from Core directly to Runware Vidu 2.0.
+Core returns after Runware accepts the asynchronous task; it does not
 poll for a completed video.
 
 Raw REST is deliberate. The Runware SDK `.run()` path polls async
@@ -33,11 +33,11 @@ All routes are under `/api`, use the existing `x-core-api-key` guard when
 `CORE_API_KEY` is configured, and return `{ "ok": true, "data": ... }` on
 success.
 
-| Method | Endpoint | Purpose |
-| --- | --- | --- |
-| POST | `/api/rovelle/shots/:shotId/generations` | Submit or replay one idempotent shot generation |
-| GET | `/api/rovelle/shots/:shotId/generations` | List attempts by attempt number |
-| GET | `/api/rovelle/generations/:generationId` | Read one attempt |
+| Method | Endpoint                                 | Purpose                                         |
+| ------ | ---------------------------------------- | ----------------------------------------------- |
+| POST   | `/api/rovelle/shots/:shotId/generations` | Submit or replay one idempotent shot generation |
+| GET    | `/api/rovelle/shots/:shotId/generations` | List attempts by attempt number                 |
+| GET    | `/api/rovelle/generations/:generationId` | Read one attempt                                |
 
 n8n HTTP Request node for submission:
 
@@ -65,7 +65,12 @@ The requested shot must be `READY_TO_GENERATE`; its episode may be
 `READY_TO_GENERATE` or already `GENERATING`. Core resolves effective canon
 (episode pins plus shot overrides) before spending. It requires locked
 `CHARACTER`, `ENVIRONMENT`, and `STYLE` versions. Every selected reference
-must be an `AVAILABLE` `image/*` asset, with no more than 30 total.
+must be an `AVAILABLE` `image/*` asset. Vidu 2 accepts one through three
+references per generation.
+
+The canon registry retains every locked attachment. For Vidu submission, Core
+selects the first sorted asset from each canon type, yielding at most one
+`CHARACTER`, `ENVIRONMENT`, and `STYLE` reference.
 
 Core compiles canon and shot direction deterministically. The prompt is
 limited to 10,000 characters and rejects URL-looking content. Reference order
@@ -75,14 +80,13 @@ ready shots may then submit while that episode is `GENERATING`.
 
 ## Profiles and price estimate
 
-| Profile | Dimensions | Fixed estimate |
-| --- | --- | --- |
-| `DRAFT` | 480x854 | USD 0.115/second |
-| `PRODUCTION` | 720x1280 | USD 0.249/second |
+| Profile | Dimensions | Fixed estimate    |
+| ------- | ---------- | ----------------- |
+| `DRAFT` | 1280x720   | USD 0.0275/second |
 
-Duration comes from the shot and must be an integer from 4 through 30 seconds.
-Core stores the estimate as an exact six-decimal value with pricing source;
-audio is always disabled.
+Vidu 2 reference-image generations use exactly one 4-second duration and one
+through three reference images. Core stores the estimate as an exact
+six-decimal value with pricing source.
 
 ## Private R2 transfer
 
@@ -105,6 +109,6 @@ retried automatically.
 
 Automated tests use fake Runware and R2 implementations and spend no credits.
 A real smoke is separate: it needs explicit approval for one DRAFT, 4-second
-submission (documented estimate USD 0.460000), configured private R2 and
+submission (documented estimate USD 0.110000), configured private R2 and
 Runware key, and a real ready shot with required locked canon. Do not run it
 until that approval is given.
