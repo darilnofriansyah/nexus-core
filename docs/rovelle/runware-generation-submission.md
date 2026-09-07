@@ -61,6 +61,32 @@ advances their status or records normalized provider failure information.
 
 ## Preconditions and prompt
 
+## Human generation review
+
+`POST /api/rovelle/generations/:generationId/reviews` appends one human review
+or replays the same `requestId`. Reusing a request ID for another generation
+returns `409`. The endpoint uses the global Core API-key guard; n8n sends:
+
+```text
+Header: x-core-api-key: <CORE_API_KEY>
+Header: Content-Type: application/json
+```
+
+```json
+{
+  "requestId": "550e8400-e29b-41d4-a716-446655440000",
+  "decision": "APPROVE",
+  "notes": "Approved for render."
+}
+```
+
+Only a `COMPLETED` generation with an `AVAILABLE` `GENERATION` `video/*`
+output can be reviewed. `APPROVE` points the shot to that generation and marks
+the shot `APPROVED` (a later approval may replace that pointer); `REJECT` only
+appends the audit row; `REGENERATE` clears
+the selected generation and returns that shot to `READY_TO_GENERATE`. n8n keeps
+provider submission separate: this endpoint never calls the generation provider.
+
 The requested shot must be `READY_TO_GENERATE`; its episode may be
 `READY_TO_GENERATE` or already `GENERATING`. Core resolves effective canon
 (episode pins plus shot overrides) before spending. It requires locked
