@@ -21,7 +21,7 @@ export class GenerationReviewController {
     @Param("generationId") generationId: string,
     @Body() body: SubmitHumanReviewRequestDto,
   ) {
-    const normalized = generationId.trim();
+    const normalized = generationId.trim().toLowerCase();
     if (!UUID_PATTERN.test(normalized)) {
       throw new BadRequestException("generationId must be a valid UUID");
     }

@@ -22,10 +22,14 @@ function createRepository(
   options: {
     generationStatus?: RovelleGenerationStatus;
     outputStatus?: RovelleAssetStatus;
+    episodeStatus?: RovelleEpisodeStatus;
   } = {},
 ) {
   const state = {
-    episode: { id: EPISODE_ID, status: RovelleEpisodeStatus.REVIEW_REQUIRED },
+    episode: {
+      id: EPISODE_ID,
+      status: options.episodeStatus ?? RovelleEpisodeStatus.REVIEW_REQUIRED,
+    },
     shot: {
       id: SHOT_ID,
       episodeId: EPISODE_ID,
@@ -139,12 +143,18 @@ function createRepository(
         where,
         data,
       }: {
-        where: { id: string; status?: RovelleEpisodeStatus };
+        where: {
+          id: string;
+          status?: RovelleEpisodeStatus | { in: RovelleEpisodeStatus[] };
+        };
         data: Partial<typeof state.episode>;
       }) => {
         if (
           where.id !== state.episode.id ||
-          (where.status !== undefined && where.status !== state.episode.status)
+          (typeof where.status === "string" &&
+            where.status !== state.episode.status) ||
+          (typeof where.status === "object" &&
+            !where.status.in.includes(state.episode.status))
         )
           return { count: 0 };
         Object.assign(state.episode, data);
@@ -199,6 +209,27 @@ describe("generation review repository", () => {
 
       assert.notEqual(result.status, "reviewed");
       assert.equal(state.reviews.length, 0);
+    }
+  });
+
+  test("does not append or mutate review state after generation review has ended", async () => {
+    for (const episodeStatus of [
+      RovelleEpisodeStatus.RENDERING,
+      RovelleEpisodeStatus.FINAL_REVIEW,
+      RovelleEpisodeStatus.PUBLISH_READY,
+    ]) {
+      const { repository, state } = createRepository({ episodeStatus });
+      const result = await repository.submitHumanReview({
+        clientRequestId: REQUEST_ID,
+        generationId: GENERATION_ID,
+        decision: RovelleReviewDecision.REGENERATE,
+        notes: null,
+      });
+
+      assert.deepEqual(result, { status: "invalid_shot_state" });
+      assert.equal(state.reviews.length, 0);
+      assert.equal(state.shot.status, RovelleShotStatus.REVIEW_REQUIRED);
+      assert.equal(state.episode.status, episodeStatus);
     }
   });
 

@@ -58,3 +58,21 @@ test("rejects an invalid generation id before service access", async () => {
       error.message === "generationId must be a valid UUID",
   );
 });
+
+test("canonicalizes mixed-case generation retries before service access", async () => {
+  const calls: unknown[][] = [];
+  const controller = new GenerationReviewController({
+    submitHumanReview: async (...args: unknown[]) => {
+      calls.push(args);
+      return {};
+    },
+  } as unknown as GenerationReviewService);
+
+  await controller.submitHumanReview(GENERATION_ID.toUpperCase(), request);
+  await controller.submitHumanReview(GENERATION_ID, request);
+
+  assert.deepEqual(calls, [
+    [GENERATION_ID, request],
+    [GENERATION_ID, request],
+  ]);
+});

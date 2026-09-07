@@ -3,6 +3,7 @@ import {
   Prisma,
   RovelleAssetStatus,
   RovelleAssetType,
+  RovelleEpisodeStatus,
   RovelleGenerationStatus,
   RovelleReviewDecision,
   RovelleReviewerType,
@@ -20,6 +21,12 @@ const GENERATION_INCLUDE = {
 const REVIEWABLE_SHOT_STATUSES: RovelleShotStatus[] = [
   RovelleShotStatus.REVIEW_REQUIRED,
   RovelleShotStatus.APPROVED,
+];
+
+const GENERATION_REVIEW_EPISODE_STATUSES: RovelleEpisodeStatus[] = [
+  RovelleEpisodeStatus.REVIEW_REQUIRED,
+  RovelleEpisodeStatus.GENERATING,
+  RovelleEpisodeStatus.GENERATION_APPROVED,
 ];
 
 type ReviewWithGeneration = Prisma.RovelleReviewGetPayload<{
@@ -102,6 +109,13 @@ export class GenerationReviewRepository {
     }
     if (!isReviewableOutput(generation))
       return { status: "output_not_available" };
+    if (
+      !GENERATION_REVIEW_EPISODE_STATUSES.includes(
+        generation.shot.episode.status,
+      )
+    ) {
+      return { status: "invalid_shot_state" };
+    }
     if (!REVIEWABLE_SHOT_STATUSES.includes(generation.shot.status)) {
       return { status: "invalid_shot_state" };
     }
@@ -152,7 +166,10 @@ export class GenerationReviewRepository {
       ).length,
     });
     const episode = await tx.rovelleEpisode.updateMany({
-      where: { id: generation.shot.episodeId },
+      where: {
+        id: generation.shot.episodeId,
+        status: { in: GENERATION_REVIEW_EPISODE_STATUSES },
+      },
       data: { status },
     });
     if (episode.count !== 1) throw new ReviewStateChangedError();
