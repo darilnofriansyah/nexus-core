@@ -6,6 +6,7 @@ import { FinalReviewModule } from "./final-review/final-review.module";
 import { ProductionModule } from "./production/production.module";
 import { RenderModule } from "./render/render.module";
 import { ReviewModule } from "./review/review.module";
+import { CreatorModule } from "./creator/creator.module";
 
 @Module({
   imports: [
@@ -16,6 +17,7 @@ import { ReviewModule } from "./review/review.module";
     RenderModule,
     FinalReviewModule,
     ReviewModule,
+    CreatorModule,
   ],
 })
 export class RovelleModule {}
