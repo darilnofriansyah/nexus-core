@@ -2,13 +2,16 @@ import { Injectable, Optional } from "@nestjs/common";
 import { randomBytes, randomUUID } from "node:crypto";
 import { CanonPinService } from "../canon/canon-pin.service";
 import { CanonRepository } from "../canon/canon.repository";
+import { CanonService } from "../canon/canon.service";
 import { GenerationService } from "../generation/generation.service";
 import { GenerationPreflightService } from "../generation/generation-preflight.service";
 import { generationCanonReadinessError } from "../generation/generation-canon-readiness";
 import { EpisodeService } from "../production/episode.service";
 import { GenerationReviewService } from "../review/generation-review.service";
+import { RenderService } from "../render/render.service";
 import type { Prisma } from "../../generated/prisma/client";
 import { CreatorRepository } from "./creator.repository";
+import { CreatorUploadService } from "./creator-upload.service";
 import type { CreatorDraftData, CreatorStep, CreatorTelegramReply, CreatorTelegramRequest } from "./dto/creator.dto";
 
 const ALLOWLISTED_USER = "976684739";
@@ -26,6 +29,9 @@ export class CreatorService {
     @Optional() private readonly generations?: GenerationService,
     @Optional() private readonly reviews?: GenerationReviewService,
     @Optional() private readonly preflight?: GenerationPreflightService,
+    @Optional() private readonly canon?: CanonService,
+    @Optional() private readonly renders?: RenderService,
+    @Optional() private readonly uploads?: CreatorUploadService,
   ) {}
 
   async handleTelegram(request: CreatorTelegramRequest): Promise<CreatorTelegramReply> {
@@ -39,9 +45,8 @@ export class CreatorService {
   private async handleCallback(telegramUserId: string, token: string): Promise<CreatorTelegramReply> {
     if (token === "new") return this.beginNew(telegramUserId);
     if (token === "mywork") return this.myWork(telegramUserId);
-    if (["canon", "audio"].includes(token)) {
-      return { text: "That guided step is coming next. Send /new to draft an episode." };
-    }
+    if (token === "canon") return this.beginCanon(telegramUserId);
+    if (token === "audio") return this.beginAudio(telegramUserId);
     const pending = await this.repository.findPendingButtonAction(token, telegramUserId);
     if (pending.status === "duplicate") return safeReply(pending.result) ?? { text: "That button was already used." };
     if (pending.status !== "pending") return { text: "That button is expired or no longer available. Send /start to continue." };
@@ -50,12 +55,20 @@ export class CreatorService {
     const canonVersions = confirmation ? await this.findLockedCanon(confirmation.draft) : null;
     if (confirmation && !canonVersions) return { text: "A locked canon version is needed before this draft can be confirmed." };
     const reviewAction = isReviewActionKind(pending.action.kind) ? readReviewAction(pending.action.payload) : null;
-    const actionGroupScope = pending.action.kind === "GENERATE_SHOT" ? "generation" : reviewAction ? "review" : null;
+    const renderAction = pending.action.kind === "QUEUE_RENDER" ? readRenderAction(pending.action.payload) : null;
+    const lockAction = pending.action.kind === "LOCK_CANON" ? readCanonLockAction(pending.action.payload) : null;
+    const actionGroupScope = pending.action.kind === "GENERATE_SHOT" ? "generation" : reviewAction ? "review" : renderAction ? "render" : lockAction ? "canonLock" : null;
     if (isReviewActionKind(pending.action.kind) && (!reviewAction || !(await this.isCurrentReviewAction(telegramUserId, reviewAction)))) {
       return { text: "That review is no longer current. Check /mywork for its status." };
     }
-    if (pending.action.kind === "GENERATE_SHOT" && !readActionGroup(pending.action.payload)) {
+    if ((pending.action.kind === "GENERATE_SHOT" || pending.action.kind === "QUEUE_RENDER") && !readActionGroup(pending.action.payload)) {
       return { text: "That generation is no longer current. Check /mywork for its status." };
+    }
+    if (pending.action.kind === "QUEUE_RENDER" && (!renderAction || !(await this.canQueueRender(telegramUserId, renderAction)))) {
+      return { text: "Render is not ready yet. Check /mywork for its status." };
+    }
+    if (pending.action.kind === "LOCK_CANON" && (!lockAction || !(await this.canLockCanon(telegramUserId, lockAction)))) {
+      return { text: "That canon lock is no longer available. Send /mywork to continue." };
     }
     if (pending.action.kind === "GENERATE_SHOT" || pending.action.kind === "REGENERATE_SHOT") {
       const action = readShotAction(pending.action.payload);
@@ -94,6 +107,8 @@ export class CreatorService {
         return await this.submitGeneration(result.action.kind, result.action.payload, requestId, reviewRequestId);
       }
       if (result.action.kind === "APPROVE_GENERATION") return await this.approveGeneration(result.action.payload, reviewRequestId);
+      if (result.action.kind === "QUEUE_RENDER") return await this.queueRender(result.action.payload, requestId);
+      if (result.action.kind === "LOCK_CANON") return await this.lockCanon(telegramUserId, result.action.payload);
       return { text: "That action is not available yet. Send /start to continue." };
     } catch {
       const reply = postConsumeFailureReply(result.action.kind);
@@ -112,10 +127,12 @@ export class CreatorService {
     if (command === "/start") return this.startReply();
     if (command === "/new") return this.beginNew(telegramUserId);
     if (command === "/mywork") return this.myWork(telegramUserId);
-    if (["/canon", "/audio"].includes(command)) return { text: "That guided step is coming next. Send /new to draft an episode." };
+    if (command === "/canon") return this.beginCanon(telegramUserId);
+    if (command === "/audio") return this.beginAudio(telegramUserId);
 
     const session = await this.repository.findSession(telegramUserId);
     if (!session) return { text: "Send /start to begin." };
+    if (session.step === "CANON_SETUP") return this.createCanonUpload(telegramUserId, (session.data ?? {}) as CreatorDraftData, text);
     return this.advanceDraft(telegramUserId, session.step as CreatorStep, (session.data ?? {}) as CreatorDraftData, text);
   }
 
@@ -129,6 +146,57 @@ export class CreatorService {
   private async beginNew(telegramUserId: string): Promise<CreatorTelegramReply> {
     await this.repository.upsertSession({ telegramUserId, step: "NEW_TITLE", data: { shotDirections: [] } });
     return { text: "What is the episode title?" };
+  }
+
+  private async beginCanon(telegramUserId: string): Promise<CreatorTelegramReply> {
+    const session = await this.repository.findSession(telegramUserId);
+    await this.repository.upsertSession({ telegramUserId, step: "CANON_SETUP", data: isRecord(session?.data) ? session.data : {} });
+    return { text: "Send canon details as CODE | CHARACTER, ENVIRONMENT, or STYLE | display name." };
+  }
+
+  private async createCanonUpload(telegramUserId: string, data: CreatorDraftData, text: string): Promise<CreatorTelegramReply> {
+    const input = parseCanonSetup(text);
+    if (!input || !this.canon || !this.canonRepository || !this.uploads) return { text: "Use CODE | CHARACTER, ENVIRONMENT, or STYLE | display name." };
+    try {
+      const entity = await this.canonRepository.findEntityByCode(input.code);
+      let versionId: string;
+      if (!entity) {
+        const created = await this.canon.createEntity({ code: input.code, displayName: input.displayName, entityType: input.entityType });
+        versionId = (await this.canon.createVersion(created.id, { definition: { displayName: input.displayName } })).id;
+      } else {
+        if (entity.entityType !== input.entityType) return { text: "That canon code already uses a different type." };
+        versionId = (entity.versions.find((candidate) => candidate.status === "DRAFT")
+          ?? await this.canon.createVersion(entity.id, { definition: { displayName: input.displayName } })).id;
+      }
+      const action = await this.createAction(telegramUserId, "UPLOAD_CANON", {
+        canonVersionId: versionId,
+        assetType: canonAssetType(input.entityType),
+      });
+      await this.repository.upsertSession({ telegramUserId, step: "IDLE", data: data as Prisma.JsonObject });
+      return {
+        text: "Canon draft ready. Open the secure page to choose its reference image.",
+        inlineKeyboard: [[{ text: "Upload canon image", url: this.uploads.pageUrl(action.token) }]],
+      };
+    } catch {
+      return { text: "Canon setup could not start. Return to Telegram and try again." };
+    }
+  }
+
+  private async beginAudio(telegramUserId: string): Promise<CreatorTelegramReply> {
+    const session = await this.repository.findSession(telegramUserId);
+    const episodeId = readEpisodeId(session?.data);
+    if (!episodeId || !this.episodes || !this.uploads) return { text: "Confirm an episode before adding its audio master." };
+    try {
+      const episode = await this.episodes.getEpisode(episodeId);
+      if (!hasApprovedShots(episode.shots)) return { text: "Approve every shot before adding the audio master." };
+      const action = await this.createAction(telegramUserId, "UPLOAD_AUDIO", { episodeId });
+      return {
+        text: "Open the secure page to choose the audio master.",
+        inlineKeyboard: [[{ text: "Upload audio master", url: this.uploads.pageUrl(action.token) }]],
+      };
+    } catch {
+      return { text: "Audio setup could not start. Return to Telegram and try again." };
+    }
   }
 
   private async advanceDraft(telegramUserId: string, step: CreatorStep, data: CreatorDraftData, text: string): Promise<CreatorTelegramReply> {
@@ -271,6 +339,24 @@ export class CreatorService {
     return { text: `Shot ${action.sequence} approved. Send /mywork for the next step.` };
   }
 
+  private async queueRender(payload: unknown, requestId: string): Promise<CreatorTelegramReply> {
+    const action = readRenderAction(payload);
+    if (!action || !this.renders) return { text: "Render is not ready yet. Check /mywork for its status." };
+    await this.renders.createRender(action.episodeId, { requestId, audioAssetId: action.audioAssetId });
+    return { text: "Render queued. Rovelle will join the approved shots with your audio." };
+  }
+
+  private async lockCanon(telegramUserId: string, payload: unknown): Promise<CreatorTelegramReply> {
+    const action = readCanonLockAction(payload);
+    if (!action || !this.canon) return { text: "That canon lock is no longer available. Send /mywork to continue." };
+    await this.canon.lockVersion(action.canonVersionId);
+    const session = await this.repository.findSession(telegramUserId);
+    const data = isRecord(session?.data) ? { ...session.data } : {};
+    delete data.pendingCanonLockVersionId;
+    await this.repository.upsertSession({ telegramUserId, step: session?.step ?? "IDLE", data: data as Prisma.JsonObject });
+    return { text: "Canon locked and ready to reuse in new episodes." };
+  }
+
   private async findLockedCanon(draft: ConfirmedDraft): Promise<Array<{ entityId: string; versionId: string }> | null> {
     if (!this.canonRepository) throw new Error("Creator domain services are unavailable");
     const canonVersions: Array<{ entityId: string; versionId: string }> = [];
@@ -298,6 +384,14 @@ export class CreatorService {
     if (confirmation) {
       return this.retryConfirmation(telegramUserId, confirmation.draft, confirmation.episodeId, confirmation.stage);
     }
+    const pendingCanonLockVersionId = readPendingCanonLockVersionId(session?.data);
+    if (pendingCanonLockVersionId) {
+      const action = await this.createAction(telegramUserId, "LOCK_CANON", {
+        canonVersionId: pendingCanonLockVersionId,
+        actionGroup: `canon-lock:${telegramUserId}:${pendingCanonLockVersionId}`,
+      });
+      return { text: "Canon image is ready. Lock it before reusing this canon.", inlineKeyboard: [[{ text: "Lock canon", callbackData: `rv:${action.token}` }]] };
+    }
     const episodeId = readEpisodeId(session?.data);
     if (!episodeId || !this.episodes || !this.generations) return { text: "No confirmed episode yet. Send /new to draft one." };
     const episode = await this.episodes.getEpisode(episodeId);
@@ -314,6 +408,16 @@ export class CreatorService {
     }
     const generating = episode.shots.find((shot) => shot.status === "GENERATING");
     if (generating) return { text: `Shot ${generating.sequence} generation is in progress. Check /mywork again soon.` };
+    if (hasApprovedShots(episode.shots)) {
+      const audioAssetId = readAudioMasterAssetId(session?.data);
+      if (!audioAssetId) return { text: "All shots are approved. Add audio with /audio to prepare the render." };
+      const action = await this.createAction(telegramUserId, "QUEUE_RENDER", {
+        episodeId: episode.id,
+        audioAssetId,
+        actionGroup: `render:${telegramUserId}:${episode.id}`,
+      });
+      return { text: "All shots and audio are ready.", inlineKeyboard: [[{ text: "Render episode", callbackData: `rv:${action.token}` }]] };
+    }
     return this.generateNextShot(telegramUserId, episode.id, episode.shots);
   }
 
@@ -359,6 +463,21 @@ export class CreatorService {
     const currentGeneration = [...(await this.generations.listShotGenerations(shot.id))].reverse().find((candidate) => candidate.status === "COMPLETED");
     return currentGeneration?.id === action.generationId;
   }
+
+  private async canQueueRender(telegramUserId: string, action: RenderAction): Promise<boolean> {
+    if (!this.episodes) return false;
+    const session = await this.repository.findSession(telegramUserId);
+    if (readEpisodeId(session?.data) !== action.episodeId || readAudioMasterAssetId(session?.data) !== action.audioAssetId) return false;
+    try {
+      return hasApprovedShots((await this.episodes.getEpisode(action.episodeId)).shots);
+    } catch {
+      return false;
+    }
+  }
+
+  private async canLockCanon(telegramUserId: string, action: CanonLockAction): Promise<boolean> {
+    return readPendingCanonLockVersionId((await this.repository.findSession(telegramUserId))?.data) === action.canonVersionId;
+  }
 }
 
 function safeReply(value: unknown): CreatorTelegramReply | null {
@@ -371,13 +490,18 @@ function canonNotReadyReply(): CreatorTelegramReply {
 }
 
 function postConsumeFailureReply(kind: string): CreatorTelegramReply {
-  return { text: kind === "APPROVE_GENERATION" ? "This review could not be completed. Check /mywork before trying again." : "This generation action could not be completed. Check /mywork before trying again." };
+  if (kind === "APPROVE_GENERATION") return { text: "This review could not be completed. Check /mywork before trying again." };
+  if (kind === "QUEUE_RENDER") return { text: "This render could not be queued. Check /mywork before trying again." };
+  if (kind === "LOCK_CANON") return { text: "This canon lock could not be completed. Check /mywork before trying again." };
+  return { text: "This generation action could not be completed. Check /mywork before trying again." };
 }
 
 type ConfirmedDraft = Required<Pick<CreatorDraftData, "title" | "duration" | "premise" | "learningGoal" | "tone" | "shotDirections">> & Pick<CreatorDraftData, "canonCodes">;
 type ConfirmationStage = "NEW" | "CREATED" | "BRIEF_UPDATED" | "BRIEF_APPROVED" | "PREPRODUCTION" | "SHOTS_REPLACED" | "CANON_PINNED" | "READY";
 type ConfirmationAction = { draft: ConfirmedDraft; episodeId?: string; stage: ConfirmationStage };
 type ReviewAction = { shotId: string; generationId: string; sequence: number; actionGroup: string };
+type RenderAction = { episodeId: string; audioAssetId: string; actionGroup: string };
+type CanonLockAction = { canonVersionId: string; actionGroup: string };
 
 function readDraft(payload: unknown): ConfirmedDraft | null {
   if (!isRecord(payload) || !isRecord(payload.draft)) return null;
@@ -429,6 +553,18 @@ function readReviewAction(payload: unknown): ReviewAction | null {
     : null;
 }
 
+function readRenderAction(payload: unknown): RenderAction | null {
+  return isRecord(payload) && typeof payload.episodeId === "string" && typeof payload.audioAssetId === "string" && typeof payload.actionGroup === "string" && payload.actionGroup.length > 0
+    ? { episodeId: payload.episodeId, audioAssetId: payload.audioAssetId, actionGroup: payload.actionGroup }
+    : null;
+}
+
+function readCanonLockAction(payload: unknown): CanonLockAction | null {
+  return isRecord(payload) && typeof payload.canonVersionId === "string" && typeof payload.actionGroup === "string" && payload.actionGroup.length > 0
+    ? { canonVersionId: payload.canonVersionId, actionGroup: payload.actionGroup }
+    : null;
+}
+
 function readActionGroup(payload: unknown): string | null {
   return isRecord(payload) && typeof payload.actionGroup === "string" && payload.actionGroup.length > 0 ? payload.actionGroup : null;
 }
@@ -439,6 +575,18 @@ function isReviewActionKind(kind: string): boolean {
 
 function readEpisodeId(value: unknown): string | null {
   return isRecord(value) && typeof value.episodeId === "string" ? value.episodeId : null;
+}
+
+function readAudioMasterAssetId(value: unknown): string | null {
+  return isRecord(value) && typeof value.audioMasterAssetId === "string" ? value.audioMasterAssetId : null;
+}
+
+function readPendingCanonLockVersionId(value: unknown): string | null {
+  return isRecord(value) && typeof value.pendingCanonLockVersionId === "string" ? value.pendingCanonLockVersionId : null;
+}
+
+function hasApprovedShots(shots: Array<{ status: string }>): boolean {
+  return shots.length > 0 && shots.every((shot) => shot.status === "APPROVED");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -471,6 +619,16 @@ function draftShotDuration(): number {
   return 4;
 }
 
+function parseCanonSetup(text: string): { code: string; entityType: "CHARACTER" | "ENVIRONMENT" | "STYLE"; displayName: string } | null {
+  const [code, type, displayName, ...extra] = text.split("|").map((part) => part.trim());
+  if (extra.length || !code || !displayName || !["CHARACTER", "ENVIRONMENT", "STYLE"].includes(type?.toUpperCase())) return null;
+  return { code: code.toUpperCase(), entityType: type!.toUpperCase() as "CHARACTER" | "ENVIRONMENT" | "STYLE", displayName };
+}
+
+function canonAssetType(type: "CHARACTER" | "ENVIRONMENT" | "STYLE"): "CHARACTER_REFERENCE" | "ENVIRONMENT_REFERENCE" | "STYLE_REFERENCE" {
+  return { CHARACTER: "CHARACTER_REFERENCE", ENVIRONMENT: "ENVIRONMENT_REFERENCE", STYLE: "STYLE_REFERENCE" }[type] as "CHARACTER_REFERENCE" | "ENVIRONMENT_REFERENCE" | "STYLE_REFERENCE";
+}
+
 function promptFor(step: CreatorStep): string {
   return {
     NEW_TITLE: "What is the episode title?",
@@ -480,6 +638,7 @@ function promptFor(step: CreatorStep): string {
     NEW_TONE: "What tone should it use?",
     NEW_CANON_CODES: "Which canon codes should it use? Enter comma separated codes, or leave blank.",
     NEW_SHOT_DIRECTIONS: "Send one manual shot direction per message. Send done when finished.",
+    CANON_SETUP: "Send canon details as CODE | CHARACTER, ENVIRONMENT, or STYLE | display name.",
     DRAFT_READY: "Draft ready. Use Confirm draft when you are ready.",
     IDLE: "Send /new to draft an episode.",
   }[step];

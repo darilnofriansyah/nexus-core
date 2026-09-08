@@ -92,9 +92,9 @@ class StubAssetRepository implements Pick<
     return this.asset;
   }
 
-  async findById(_id: string): Promise<RovelleAsset | null> {
+  async findById(id: string): Promise<RovelleAsset | null> {
     this.findCalls += 1;
-    return this.asset;
+    return this.asset?.id === id ? this.asset : null;
   }
 
   async withReservedAsset<T>(

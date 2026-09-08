@@ -194,6 +194,24 @@ test("claims generation siblings and retries a serializable conflict", async () 
   assert.deepEqual((calls.filter((call) => call.operation === "action.findMany").at(-1)?.args as { where: { kind: unknown } }).where.kind, { in: ["GENERATE_SHOT"] });
 });
 
+test("claims duplicate render buttons as one render action group", async () => {
+  const renders = [
+    { ...action, kind: "QUEUE_RENDER", payload: { actionGroup: "render:976684739:episode-1" } },
+    { ...action, id: "950e8400-e29b-41d4-a716-446655440000", token: "render-sibling", kind: "QUEUE_RENDER", payload: { actionGroup: "render:976684739:episode-1" } },
+  ];
+  const { calls, repository } = createRepository({ reviewActions: renders });
+  const result = await repository.claimActionGroup({
+    token: renders[0].token,
+    telegramUserId: action.telegramUserId,
+    result: { text: "queued", requestId: "request-id" },
+    siblingResult: { text: "already handled" },
+    scope: "render",
+  });
+  assert.equal(result.status, "consumed");
+  assert.deepEqual((calls.find((call) => call.operation === "action.findMany")?.args as { where: { kind: unknown } }).where.kind, { in: ["QUEUE_RENDER"] });
+  assert.equal(calls.filter((call) => call.operation === "action.updateMany").length, 2);
+});
+
 test("looks up a pending button without consuming it", async () => {
   const { calls, repository } = createRepository();
   const result = await repository.findPendingButtonAction(action.token, action.telegramUserId);
@@ -278,6 +296,89 @@ test("upload action lookup is user-bound and pending", async () => {
   const { repository } = createRepository({ foundAction: upload });
   const result = await repository.findPendingUploadAction(upload.token, upload.telegramUserId);
   assert.equal(result.status, "pending");
+});
+
+test("public upload lookup exposes only a pending action bound to its session user", async () => {
+  const upload = { ...action, kind: "UPLOAD_AUDIO" };
+  const { repository } = createRepository({ foundAction: upload });
+  const result = await repository.findPendingUploadActionByToken(upload.token);
+  assert.equal(result.status, "pending");
+  assert.equal(result.action.telegramUserId, upload.telegramUserId);
+});
+
+test("claims a single upload reservation before creating its asset", async () => {
+  const upload = { ...action, kind: "UPLOAD_CANON", payload: { canonVersionId: "version-1", assetType: "CHARACTER_REFERENCE" } };
+  const { calls, repository } = createRepository({ foundAction: upload });
+  const result = await repository.claimUploadReservation({
+    token: upload.token,
+    telegramUserId: upload.telegramUserId,
+    assetId: "750e8400-e29b-41d4-a716-446655440000",
+    mediaType: "image/png",
+  });
+  assert.equal(result.status, "claimed");
+  const where = (calls.find((call) => call.operation === "action.updateMany")?.args as { where: { id: string; token: string; telegramUserId: string; result: unknown } }).where;
+  assert.equal(where.id, upload.id);
+  assert.equal(where.token, upload.token);
+  assert.equal(where.telegramUserId, upload.telegramUserId);
+  assert.ok(where.result);
+});
+
+test("reclaims a crashed reservation after its short lease using the same asset ID", async () => {
+  const upload = {
+    ...action,
+    kind: "UPLOAD_CANON",
+    payload: { canonVersionId: "version-1", assetType: "CHARACTER_REFERENCE" },
+    updatedAt: new Date("2020-01-01T00:00:00.000Z"),
+    result: {
+      phase: "RESERVING",
+      assetId: "750e8400-e29b-41d4-a716-446655440000",
+      mediaType: "image/png",
+      leaseExpiresAt: "2020-01-01T00:00:30.000Z",
+    },
+  };
+  const { repository } = createRepository({ foundAction: upload });
+  const result = await repository.claimUploadReservation({
+    token: upload.token,
+    telegramUserId: upload.telegramUserId,
+    assetId: "950e8400-e29b-41d4-a716-446655440000",
+    mediaType: "image/png",
+  });
+  assert.equal(result.status, "claimed");
+  assert.equal(result.assetId, "750e8400-e29b-41d4-a716-446655440000");
+});
+
+test("does not reclaim a live reservation lease", async () => {
+  const upload = {
+    ...action,
+    kind: "UPLOAD_CANON",
+    result: {
+      phase: "RESERVING",
+      assetId: "750e8400-e29b-41d4-a716-446655440000",
+      mediaType: "image/png",
+      leaseExpiresAt: new Date(Date.now() + 30_000).toISOString(),
+    },
+  };
+  const { calls, repository } = createRepository({ foundAction: upload });
+  const result = await repository.claimUploadReservation({
+    token: upload.token,
+    telegramUserId: upload.telegramUserId,
+    assetId: "950e8400-e29b-41d4-a716-446655440000",
+    mediaType: "image/png",
+  });
+  assert.equal(result.status, "reserving");
+  assert.equal(calls.some((call) => call.operation === "action.updateMany"), false);
+});
+
+test("claims upload completion before its domain side effects", async () => {
+  const upload = { ...action, kind: "UPLOAD_CANON", payload: { canonVersionId: "version-1", assetType: "CHARACTER_REFERENCE", assetId: "750e8400-e29b-41d4-a716-446655440000", mediaType: "image/png" } };
+  const { repository } = createRepository({ foundAction: upload });
+  assert.equal((await repository.claimUploadCompletion({ token: upload.token, telegramUserId: upload.telegramUserId })).status, "claimed");
+});
+
+test("does not claim completion before a reserved asset is bound", async () => {
+  const upload = { ...action, kind: "UPLOAD_CANON", payload: { canonVersionId: "version-1", assetType: "CHARACTER_REFERENCE" } };
+  const { repository } = createRepository({ foundAction: upload });
+  assert.equal((await repository.claimUploadCompletion({ token: upload.token, telegramUserId: upload.telegramUserId })).status, "unbound");
 });
 
 test("rejects a consumed button token in upload lookup", async () => {

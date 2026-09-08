@@ -80,12 +80,10 @@ test("handles the start-menu New episode callback as the new command", async () 
   assert.equal(actions.length, 0);
 });
 
-test("keeps canon and audio deferred while My work opens safely", async () => {
+test("opens canon setup and keeps audio gated before an episode", async () => {
   const { service, actions } = createService();
-  for (const token of ["canon", "audio"]) {
-    const reply = await service.handleTelegram({ telegramUserId: "976684739", chatId: "976684739", callbackToken: token });
-    assert.match(reply.text, /coming next/i);
-  }
+  assert.match((await service.handleTelegram({ telegramUserId: "976684739", chatId: "976684739", callbackToken: "canon" })).text, /canon details/i);
+  assert.match((await service.handleTelegram({ telegramUserId: "976684739", chatId: "976684739", callbackToken: "audio" })).text, /confirm an episode/i);
   assert.match((await service.handleTelegram({ telegramUserId: "976684739", chatId: "976684739", callbackToken: "mywork" })).text, /no confirmed episode/i);
   assert.equal(actions.length, 0);
 });
@@ -113,6 +111,7 @@ function createActionService(options: {
   reviewError?: boolean;
   reviewActions?: Record<string, Action>;
   currentReview?: boolean;
+  renderError?: boolean;
 } ) {
   const calls: Array<{ method: string; args: unknown[] }> = [];
   let session = options.session ?? null;
@@ -211,9 +210,12 @@ function createActionService(options: {
       return {};
     },
   };
+  const renders = {
+    createRender: async (...args: unknown[]) => { calls.push({ method: "render.create", args }); if (options.renderError) throw new Error("private render error"); return { id: "render-1" }; },
+  };
   const Constructor = CreatorService as unknown as new (...args: unknown[]) => CreatorService;
   return {
-    service: new Constructor(repository, episodes, canonRepository, canonPins, generation, review, preflight),
+    service: new Constructor(repository, episodes, canonRepository, canonPins, generation, review, preflight, undefined, renders),
     calls,
     getSession: () => session,
     getCreatedActionTokens: () => [...createdActions.keys()],
@@ -565,6 +567,44 @@ test("my work reports an in-progress shot without unsafe actions", async () => {
   assert.equal(reply.inlineKeyboard, undefined);
 });
 
+test("offers render only after every shot is approved and audio is available", async () => {
+  const ready = createActionService({
+    action: { kind: "unused", payload: {} },
+    session: { step: "IDLE", data: { episodeId: "episode-1", audioMasterAssetId: "audio-1" } },
+    episode: { id: "episode-1", shots: [{ id: "shot-1", sequence: 1, status: "APPROVED" }] },
+  });
+  const reply = await ready.service.handleTelegram({ telegramUserId: "976684739", chatId: "976684739", messageText: "/mywork" });
+  assert.deepEqual(reply.inlineKeyboard, [[{ text: "Render episode", callbackData: "rv:QUEUE_RENDER-token" }]]);
+  assert.equal(ready.calls.some((call) => call.method === "render.create"), false);
+
+  const missingAudio = createActionService({
+    action: { kind: "unused", payload: {} },
+    session: { step: "IDLE", data: { episodeId: "episode-1" } },
+    episode: { id: "episode-1", shots: [{ id: "shot-1", sequence: 1, status: "APPROVED" }] },
+  });
+  assert.match((await missingAudio.service.handleTelegram({ telegramUserId: "976684739", chatId: "976684739", messageText: "/mywork" })).text, /add audio/i);
+  assert.equal(missingAudio.calls.some((call) => call.method === "action.create"), false);
+});
+
+test("a render action is claimed before one queued render and duplicate callbacks do not queue twice", async () => {
+  const { service, calls } = createActionService({
+    action: { kind: "QUEUE_RENDER", payload: { episodeId: "episode-1", audioAssetId: "audio-1", actionGroup: "render:976684739:episode-1" } },
+    session: { step: "IDLE", data: { episodeId: "episode-1", audioMasterAssetId: "audio-1" } },
+    episode: { id: "episode-1", shots: [{ id: "shot-1", sequence: 1, status: "APPROVED" }] },
+  });
+  const first = await service.handleTelegram({ telegramUserId: "976684739", chatId: "976684739", callbackToken: "render" });
+  const second = await service.handleTelegram({ telegramUserId: "976684739", chatId: "976684739", callbackToken: "render" });
+  assert.match(first.text, /queued/i);
+  assert.match(second.text, /already accepted/i);
+  const claim = calls.findIndex((call) => call.method === "action.groupClaim");
+  const render = calls.findIndex((call) => call.method === "render.create");
+  assert.equal(claim < render, true);
+  const stored = (calls[claim]?.args[0] as { result: { requestId: string } }).result.requestId;
+  assert.match(stored, /^[0-9a-f-]{36}$/i);
+  assert.equal((calls[render]?.args[1] as { requestId: string }).requestId, stored);
+  assert.equal(calls.filter((call) => call.method === "render.create").length, 1);
+});
+
 test("my work resumes an incomplete confirmation without generation work", async () => {
   const { service, calls } = createActionService({
     action: { kind: "unused", payload: {} },
@@ -574,4 +614,27 @@ test("my work resumes an incomplete confirmation without generation work", async
   assert.deepEqual(reply.inlineKeyboard, [[{ text: "Retry confirmation", callbackData: "rv:CONFIRM_DRAFT-token" }]]);
   assert.deepEqual(calls.map((call) => call.method), ["action.create"]);
   assert.equal((calls[0]?.args[0] as { kind: string }).kind, "CONFIRM_DRAFT");
+});
+
+test("a completed canon upload offers one opaque lock action that makes the canon reusable", async () => {
+  let session: Session = { step: "IDLE", data: { pendingCanonLockVersionId: "canon-version-1" } };
+  const calls: string[] = [];
+  const repository = {
+    findSession: async () => session,
+    createAction: async () => ({ token: "lock-token" }),
+    findPendingButtonAction: async () => ({ status: "pending" as const, action: { kind: "LOCK_CANON", payload: { canonVersionId: "canon-version-1", actionGroup: "canon-lock:976684739:canon-version-1" } } }),
+    claimActionGroup: async () => ({ status: "consumed" as const, action: { kind: "LOCK_CANON", payload: { canonVersionId: "canon-version-1", actionGroup: "canon-lock:976684739:canon-version-1" } }, result: { text: "accepted" } }),
+    upsertSession: async (input: Session) => { session = input; calls.push("session"); return input; },
+  };
+  const canon = {
+    lockVersion: async () => { calls.push("lock"); return {}; },
+  };
+  const Constructor = CreatorService as unknown as new (...args: unknown[]) => CreatorService;
+  const service = new Constructor(repository, undefined, undefined, undefined, undefined, undefined, undefined, canon);
+  const menu = await service.handleTelegram({ telegramUserId: "976684739", chatId: "976684739", messageText: "/mywork" });
+  assert.deepEqual(menu.inlineKeyboard, [[{ text: "Lock canon", callbackData: "rv:lock-token" }]]);
+  const locked = await service.handleTelegram({ telegramUserId: "976684739", chatId: "976684739", callbackToken: "lock-token" });
+  assert.match(locked.text, /ready to reuse/i);
+  assert.deepEqual(calls, ["lock", "session"]);
+  assert.equal("pendingCanonLockVersionId" in session.data, false);
 });

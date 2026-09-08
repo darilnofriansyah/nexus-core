@@ -30,6 +30,7 @@ export type CreatorStep =
   | "NEW_TONE"
   | "NEW_CANON_CODES"
   | "NEW_SHOT_DIRECTIONS"
+  | "CANON_SETUP"
   | "DRAFT_READY";
 
 export interface CreatorDraftData {

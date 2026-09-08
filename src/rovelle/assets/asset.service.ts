@@ -32,6 +32,13 @@ export class AssetService {
   async reserve(
     request: CreateAssetReservationRequestDto,
   ): Promise<AssetReservationDto> {
+    return this.reserveWithId(request, randomUUID());
+  }
+
+  async reserveWithId(
+    request: CreateAssetReservationRequestDto,
+    id: string,
+  ): Promise<AssetReservationDto> {
     const normalized = normalizeAssetReservationRequest(request);
     this.storage.assertConfigured();
 
@@ -42,15 +49,30 @@ export class AssetService {
       throw new NotFoundException("Rovelle episode not found");
     }
 
-    const id = randomUUID();
-    const asset = await this.repository.createReserved({
-      id,
-      episodeId: normalized.episodeId ?? null,
-      assetType: normalized.assetType,
-      mediaType: normalized.mediaType,
-      storageKey: buildAssetStorageKey(id),
-      originalFilename: normalized.originalFilename ?? null,
-    });
+    let asset = await this.repository.findById(id);
+    if (!asset) {
+      try {
+        asset = await this.repository.createReserved({
+          id,
+          episodeId: normalized.episodeId ?? null,
+          assetType: normalized.assetType,
+          mediaType: normalized.mediaType,
+          storageKey: buildAssetStorageKey(id),
+          originalFilename: normalized.originalFilename ?? null,
+        });
+      } catch {
+        asset = await this.repository.findById(id);
+        if (!asset) throw new BadRequestException("Rovelle asset reservation could not be created");
+      }
+    }
+    if (
+      asset.status !== RovelleAssetStatus.RESERVED ||
+      asset.assetType !== normalized.assetType ||
+      asset.mediaType !== normalized.mediaType ||
+      asset.episodeId !== (normalized.episodeId ?? null)
+    ) {
+      throw new BadRequestException("Rovelle asset reservation does not match upload");
+    }
     const upload = await this.storage.createPutUrl(
       asset.storageKey,
       asset.mediaType,
