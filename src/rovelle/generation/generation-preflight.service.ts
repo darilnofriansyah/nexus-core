@@ -5,28 +5,19 @@ import {
 } from "@nestjs/common";
 import {
   Prisma,
-  RovelleAssetStatus,
-  RovelleCanonEntityType,
-  RovelleCanonVersionStatus,
   RovelleEpisodeStatus,
   RovelleShotStatus,
 } from "../../generated/prisma/client";
 import { PrismaService } from "../../database/prisma.service";
 import { CanonPinService } from "../canon/canon-pin.service";
-import type { CanonPinDto } from "../canon/dto/canon.dto";
 import type { GenerationProfile } from "./dto/generation.dto";
 import { estimateGenerationCostUsd } from "./generation-profile";
 import { GenerationRepository } from "./generation.repository";
+import { generationCanonReadinessError } from "./generation-canon-readiness";
 import {
   GenerationPromptCompiler,
   type PreparedShotGeneration,
 } from "./generation-prompt.compiler";
-
-const REQUIRED_CANON_TYPES = [
-  RovelleCanonEntityType.CHARACTER,
-  RovelleCanonEntityType.ENVIRONMENT,
-  RovelleCanonEntityType.STYLE,
-] as const;
 
 export interface GenerationBudgetVisibility {
   budgetUsd: string | null;
@@ -91,7 +82,8 @@ export class GenerationPreflightService {
     }
 
     const canon = await this.canonPinService.getEffectiveShotCanon(shot.id);
-    this.assertCanon(canon);
+    const canonError = generationCanonReadinessError(canon);
+    if (canonError) throw new BadRequestException(canonError);
 
     const prepared = this.promptCompiler.compile({
       shotId: shot.id,
@@ -123,37 +115,4 @@ export class GenerationPreflightService {
     };
   }
 
-  private assertCanon(canon: readonly CanonPinDto[]): void {
-    const types = new Set(canon.map((pin) => pin.version.entity.entityType));
-    if (REQUIRED_CANON_TYPES.some((type) => !types.has(type))) {
-      throw new BadRequestException(
-        "effective canon must include CHARACTER, ENVIRONMENT, and STYLE",
-      );
-    }
-    if (
-      canon.some(
-        (pin) => pin.version.status !== RovelleCanonVersionStatus.LOCKED,
-      )
-    ) {
-      throw new BadRequestException("canon versions must be LOCKED");
-    }
-    if (canon.some((pin) => pin.version.assets.length === 0)) {
-      throw new BadRequestException(
-        "canon versions require at least one attached asset",
-      );
-    }
-
-    const assets = canon.flatMap((pin) => pin.version.assets.map(({ asset }) => asset));
-    if (assets.some((asset) => asset.status !== RovelleAssetStatus.AVAILABLE)) {
-      throw new BadRequestException("selected assets must be AVAILABLE");
-    }
-    if (assets.some((asset) => !asset.mediaType.startsWith("image/"))) {
-      throw new BadRequestException(
-        "selected assets must use image/* media types",
-      );
-    }
-    if (assets.length > 30) {
-      throw new BadRequestException("preflight supports at most 30 references");
-    }
-  }
 }

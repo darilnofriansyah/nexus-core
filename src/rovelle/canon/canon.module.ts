@@ -21,6 +21,6 @@ import { ShotCanonController } from "./shot-canon.controller";
     CanonPinRepository,
     CanonPinService,
   ],
-  exports: [CanonService, CanonPinService],
+  exports: [CanonService, CanonPinService, CanonRepository],
 })
 export class CanonModule {}

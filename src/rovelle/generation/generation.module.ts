@@ -30,6 +30,6 @@ import { Vidu2Provider } from "./providers/runware/vidu-2.provider";
     RunwareWebhookGuard,
     RunwareWebhookService,
   ],
-  exports: [GenerationService, GenerationRepository],
+  exports: [GenerationService, GenerationRepository, GenerationPreflightService],
 })
 export class GenerationModule {}

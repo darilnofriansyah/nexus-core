@@ -32,12 +32,15 @@ function createRepository(options: {
   updateCount?: number;
   duplicateAction?: RovelleCreatorAction | null;
   transactionErrors?: unknown[];
+  reviewActions?: RovelleCreatorAction[];
 } = {}) {
   const calls: Array<{ operation: string; args: unknown }> = [];
   const foundActions = [...(options.foundActions ?? [])];
   const transactionErrors = [...(options.transactionErrors ?? [])];
   const findAction = async (args: unknown) => {
     calls.push({ operation: "action.findUnique", args });
+    const token = (args as { where?: { token?: string } }).where?.token;
+    if (token && options.reviewActions) return options.reviewActions.find((candidate) => candidate.token === token) ?? null;
     return foundActions.shift() ?? (options.foundAction === undefined ? action : options.foundAction);
   };
   const tx = {
@@ -49,6 +52,10 @@ function createRepository(options: {
     },
     rovelleCreatorAction: {
       findUnique: findAction,
+      findMany: async (args: unknown) => {
+        calls.push({ operation: "action.findMany", args });
+        return options.reviewActions ?? [];
+      },
       create: async (args: unknown) => {
         calls.push({ operation: "action.create", args });
         return action;
@@ -105,6 +112,93 @@ test("consumes a button once for its Telegram user", async () => {
   });
   assert.equal((result.action as RovelleCreatorAction).token, action.token);
   assert.deepEqual(calls.find((call) => call.operation === "transaction")?.args, { isolationLevel: "Serializable" });
+});
+
+test("replaces a consumed button result with a safe terminal reply", async () => {
+  const { calls, repository } = createRepository();
+  await repository.updateConsumedButtonResult({ token: action.token, telegramUserId: action.telegramUserId, result: { text: "Generation could not be completed." } });
+  assert.deepEqual(calls, [{
+    operation: "action.updateMany",
+    args: {
+      where: { token: action.token, telegramUserId: action.telegramUserId, consumedAt: { not: null } },
+      data: { result: { text: "Generation could not be completed." } },
+    },
+  }]);
+});
+
+test("claims selected review action and same-group sibling atomically", async () => {
+  const reviewActions = [
+    { ...action, kind: "APPROVE_GENERATION", payload: { actionGroup: "review-1" } },
+    { ...action, id: "750e8400-e29b-41d4-a716-446655440000", token: "sibling-token", kind: "REGENERATE_SHOT", payload: { actionGroup: "review-1" } },
+  ];
+  const { calls, repository } = createRepository({ reviewActions });
+  const result = await repository.claimActionGroup({
+    token: reviewActions[0].token,
+    telegramUserId: action.telegramUserId,
+    result: { text: "accepted" },
+    siblingResult: { text: "already handled" },
+    scope: "review",
+  });
+  assert.equal(result.status, "consumed");
+  const updates = calls.filter((call) => call.operation === "action.updateMany");
+  assert.equal(updates.length, 2);
+  assert.deepEqual((updates[0]?.args as { where: unknown }).where, {
+    id: reviewActions[0].id,
+    token: reviewActions[0].token,
+    telegramUserId: action.telegramUserId,
+    kind: "APPROVE_GENERATION",
+    consumedAt: null,
+    expiresAt: { gt: ((updates[0]?.args as { where: { expiresAt: { gt: Date } } }).where.expiresAt.gt) },
+  });
+  assert.deepEqual((updates[1]?.args as { data: unknown }).data, { result: { text: "already handled" }, consumedAt: (updates[1]?.args as { data: { consumedAt: Date } }).data.consumedAt });
+  assert.deepEqual(calls.find((call) => call.operation === "action.findMany")?.args, {
+    where: {
+      telegramUserId: action.telegramUserId,
+      kind: { in: ["APPROVE_GENERATION", "REGENERATE_SHOT"] },
+      consumedAt: null,
+      expiresAt: { gt: (calls.find((call) => call.operation === "action.findMany")?.args as { where: { expiresAt: { gt: Date } } }).where.expiresAt.gt },
+    },
+  });
+});
+
+test("retries serializable conflict while claiming a review group", async () => {
+  const review = { ...action, kind: "APPROVE_GENERATION", payload: { actionGroup: "review-1" } };
+  const { calls, repository } = createRepository({ reviewActions: [review], transactionErrors: [{ code: "P2034" }] });
+  const result = await repository.claimActionGroup({
+    token: review.token,
+    telegramUserId: review.telegramUserId,
+    result: { text: "accepted" },
+    siblingResult: { text: "already handled" },
+    scope: "review",
+  });
+  assert.equal(result.status, "consumed");
+  assert.equal(calls.filter((call) => call.operation === "transaction").length, 2);
+});
+
+test("claims generation siblings and retries a serializable conflict", async () => {
+  const generationActions = [
+    { ...action, kind: "GENERATE_SHOT", payload: { actionGroup: "generation:976684739:episode-1:shot-1" } },
+    { ...action, id: "850e8400-e29b-41d4-a716-446655440000", token: "generation-sibling", kind: "GENERATE_SHOT", payload: { actionGroup: "generation:976684739:episode-1:shot-1" } },
+  ];
+  const { calls, repository } = createRepository({ reviewActions: generationActions, transactionErrors: [{ code: "P2034" }] });
+  const result = await repository.claimActionGroup({
+    token: generationActions[0].token,
+    telegramUserId: action.telegramUserId,
+    result: { text: "accepted" },
+    siblingResult: { text: "already handled" },
+    scope: "generation",
+  });
+  assert.equal(result.status, "consumed");
+  assert.equal(calls.filter((call) => call.operation === "transaction").length, 2);
+  assert.equal(calls.filter((call) => call.operation === "action.updateMany").length, 2);
+  assert.deepEqual((calls.filter((call) => call.operation === "action.findMany").at(-1)?.args as { where: { kind: unknown } }).where.kind, { in: ["GENERATE_SHOT"] });
+});
+
+test("looks up a pending button without consuming it", async () => {
+  const { calls, repository } = createRepository();
+  const result = await repository.findPendingButtonAction(action.token, action.telegramUserId);
+  assert.equal(result.status, "pending");
+  assert.equal(calls.some((call) => call.operation === "action.updateMany"), false);
 });
 
 test("rejects an expired action before consuming it", async () => {

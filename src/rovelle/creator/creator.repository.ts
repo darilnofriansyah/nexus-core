@@ -5,6 +5,13 @@ import { PrismaService } from "../../database/prisma.service";
 type JsonResult = Prisma.JsonValue;
 type SafeActionResult = Prisma.JsonObject;
 
+const ACTION_GROUP_KINDS = {
+  generation: ["GENERATE_SHOT"],
+  review: ["APPROVE_GENERATION", "REGENERATE_SHOT"],
+} as const;
+
+type ActionGroupScope = keyof typeof ACTION_GROUP_KINDS;
+
 export type CreatorActionResult =
   | { status: "not_found" | "foreign_user" | "expired" | "invalid_result"; action?: undefined }
   | { status: "consumed" | "duplicate"; action: RovelleCreatorAction; result: Prisma.JsonValue | null };
@@ -12,6 +19,11 @@ export type CreatorActionResult =
 export type PendingUploadResult =
   | { status: "not_found" | "foreign_user" | "expired" | "consumed"; action?: undefined }
   | { status: "pending"; action: RovelleCreatorAction };
+
+export type PendingButtonResult =
+  | { status: "not_found" | "foreign_user" | "expired"; action?: undefined }
+  | { status: "pending"; action: RovelleCreatorAction }
+  | { status: "duplicate"; action: RovelleCreatorAction; result: Prisma.JsonValue | null };
 
 @Injectable()
 export class CreatorRepository {
@@ -42,6 +54,15 @@ export class CreatorRepository {
   async findPendingUploadAction(token: string, telegramUserId: string): Promise<PendingUploadResult> {
     const action = await this.prisma.client.rovelleCreatorAction.findUnique({ where: { token } });
     return classifyPendingUpload(action, telegramUserId, new Date());
+  }
+
+  async findPendingButtonAction(token: string, telegramUserId: string): Promise<PendingButtonResult> {
+    const action = await this.prisma.client.rovelleCreatorAction.findUnique({ where: { token } });
+    const state = classifyButton(action, telegramUserId, new Date());
+    if (state.status === "pending") return { status: "pending", action: state.action };
+    if (state.status === "duplicate") return { status: "duplicate", action: state.action, result: state.result };
+    if (state.status === "foreign_user" || state.status === "expired") return { status: state.status };
+    return { status: "not_found" };
   }
 
   async completeUploadAction(input: {
@@ -93,6 +114,79 @@ export class CreatorRepository {
         return current ? actionResultAfterRace(current, input.telegramUserId, false) : { status: "not_found" };
       }
       return { status: "consumed", action: { ...pendingAction, consumedAt: now, result: input.result }, result: input.result };
+    });
+  }
+
+  async claimActionGroup(input: {
+    token: string;
+    telegramUserId: string;
+    result: SafeActionResult;
+    siblingResult: SafeActionResult;
+    scope: ActionGroupScope;
+  }): Promise<CreatorActionResult> {
+    if (!isSafeActionResult(input.result) || !isSafeActionResult(input.siblingResult)) {
+      return { status: "invalid_result" };
+    }
+    return this.runSerializable(async (tx) => {
+      const action = await tx.rovelleCreatorAction.findUnique({ where: { token: input.token } });
+      const state = classifyPendingActionGroup(action, input.telegramUserId, new Date(), input.scope);
+      if (state.status !== "pending") return state;
+      const actionGroup = readActionGroup(state.action.payload);
+      if (!actionGroup) return { status: "not_found" };
+
+      const now = new Date();
+      const kinds = ACTION_GROUP_KINDS[input.scope];
+      const eligible = await tx.rovelleCreatorAction.findMany({
+        where: {
+          telegramUserId: input.telegramUserId,
+          kind: { in: [...kinds] },
+          consumedAt: null,
+          expiresAt: { gt: now },
+        },
+      });
+      const siblings = eligible.filter((candidate) => candidate.id !== state.action.id && readActionGroup(candidate.payload) === actionGroup);
+      const selected = await tx.rovelleCreatorAction.updateMany({
+        where: {
+          id: state.action.id,
+          token: input.token,
+          telegramUserId: input.telegramUserId,
+          kind: state.action.kind,
+          consumedAt: null,
+          expiresAt: { gt: now },
+        },
+        data: { consumedAt: now, result: input.result as Prisma.InputJsonValue },
+      });
+      if (selected.count !== 1) {
+        const current = await tx.rovelleCreatorAction.findUnique({ where: { token: input.token } });
+        return current ? actionResultAfterRace(current, input.telegramUserId, false) : { status: "not_found" };
+      }
+      for (const sibling of siblings) {
+        const consumed = await tx.rovelleCreatorAction.updateMany({
+          where: {
+            id: sibling.id,
+            telegramUserId: input.telegramUserId,
+            kind: sibling.kind,
+            consumedAt: null,
+            expiresAt: { gt: now },
+          },
+          data: { consumedAt: now, result: input.siblingResult as Prisma.InputJsonValue },
+        });
+        if (consumed.count !== 1) {
+          return { status: "duplicate", action: { ...state.action, consumedAt: now, result: input.siblingResult }, result: input.siblingResult };
+        }
+      }
+      return { status: "consumed", action: { ...state.action, consumedAt: now, result: input.result }, result: input.result };
+    });
+  }
+
+  async updateConsumedButtonResult(input: {
+    token: string;
+    telegramUserId: string;
+    result: SafeActionResult;
+  }): Promise<void> {
+    await this.prisma.client.rovelleCreatorAction.updateMany({
+      where: { token: input.token, telegramUserId: input.telegramUserId, consumedAt: { not: null } },
+      data: { result: input.result as Prisma.InputJsonValue },
     });
   }
 
@@ -150,4 +244,19 @@ function classifyButton(action: RovelleCreatorAction | null, telegramUserId: str
   if (action.consumedAt) return { status: "duplicate", action, result: action.result };
   if (action.expiresAt <= now) return { status: "expired" };
   return { status: "pending", action };
+}
+
+function classifyPendingActionGroup(action: RovelleCreatorAction | null, telegramUserId: string, now: Date, scope: ActionGroupScope): CreatorActionResult | { status: "pending"; action: RovelleCreatorAction } {
+  if (!action || !(ACTION_GROUP_KINDS[scope] as readonly string[]).includes(action.kind)) return { status: "not_found" };
+  return classifyButton(action, telegramUserId, now);
+}
+
+function readActionGroup(payload: Prisma.JsonValue): string | null {
+  return typeof payload === "object" && payload !== null && !Array.isArray(payload) && "actionGroup" in payload && typeof payload.actionGroup === "string" && payload.actionGroup.length > 0
+    ? payload.actionGroup
+    : null;
+}
+
+function isSafeActionResult(value: unknown): value is SafeActionResult {
+  return !!value && typeof value === "object" && !Array.isArray(value);
 }
