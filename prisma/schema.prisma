@@ -401,6 +401,35 @@ model RovelleShotCanonPin {
   @@map("rovelle_shot_canon_pins")
 }
 
+model RovelleCreatorSession {
+  id             String   @id @default(uuid()) @db.Uuid
+  telegramUserId String   @unique @map("telegram_user_id") @db.VarChar(32)
+  step           String   @db.VarChar(64)
+  data           Json
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([telegramUserId, updatedAt])
+  @@map("rovelle_creator_sessions")
+}
+
+model RovelleCreatorAction {
+  id             String    @id @default(uuid()) @db.Uuid
+  token          String    @unique @db.VarChar(128)
+  telegramUserId String    @map("telegram_user_id") @db.VarChar(32)
+  kind           String    @db.VarChar(64)
+  payload        Json
+  expiresAt      DateTime  @map("expires_at") @db.Timestamptz(6)
+  consumedAt     DateTime? @map("consumed_at") @db.Timestamptz(6)
+  result         Json?
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([telegramUserId, expiresAt])
+  @@index([expiresAt, consumedAt])
+  @@map("rovelle_creator_actions")
+}
+
 model budget_alerts {
   id                BigInt   @id @default(autoincrement())
   budget_id         BigInt
