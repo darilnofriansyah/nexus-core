@@ -12,6 +12,8 @@ import {
   RovelleGenerationProfile,
   RovelleGenerationProvider,
   RovelleGenerationStatus,
+  RovelleAssetStatus,
+  RovelleAssetType,
   type RovelleShotGeneration,
 } from "../../generated/prisma/client";
 import type { AssetReadUrlDto } from "../assets/dto/asset.dto";
@@ -32,6 +34,7 @@ const REQUEST_ID = "323e4567-e89b-42d3-a456-426614174000";
 const GENERATION_ID = "223e4567-e89b-42d3-a456-426614174000";
 const TASK_ID = "423e4567-e89b-42d3-a456-426614174000";
 const OUTPUT_ASSET_ID = "523e4567-e89b-42d3-a456-426614174000";
+const FIRST_FRAME_ASSET_ID = "623e4567-e89b-42d3-a456-426614174010";
 const REFERENCE_IDS = [
   "623e4567-e89b-42d3-a456-426614174000",
   "723e4567-e89b-42d3-a456-426614174000",
@@ -198,7 +201,18 @@ class FakeAssetService {
     this.events.push(`read:${id}`);
     this.calls.push(id);
     return {
-      asset: {} as AssetReadUrlDto["asset"],
+      asset: {
+        id,
+        episodeId: EPISODE_ID,
+        assetType: RovelleAssetType.STORYBOARD,
+        status: RovelleAssetStatus.AVAILABLE,
+        mediaType: "image/png",
+        originalFilename: null,
+        byteSize: "100",
+        etag: null,
+        createdAt: "2026-08-28T00:00:00.000Z",
+        updatedAt: "2026-08-28T00:00:00.000Z",
+      },
       download: {
         method: "GET",
         url: `https://signed.example/read-${this.calls.length}`,
@@ -248,7 +262,7 @@ class FakeProvider {
   }
 }
 
-function createService() {
+function createService(model = "vidu:2@0") {
   const events: string[] = [];
   const preflight = new FakePreflightService();
   const repository = new FakeRepository(events);
@@ -272,9 +286,48 @@ function createService() {
       assets as unknown as ConstructorParameters<typeof GenerationService>[2],
       storage as unknown as ConstructorParameters<typeof GenerationService>[3],
       provider as unknown as ConstructorParameters<typeof GenerationService>[4],
+      model,
     ),
   };
 }
+
+test("submits Q3 with only the episode storyboard first frame", async () => {
+  const { service, assets, provider, repository } = createService("vidu:4@1");
+
+  await service.submitShot(SHOT_ID, {
+    requestId: REQUEST_ID,
+    profile: "DRAFT",
+    firstFrameAssetId: FIRST_FRAME_ASSET_ID,
+  });
+
+  assert.deepEqual(assets.calls, [FIRST_FRAME_ASSET_ID]);
+  assert.deepEqual(provider.calls, [{
+    taskId: repository.createInput?.providerTaskId,
+    prompt: "Make Koko walk through the garden.",
+    duration: 4,
+    width: 1280,
+    height: 720,
+    referenceImageUrls: [],
+    frameImageUrl: "https://signed.example/read-1",
+    uploadUrl: "https://signed.example/provider-output",
+  }]);
+  assert.equal(
+    (repository.createInput?.sanitizedRequest as { firstFrameAssetId?: string })
+      .firstFrameAssetId,
+    FIRST_FRAME_ASSET_ID,
+  );
+});
+
+test("persists the injected Runware video model with the attempt", async () => {
+  const { service, repository } = createService("custom:seedance@2.5");
+
+  await service.submitShot(SHOT_ID, {
+    requestId: REQUEST_ID,
+    profile: "DRAFT",
+  });
+
+  assert.equal(repository.createInput?.model, "custom:seedance@2.5");
+});
 
 test("returns an existing client request without preflight or provider submission", async () => {
   const { service, repository, preflight, provider, events } = createService();
@@ -565,25 +618,6 @@ test("returns 500 without resubmitting when provider failure persistence throws"
 
   assert.equal(provider.calls.length, 1);
   assert.equal(repository.failed.length, 1);
-});
-
-test("persists the configured Runware video model with the attempt", async () => {
-  const originalModel = process.env.RUNWARE_VIDEO_MODEL;
-  process.env.RUNWARE_VIDEO_MODEL = "custom:seedance@2.5";
-
-  try {
-    const { service, repository } = createService();
-
-    await service.submitShot(SHOT_ID, {
-      requestId: REQUEST_ID,
-      profile: "DRAFT",
-    });
-
-    assert.equal(repository.createInput?.model, "custom:seedance@2.5");
-  } finally {
-    if (originalModel === undefined) delete process.env.RUNWARE_VIDEO_MODEL;
-    else process.env.RUNWARE_VIDEO_MODEL = originalModel;
-  }
 });
 
 test("does not treat an unnormalized provider error as a submission failure", async () => {

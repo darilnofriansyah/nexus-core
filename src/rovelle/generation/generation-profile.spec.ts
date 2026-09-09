@@ -21,6 +21,7 @@ import {
 } from "./generation-profile";
 
 const REQUEST_ID = "550e8400-e29b-41d4-a716-446655440000";
+const FIRST_FRAME_ASSET_ID = "650e8400-e29b-41d4-a716-446655440000";
 
 function assertBadRequest(action: () => unknown): void {
   assert.throws(action, BadRequestException);
@@ -66,11 +67,13 @@ describe("Rovelle video generation profiles", () => {
     const normalized = normalizeSubmitGenerationRequest({
       requestId: `  ${REQUEST_ID}  `,
       profile: "DRAFT",
+      firstFrameAssetId: `  ${FIRST_FRAME_ASSET_ID}  `,
     });
 
     const expected: SubmitShotGenerationRequestDto = {
       requestId: REQUEST_ID,
       profile: "DRAFT",
+      firstFrameAssetId: FIRST_FRAME_ASSET_ID,
     };
     assert.deepEqual(normalized, expected);
   });

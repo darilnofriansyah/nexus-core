@@ -35,8 +35,11 @@ export interface RunwareVideoTask {
   width: number;
   height: number;
   duration: number;
-  inputs: { referenceImages: string[] };
+  inputs:
+    | { referenceImages: string[] }
+    | { frameImages: Array<{ image: string; frame: "first" }> };
   settings?: { audio: false };
+  providerSettings?: { vidu: { audio: boolean } };
   deliveryMethod: "async";
   numberResults: 1;
   outputType: "URL";

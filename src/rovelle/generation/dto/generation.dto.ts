@@ -10,6 +10,7 @@ export type GenerationProfile = "DRAFT";
 export interface SubmitShotGenerationRequestDto {
   requestId: string;
   profile: GenerationProfile;
+  firstFrameAssetId?: string;
 }
 
 export interface GenerationProfileSpec {

@@ -7,6 +7,7 @@ export interface GenerationProviderSubmission {
   width: number;
   height: number;
   referenceImageUrls: string[];
+  frameImageUrl?: string;
   uploadUrl: string;
 }
 

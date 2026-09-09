@@ -11,7 +11,7 @@ import { RunwareWebhookGuard } from "./webhooks/runware-webhook.guard";
 import { RunwareWebhookService } from "./webhooks/runware-webhook.service";
 import { GENERATION_PROVIDER } from "./providers/generation-provider";
 import { RunwareSubmitClient } from "./providers/runware/runware-submit.client";
-import { Vidu2Provider } from "./providers/runware/vidu-2.provider";
+import { ViduQ3Provider } from "./providers/runware/vidu-q3.provider";
 
 @Module({
   imports: [AssetsModule, CanonModule],
@@ -21,10 +21,10 @@ import { Vidu2Provider } from "./providers/runware/vidu-2.provider";
     GenerationPreflightService,
     GenerationRepository,
     RunwareSubmitClient,
-    Vidu2Provider,
+    ViduQ3Provider,
     {
       provide: GENERATION_PROVIDER,
-      useExisting: Vidu2Provider,
+      useExisting: ViduQ3Provider,
     },
     GenerationService,
     RunwareWebhookGuard,

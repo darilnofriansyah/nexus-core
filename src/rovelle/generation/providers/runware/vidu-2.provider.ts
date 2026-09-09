@@ -21,14 +21,14 @@ export interface RunwareTaskSubmitter {
   submit(task: RunwareVideoTask): Promise<GenerationProviderSubmissionResult>;
 }
 
-type SeedanceConfig = Pick<
+export type RunwareVideoProviderConfig = Pick<
   CoreApiEnv,
   "runwareVideoModel" | "runwareWebhookBaseUrl" | "runwareWebhookToken"
 > & {
   nodeEnv?: string;
 };
 
-type SeedanceRunwareTask = RunwareVideoTask & { webhookURL: string };
+type Vidu2RunwareTask = RunwareVideoTask & { webhookURL: string };
 
 const SUPPORTED_DIMENSIONS = new Set(["1280x720"]);
 const MIN_WEBHOOK_TOKEN_LENGTH = 32;
@@ -36,13 +36,13 @@ const VIDU_2_MODEL = "vidu:2@0";
 
 @Injectable()
 export class Vidu2Provider implements GenerationProvider {
-  private readonly config: SeedanceConfig;
+  private readonly config: RunwareVideoProviderConfig;
 
   constructor(
     @Inject(RunwareSubmitClient)
     private readonly client: RunwareTaskSubmitter,
     @Optional()
-    config: SeedanceConfig = readEnv(),
+    config: RunwareVideoProviderConfig = readEnv(),
   ) {
     this.config = config;
   }
@@ -52,9 +52,9 @@ export class Vidu2Provider implements GenerationProvider {
   ): Promise<GenerationProviderSubmissionResult> {
     this.validate(request);
     this.assertModel();
-    const webhookURL = this.createWebhookUrl();
+    const webhookURL = createRunwareWebhookUrl(this.config);
 
-    const task: SeedanceRunwareTask = {
+    const task: Vidu2RunwareTask = {
       taskType: "videoInference",
       taskUUID: request.taskId,
       model: this.config.runwareVideoModel,
@@ -84,55 +84,6 @@ export class Vidu2Provider implements GenerationProvider {
       );
     }
     return { providerTaskId: result.providerTaskId };
-  }
-
-  private createWebhookUrl(): string {
-    const baseUrl = this.config.runwareWebhookBaseUrl?.trim();
-    const token = this.config.runwareWebhookToken?.trim();
-
-    if (!baseUrl) {
-      throw new ServiceUnavailableException(
-        "Runware webhook base URL is not configured",
-      );
-    }
-    if (!token || token.length < MIN_WEBHOOK_TOKEN_LENGTH) {
-      throw new ServiceUnavailableException(
-        "Runware webhook token is not configured",
-      );
-    }
-    if (/[\t\n\r]/.test(baseUrl)) {
-      throw new ServiceUnavailableException("Runware webhook URL is invalid");
-    }
-
-    let webhookUrl: URL;
-    try {
-      webhookUrl = new URL(baseUrl);
-    } catch {
-      throw new ServiceUnavailableException("Runware webhook URL is invalid");
-    }
-
-    if (
-      /[?#]/.test(baseUrl) ||
-      hasUserInfo(baseUrl) ||
-      webhookUrl.username ||
-      webhookUrl.password
-    ) {
-      throw new ServiceUnavailableException("Runware webhook URL is invalid");
-    }
-
-    const isHttps = webhookUrl.protocol === "https:";
-    const isDevelopmentHttp =
-      webhookUrl.protocol === "http:" &&
-      this.config.nodeEnv !== "production" &&
-      isLoopback(webhookUrl.hostname);
-    if (!isHttps && !isDevelopmentHttp) {
-      throw new ServiceUnavailableException(
-        "Runware webhook URL must use HTTPS",
-      );
-    }
-
-    webhookUrl.searchParams.set("token", token);
-    return webhookUrl.toString();
   }
 
   private assertModel(): void {
@@ -181,6 +132,57 @@ export class Vidu2Provider implements GenerationProvider {
       throw new BadRequestException("dimensions must be 1280x720 for Vidu 2");
     }
   }
+}
+
+export function createRunwareWebhookUrl(
+  config: RunwareVideoProviderConfig,
+): string {
+  const baseUrl = config.runwareWebhookBaseUrl?.trim();
+  const token = config.runwareWebhookToken?.trim();
+
+  if (!baseUrl) {
+    throw new ServiceUnavailableException(
+      "Runware webhook base URL is not configured",
+    );
+  }
+  if (!token || token.length < MIN_WEBHOOK_TOKEN_LENGTH) {
+    throw new ServiceUnavailableException(
+      "Runware webhook token is not configured",
+    );
+  }
+  if (/[\t\n\r]/.test(baseUrl)) {
+    throw new ServiceUnavailableException("Runware webhook URL is invalid");
+  }
+
+  let webhookUrl: URL;
+  try {
+    webhookUrl = new URL(baseUrl);
+  } catch {
+    throw new ServiceUnavailableException("Runware webhook URL is invalid");
+  }
+
+  if (
+    /[?#]/.test(baseUrl) ||
+    hasUserInfo(baseUrl) ||
+    webhookUrl.username ||
+    webhookUrl.password
+  ) {
+    throw new ServiceUnavailableException("Runware webhook URL is invalid");
+  }
+
+  const isHttps = webhookUrl.protocol === "https:";
+  const isDevelopmentHttp =
+    webhookUrl.protocol === "http:" &&
+    config.nodeEnv !== "production" &&
+    isLoopback(webhookUrl.hostname);
+  if (!isHttps && !isDevelopmentHttp) {
+    throw new ServiceUnavailableException(
+      "Runware webhook URL must use HTTPS",
+    );
+  }
+
+  webhookUrl.searchParams.set("token", token);
+  return webhookUrl.toString();
 }
 
 function isLoopback(hostname: string): boolean {

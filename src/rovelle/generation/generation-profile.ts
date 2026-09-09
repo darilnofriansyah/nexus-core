@@ -37,9 +37,21 @@ export function normalizeSubmitGenerationRequest(
     throw new BadRequestException("profile must be DRAFT");
   }
 
+  const firstFrameAssetId = request.firstFrameAssetId;
+  if (
+    firstFrameAssetId !== undefined &&
+    (typeof firstFrameAssetId !== "string" ||
+      !UUID_PATTERN.test(firstFrameAssetId.trim()))
+  ) {
+    throw new BadRequestException("firstFrameAssetId must be a valid UUID");
+  }
+
   return {
     requestId: requestId.trim(),
     profile: profile as GenerationProfile,
+    ...(firstFrameAssetId === undefined
+      ? {}
+      : { firstFrameAssetId: firstFrameAssetId.trim() }),
   };
 }
 

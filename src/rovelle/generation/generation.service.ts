@@ -75,7 +75,11 @@ export class GenerationService {
       profile: normalized.profile,
       model: this.model,
       prompt: prepared.prompt,
-      sanitizedRequest: sanitizedRequest(normalized.profile, prepared),
+      sanitizedRequest: sanitizedRequest(
+        normalized.profile,
+        prepared,
+        normalized.firstFrameAssetId,
+      ),
       estimatedCostUsd,
       pricingSource: profile.pricingSource,
     });
@@ -98,15 +102,20 @@ export class GenerationService {
     }
 
     let referenceImageUrls: string[];
+    let frameImageUrl: string | undefined;
     let uploadUrl: string;
     try {
-      referenceImageUrls = await Promise.all(
-        prepared.references.map(
-          async (reference) =>
-            (await this.assetService.createReadUrl(reference.assetId)).download
-              .url,
+      const assetIds = normalized.firstFrameAssetId
+        ? [normalized.firstFrameAssetId]
+        : prepared.references.map((reference) => reference.assetId);
+      const assetUrls = await Promise.all(
+        assetIds.map(
+          async (assetId) =>
+            (await this.assetService.createReadUrl(assetId)).download.url,
         ),
       );
+      referenceImageUrls = normalized.firstFrameAssetId ? [] : assetUrls;
+      frameImageUrl = normalized.firstFrameAssetId ? assetUrls[0] : undefined;
       uploadUrl = (await this.storage.createProviderPutUrl(outputStorageKey))
         .url;
     } catch {
@@ -125,6 +134,7 @@ export class GenerationService {
         width: profile.width,
         height: profile.height,
         referenceImageUrls,
+        ...(frameImageUrl ? { frameImageUrl } : {}),
         uploadUrl,
       });
     } catch (error) {
@@ -212,6 +222,7 @@ export class GenerationService {
 function sanitizedRequest(
   profile: SubmitShotGenerationRequestDto["profile"],
   prepared: Awaited<ReturnType<GenerationPreflightService["preflight"]>>,
+  firstFrameAssetId?: string,
 ) {
   const dimensions = getGenerationProfile(profile);
   return {
@@ -227,6 +238,7 @@ function sanitizedRequest(
       entityCode: reference.entityCode,
       version: reference.version,
     })),
+    ...(firstFrameAssetId ? { firstFrameAssetId } : {}),
   };
 }
 

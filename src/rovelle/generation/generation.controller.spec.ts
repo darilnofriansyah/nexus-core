@@ -10,7 +10,7 @@ import { GenerationController } from "./generation.controller";
 import { GenerationModule } from "./generation.module";
 import { GenerationService } from "./generation.service";
 import { GENERATION_PROVIDER } from "./providers/generation-provider";
-import { Vidu2Provider } from "./providers/runware/vidu-2.provider";
+import { ViduQ3Provider } from "./providers/runware/vidu-q3.provider";
 import { RunwareSubmitClient } from "./providers/runware/runware-submit.client";
 import { GenerationPromptCompiler } from "./generation-prompt.compiler";
 import { GenerationPreflightService } from "./generation-preflight.service";
@@ -105,7 +105,7 @@ test("exposes only the three authenticated generation routes", () => {
   }
 });
 
-test("binds the generation provider token to Vidu and exports Phase 3B dependencies", () => {
+test("binds the generation provider token to Vidu Q3 and exports Phase 3B dependencies", () => {
   const imports = Reflect.getMetadata(
     MODULE_METADATA.IMPORTS,
     GenerationModule,
@@ -129,7 +129,7 @@ test("binds the generation provider token to Vidu and exports Phase 3B dependenc
   assert.ok(providers.includes(GenerationPreflightService));
   assert.ok(providers.includes(GenerationRepository));
   assert.ok(providers.includes(RunwareSubmitClient));
-  assert.ok(providers.includes(Vidu2Provider));
+  assert.ok(providers.includes(ViduQ3Provider));
   assert.ok(providers.includes(GenerationService));
 
   const providerBinding = providers.find(
@@ -141,7 +141,7 @@ test("binds the generation provider token to Vidu and exports Phase 3B dependenc
   );
   assert.deepEqual(providerBinding, {
     provide: GENERATION_PROVIDER,
-    useExisting: Vidu2Provider,
+    useExisting: ViduQ3Provider,
   });
   assert.ok(exports.includes(GenerationService));
   assert.ok(exports.includes(GenerationRepository));
