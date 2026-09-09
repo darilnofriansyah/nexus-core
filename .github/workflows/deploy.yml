@@ -67,4 +67,4 @@ jobs:
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
         run: |
           ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" \
-            "cd '$DEPLOY_PATH' && git pull --ff-only && docker compose up -d --build core-api"
+            "cd '$DEPLOY_PATH' && git pull --ff-only && docker compose run --rm --build migrations && docker compose up -d --build core-api"

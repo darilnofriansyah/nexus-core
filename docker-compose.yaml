@@ -15,6 +15,17 @@ services:
     networks:
       - veyra-network
 
+  migrations:
+    build:
+      context: .
+      target: migrate
+    env_file:
+      - ../.env
+    environment:
+      - DATABASE_URL=postgresql://${VEYRA_DB_USER}:${VEYRA_DB_PASSWORD}@postgres:5432/veyra
+    networks:
+      - veyra-network
+
   render-worker:
     container_name: render-worker
     build:
