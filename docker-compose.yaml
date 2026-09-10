@@ -3,6 +3,7 @@ services:
     container_name: core-api
     build:
       context: .
+      target: production
     restart: unless-stopped
     env_file:
       - ../.env
