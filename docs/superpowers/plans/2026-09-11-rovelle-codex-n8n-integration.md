@@ -276,7 +276,7 @@ export const creativeResult: CreativeResult = {
 
 **Interfaces:** Produces the four validators/hash function and wire types defined above. Export `creativeOutputSchema` from `creative-validation.ts` only if it can stay dependency-free; otherwise put that constant in `dto/creative.dto.ts`. Core runtime validation remains mandatory.
 
-- [ ] Add the fixture and this initial behavioral test, then run the common commands:
+- [x] Add the fixture and this initial behavioral test, then run the common commands:
 
 ```ts
 import * as assert from "node:assert/strict";
@@ -289,9 +289,9 @@ test("rejects an otherwise valid storyboard with the wrong duration", () => {
 });
 ```
 
-- [ ] Implement the exact definitions/limits above using existing string/object validation style and `node:crypto`; no new validation library. Generate a strict JSON Schema with `additionalProperties:false` and all required fields for SDK output.
-- [ ] Add table-driven assertions for unknown top-level/nested keys, sequence gap/duplicates/order, target mismatch, text/byte caps, null/array input, invalid canon UUID, non-JSON definition, metadata limits, malformed token/hash, and stable hash across reordered object keys.
-- [ ] Run `creative-validation.spec.js`; all valid fixture fields round-trip, including empty narration and full script. Terra freezes exports before parallel tasks start.
+- [x] Implement the exact definitions/limits above using existing string/object validation style and `node:crypto`; no new validation library. Generate a strict JSON Schema with `additionalProperties:false` and all required fields for SDK output.
+- [x] Add table-driven assertions for unknown top-level/nested keys, sequence gap/duplicates/order, target mismatch, text/byte caps, null/array input, invalid canon UUID, non-JSON definition, metadata limits, malformed token/hash, and stable hash across reordered object keys.
+- [x] Run `creative-validation.spec.js`; all valid fixture fields round-trip, including empty narration and full script. Terra freezes exports before parallel tasks start.
 
 ## Task 3: Add durable jobs and atomic lifecycle
 
