@@ -127,6 +127,14 @@ enum RovelleCanonVersionStatus {
   LOCKED
 }
 
+enum RovelleCreativeJobStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+  OUTCOME_UNKNOWN
+}
+
 model RovelleEpisode {
   id                    String                   @id @default(uuid()) @db.Uuid
   code                  String                   @unique @db.VarChar(32)
@@ -141,6 +149,7 @@ model RovelleEpisode {
   approvedRenderId      String?                  @unique @map("approved_render_id") @db.Uuid
   approvedRender        RovelleRender?           @relation("ApprovedEpisodeRender", fields: [approvedRenderId], references: [id], onDelete: Restrict)
   renders               RovelleRender[]          @relation("EpisodeRenders")
+  creativeJob           RovelleCreativeJob?      @relation("CreativeJobEpisode")
   createdAt             DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt             DateTime                 @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -408,6 +417,7 @@ model RovelleCreatorSession {
   data           Json
   createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  creativeJobs   RovelleCreativeJob[]
 
   @@index([telegramUserId, updatedAt])
   @@map("rovelle_creator_sessions")
@@ -428,6 +438,52 @@ model RovelleCreatorAction {
   @@index([telegramUserId, expiresAt])
   @@index([expiresAt, consumedAt])
   @@map("rovelle_creator_actions")
+}
+
+model RovelleCreativeJob {
+  id                    String                   @id @default(uuid()) @db.Uuid
+  creatorSessionId      String                   @map("creator_session_id") @db.Uuid
+  telegramUserId        String                   @map("telegram_user_id") @db.VarChar(32)
+  chatId                String                   @map("chat_id") @db.VarChar(32)
+  inputRevision         Int                      @map("input_revision")
+  task                  String                   @db.VarChar(32)
+  input                 Json
+  inputHash             String                   @map("input_hash") @db.VarChar(64)
+  status                RovelleCreativeJobStatus @default(QUEUED)
+  attemptTokenHash      String?                  @map("attempt_token_hash") @db.VarChar(64)
+  leaseExpiresAt        DateTime?                @map("lease_expires_at") @db.Timestamptz(6)
+  result                Json?
+  completionMetadata    Json?                    @map("completion_metadata")
+  completionResponse    Json?                    @map("completion_response")
+  completionHash        String?                  @map("completion_hash") @db.VarChar(64)
+  failureCode           String?                  @map("failure_code") @db.VarChar(64)
+  supersededAt          DateTime?                @map("superseded_at") @db.Timestamptz(6)
+  episodeId             String?                  @unique @map("episode_id") @db.Uuid
+  approvedAt            DateTime?                @map("approved_at") @db.Timestamptz(6)
+  creatorSession        RovelleCreatorSession   @relation(fields: [creatorSessionId], references: [id], onDelete: Restrict)
+  episode               RovelleEpisode?         @relation("CreativeJobEpisode", fields: [episodeId], references: [id], onDelete: Restrict)
+  createdAt             DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime                 @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([creatorSessionId, inputRevision])
+  @@unique([telegramUserId], map: "rovelle_creative_jobs_one_active_creator", where: raw("(status IN ('QUEUED', 'RUNNING', 'OUTCOME_UNKNOWN'))"))
+  @@index([status, createdAt, id])
+  @@index([telegramUserId, createdAt])
+  @@map("rovelle_creative_jobs")
+}
+
+model RovelleTelegramReceipt {
+  id             String   @id @default(uuid()) @db.Uuid
+  botId          String   @map("bot_id") @db.VarChar(32)
+  updateId       String   @map("update_id") @db.VarChar(32)
+  telegramUserId String   @map("telegram_user_id") @db.VarChar(32)
+  chatId         String   @map("chat_id") @db.VarChar(32)
+  requestHash    String   @map("request_hash") @db.VarChar(64)
+  response       Json
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([botId, updateId])
+  @@map("rovelle_telegram_receipts")
 }
 
 model budget_alerts {
