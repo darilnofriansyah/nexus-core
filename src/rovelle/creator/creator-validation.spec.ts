@@ -27,3 +27,21 @@ test("strips only the rv callback prefix", () => {
   assert.throws(() => normalizeCreatorTelegramRequest({ telegramUserId: "1", chatId: "1", callbackToken: "rv:   " }), BadRequestException);
   assert.throws(() => normalizeCreatorTelegramRequest({ telegramUserId: "1", chatId: "1", callbackToken: "rv:ok\nno" }), BadRequestException);
 });
+
+test("preserves a zero-valued update ID for messages and callbacks", () => {
+  assert.deepEqual(normalizeCreatorTelegramRequest({ telegramUserId: "1", chatId: "1", updateId: "0", messageText: "/new" } as never), {
+    telegramUserId: "1", chatId: "1", updateId: "0", messageText: "/new",
+  });
+  assert.deepEqual(normalizeCreatorTelegramRequest({ telegramUserId: "1", chatId: "1", updateId: "0", callbackToken: "rv:opaque" } as never), {
+    telegramUserId: "1", chatId: "1", updateId: "0", callbackToken: "opaque",
+  });
+});
+
+test("rejects numeric and oversized update IDs", () => {
+  assert.throws(() => normalizeCreatorTelegramRequest({
+    telegramUserId: "1", chatId: "1", updateId: "9".repeat(33), messageText: "/new",
+  } as never), BadRequestException);
+  assert.throws(() => normalizeCreatorTelegramRequest({
+    telegramUserId: "1", chatId: "1", updateId: 0, messageText: "/new",
+  } as never), BadRequestException);
+});

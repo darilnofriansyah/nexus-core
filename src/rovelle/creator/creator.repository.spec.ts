@@ -99,6 +99,29 @@ test("upserts a Telegram-keyed creator session", async () => {
   });
 });
 
+test("returns a stored Telegram reply only when the update hash matches", async () => {
+  const response = { text: "Saved reply", inlineKeyboard: [[{ text: "Continue", callbackData: "rv:next" }]] };
+  const calls: unknown[] = [];
+  const repository = new CreatorRepository({
+    client: {
+      rovelleTelegramReceipt: {
+        findUnique: async (args: unknown) => {
+          calls.push(args);
+          return { requestHash: "a".repeat(64), response };
+        },
+      },
+    },
+  } as never);
+  const key = { botId: "test-bot", updateId: "17", requestHash: "a".repeat(64) };
+
+  assert.deepEqual(await repository.findTelegramReceipt(key), response);
+  await assert.rejects(
+    () => repository.findTelegramReceipt({ ...key, requestHash: "b".repeat(64) }),
+    /Telegram update content changed after it was received/,
+  );
+  assert.deepEqual(calls[0], { where: { botId_updateId: { botId: "test-bot", updateId: "17" } } });
+});
+
 test("consumes a button once for its Telegram user", async () => {
   const { calls, repository } = createRepository();
   const result = await repository.consumeButtonAction({ token: "short-token", telegramUserId: "976684739", result: { text: "done" } });

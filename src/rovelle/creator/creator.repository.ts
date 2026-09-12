@@ -1,6 +1,15 @@
-import { Injectable } from "@nestjs/common";
-import { Prisma, type RovelleCreatorAction, type RovelleCreatorSession } from "../../generated/prisma/client";
+import { ConflictException, Injectable } from "@nestjs/common";
+import {
+  Prisma,
+  RovelleCanonVersionStatus,
+  RovelleCreativeJobStatus,
+  type RovelleCreatorAction,
+  type RovelleCreatorSession,
+  type RovelleCreativeJob,
+} from "../../generated/prisma/client";
 import { PrismaService } from "../../database/prisma.service";
+import type { CreatorTelegramReply } from "./dto/creator.dto";
+import { hashCreativeValue } from "../creative/creative-validation";
 
 type JsonResult = Prisma.JsonValue;
 type SafeActionResult = Prisma.JsonObject;
@@ -13,6 +22,30 @@ const ACTION_GROUP_KINDS = {
 } as const;
 
 type ActionGroupScope = keyof typeof ACTION_GROUP_KINDS;
+
+export interface CreatorTelegramReceiptKey {
+  botId: string;
+  updateId: string;
+  telegramUserId: string;
+  chatId: string;
+  requestHash: string;
+}
+
+export interface CreateCreatorTelegramReceiptInput extends CreatorTelegramReceiptKey {
+  response: CreatorTelegramReply;
+}
+
+export type CreativeModeClaim =
+  | { status: "consumed"; action: RovelleCreatorAction; result: CreatorTelegramReply }
+  | { status: "duplicate"; action: RovelleCreatorAction; result: Prisma.JsonValue | null }
+  | { status: "not_found" | "foreign_user" | "expired" };
+
+export interface LockedCreatorCanonVersion {
+  entityId: string;
+  versionId: string;
+  code: string;
+  definition: Record<string, unknown>;
+}
 
 export type CreatorActionResult =
   | { status: "not_found" | "foreign_user" | "expired" | "invalid_result"; action?: undefined }
@@ -56,6 +89,284 @@ export class CreatorRepository {
 
   findSession(telegramUserId: string): Promise<RovelleCreatorSession | null> {
     return this.prisma.client.rovelleCreatorSession.findUnique({ where: { telegramUserId } });
+  }
+
+  async findTelegramReceipt(
+    input: Pick<CreatorTelegramReceiptKey, "botId" | "updateId" | "requestHash">,
+  ): Promise<CreatorTelegramReply | null> {
+    const receipt = await this.prisma.client.rovelleTelegramReceipt.findUnique({
+      where: { botId_updateId: { botId: input.botId, updateId: input.updateId } },
+    });
+    if (!receipt) return null;
+    if (receipt.requestHash !== input.requestHash) {
+      throw new ConflictException("Telegram update content changed after it was received");
+    }
+    return storedTelegramReply(receipt.response);
+  }
+
+  async withTelegramReceipt(
+    input: CreatorTelegramReceiptKey,
+    operation: (tx: Prisma.TransactionClient) => Promise<CreatorTelegramReply | null>,
+  ): Promise<CreatorTelegramReply | null> {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        return await this.prisma.client.$transaction(async (tx) => {
+          const receipt = await tx.rovelleTelegramReceipt.findUnique({
+            where: { botId_updateId: { botId: input.botId, updateId: input.updateId } },
+          });
+          if (receipt) {
+            if (receipt.requestHash !== input.requestHash) {
+              throw new ConflictException("Telegram update content changed after it was received");
+            }
+            return storedTelegramReply(receipt.response);
+          }
+
+          const response = await operation(tx);
+          if (!response) return null;
+          await this.createTelegramReceipt(tx, { ...input, response });
+          return response;
+        }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+      } catch (error) {
+        if (!isReceiptRetryableError(error) || attempt === 2) throw error;
+        await delayReceiptRetry(attempt);
+      }
+    }
+    throw new Error("unreachable");
+  }
+
+  createTelegramReceipt(
+    tx: Prisma.TransactionClient,
+    input: CreateCreatorTelegramReceiptInput,
+  ) {
+    return tx.rovelleTelegramReceipt.create({
+      data: {
+        botId: input.botId,
+        updateId: input.updateId,
+        telegramUserId: input.telegramUserId,
+        chatId: input.chatId,
+        requestHash: input.requestHash,
+        response: input.response as unknown as Prisma.InputJsonValue,
+      },
+    });
+  }
+
+  async lockSession(tx: Prisma.TransactionClient, telegramUserId: string): Promise<RovelleCreatorSession> {
+    const session = await tx.rovelleCreatorSession.upsert({
+      where: { telegramUserId },
+      create: { telegramUserId, step: "IDLE", data: {} },
+      update: {},
+    });
+    await tx.$queryRaw<Array<{ id: string }>>`SELECT id FROM rovelle_creator_sessions WHERE id = ${session.id}::uuid FOR UPDATE`;
+    return tx.rovelleCreatorSession.findUniqueOrThrow({ where: { id: session.id } });
+  }
+
+  saveSession(
+    tx: Prisma.TransactionClient,
+    input: { telegramUserId: string; step: string; data: JsonResult },
+  ): Promise<RovelleCreatorSession> {
+    return tx.rovelleCreatorSession.update({
+      where: { telegramUserId: input.telegramUserId },
+      data: { step: input.step, data: input.data as Prisma.InputJsonValue },
+    });
+  }
+
+  findAction(token: string, telegramUserId: string): Promise<RovelleCreatorAction | null> {
+    return this.prisma.client.rovelleCreatorAction.findFirst({ where: { token, telegramUserId } });
+  }
+
+  findActionInTransaction(tx: Prisma.TransactionClient, token: string): Promise<RovelleCreatorAction | null> {
+    return tx.rovelleCreatorAction.findUnique({ where: { token } });
+  }
+
+  createActionInTransaction(
+    tx: Prisma.TransactionClient,
+    input: { token: string; telegramUserId: string; kind: string; payload: JsonResult; expiresAt: Date },
+  ): Promise<RovelleCreatorAction> {
+    return tx.rovelleCreatorAction.create({
+      data: { ...input, payload: input.payload as Prisma.InputJsonValue },
+    });
+  }
+
+  async findCreativeModeActionsInTransaction(
+    tx: Prisma.TransactionClient,
+    input: { telegramUserId: string; actionGroup: string },
+  ): Promise<RovelleCreatorAction[]> {
+    const actions = await tx.rovelleCreatorAction.findMany({
+      where: {
+        telegramUserId: input.telegramUserId,
+        kind: "CREATIVE_MODE",
+        consumedAt: null,
+        expiresAt: { gt: new Date() },
+      },
+    });
+    return actions.filter((action) => readActionGroup(action.payload) === input.actionGroup);
+  }
+
+  async consumeCreativeModeActions(
+    tx: Prisma.TransactionClient,
+    input: {
+      token: string;
+      telegramUserId: string;
+      result: CreatorTelegramReply;
+      siblingResult: CreatorTelegramReply;
+    },
+  ): Promise<CreativeModeClaim> {
+    const action = await tx.rovelleCreatorAction.findUnique({ where: { token: input.token } });
+    if (!action || action.kind !== "CREATIVE_MODE") return { status: "not_found" };
+    if (action.telegramUserId !== input.telegramUserId) return { status: "foreign_user" };
+    const now = new Date();
+    if (action.expiresAt <= now) return { status: "expired" };
+    if (action.consumedAt) {
+      return { status: "duplicate", action, result: action.result };
+    }
+    const actionGroup = readActionGroup(action.payload);
+    if (!actionGroup) return { status: "not_found" };
+
+    const siblings = (await tx.rovelleCreatorAction.findMany({
+      where: {
+        telegramUserId: input.telegramUserId,
+        kind: "CREATIVE_MODE",
+        consumedAt: null,
+        expiresAt: { gt: now },
+      },
+    })).filter((candidate) => candidate.id !== action.id && readActionGroup(candidate.payload) === actionGroup);
+
+    const selected = await tx.rovelleCreatorAction.updateMany({
+      where: {
+        id: action.id,
+        telegramUserId: input.telegramUserId,
+        kind: "CREATIVE_MODE",
+        consumedAt: null,
+        expiresAt: { gt: now },
+      },
+      data: {
+        consumedAt: now,
+        result: input.result as unknown as Prisma.InputJsonValue,
+      },
+    });
+    if (selected.count !== 1) {
+      const current = await tx.rovelleCreatorAction.findUnique({ where: { token: input.token } });
+      return current?.consumedAt
+        ? { status: "duplicate", action: current, result: current.result }
+        : { status: "not_found" };
+    }
+
+    if (siblings.length) {
+      const consumed = await tx.rovelleCreatorAction.updateMany({
+        where: {
+          id: { in: siblings.map((sibling) => sibling.id) },
+          telegramUserId: input.telegramUserId,
+          kind: "CREATIVE_MODE",
+          consumedAt: null,
+          expiresAt: { gt: now },
+        },
+        data: {
+          consumedAt: now,
+          result: input.siblingResult as unknown as Prisma.InputJsonValue,
+        },
+      });
+      if (consumed.count !== siblings.length) {
+        throw new ConflictException("Creative mode changed while it was being selected");
+      }
+    }
+
+    return {
+      status: "consumed",
+      action: { ...action, consumedAt: now, result: input.result as unknown as Prisma.JsonValue },
+      result: input.result,
+    };
+  }
+
+  async findCreativeJobInTransaction(
+    tx: Prisma.TransactionClient,
+    input: { id: string; telegramUserId: string },
+  ): Promise<RovelleCreativeJob | null> {
+    const now = new Date();
+    await tx.rovelleCreativeJob.updateMany({
+      where: {
+        id: input.id,
+        telegramUserId: input.telegramUserId,
+        status: RovelleCreativeJobStatus.RUNNING,
+        leaseExpiresAt: { lte: now },
+        supersededAt: null,
+      },
+      data: {
+        status: RovelleCreativeJobStatus.OUTCOME_UNKNOWN,
+        leaseExpiresAt: null,
+      },
+    });
+    return tx.rovelleCreativeJob.findFirst({ where: { id: input.id, telegramUserId: input.telegramUserId } });
+  }
+
+  findActiveCreativeJobInTransaction(
+    tx: Prisma.TransactionClient,
+    telegramUserId: string,
+  ): Promise<RovelleCreativeJob | null> {
+    return tx.rovelleCreativeJob.findFirst({
+      where: {
+        telegramUserId,
+        status: { in: [RovelleCreativeJobStatus.QUEUED, RovelleCreativeJobStatus.RUNNING, RovelleCreativeJobStatus.OUTCOME_UNKNOWN] },
+        supersededAt: null,
+      },
+      orderBy: { createdAt: "desc" },
+    });
+  }
+
+  async supersedeCreativeJob(tx: Prisma.TransactionClient, job: RovelleCreativeJob, now: Date): Promise<void> {
+    if (job.supersededAt) return;
+    if (job.status === RovelleCreativeJobStatus.QUEUED) {
+      await tx.rovelleCreativeJob.updateMany({
+        where: { id: job.id, status: RovelleCreativeJobStatus.QUEUED, supersededAt: null },
+        data: {
+          status: RovelleCreativeJobStatus.FAILED,
+          failureCode: "SUPERSEDED_BEFORE_START",
+          leaseExpiresAt: null,
+          supersededAt: now,
+        },
+      });
+      return;
+    }
+    await tx.rovelleCreativeJob.updateMany({
+      where: { id: job.id, status: job.status, supersededAt: null },
+      data: { supersededAt: now },
+    });
+  }
+
+  invalidateCreativeActions(tx: Prisma.TransactionClient, telegramUserId: string, now: Date) {
+    return tx.rovelleCreatorAction.updateMany({
+      where: { telegramUserId, kind: { startsWith: "CREATIVE_" }, consumedAt: null },
+      data: {
+        consumedAt: now,
+        result: { text: "That creative action is no longer current. Check /mywork for the latest draft." },
+      },
+    });
+  }
+
+  async findLockedCanonVersions(
+    tx: Prisma.TransactionClient,
+    codes: string[],
+  ): Promise<LockedCreatorCanonVersion[]> {
+    if (!codes.length) return [];
+    const entities = await tx.rovelleCanonEntity.findMany({
+      where: { code: { in: codes } },
+      include: {
+        versions: {
+          where: { status: RovelleCanonVersionStatus.LOCKED },
+          orderBy: { version: "desc" },
+          take: 1,
+        },
+      },
+    });
+    return entities.flatMap((entity) => {
+      const version = entity.versions[0];
+      if (!version) return [];
+      return [{
+        entityId: entity.id,
+        versionId: version.id,
+        code: entity.code,
+        definition: version.definition as Record<string, unknown>,
+      }];
+    });
   }
 
   createAction(input: {
@@ -356,6 +667,34 @@ function actionResultAfterRace(
     return { status: state.status };
   }
   return { status: "not_found" };
+}
+
+function storedTelegramReply(value: Prisma.JsonValue): CreatorTelegramReply {
+  if (!value || typeof value !== "object" || Array.isArray(value) || !("text" in value) || typeof value.text !== "string") {
+    throw new ConflictException("Stored Telegram response is invalid");
+  }
+  return value as unknown as CreatorTelegramReply;
+}
+
+function isReceiptRetryableError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  if ("code" in error) {
+    if (error.code === "P2002" || error.code === "P2034" || error.code === "40001") return true;
+    if (error.code === "P2010" && "meta" in error) {
+      const meta = error.meta;
+      if (typeof meta === "object" && meta !== null && "code" in meta && meta.code === "40001") return true;
+    }
+  }
+  if ("message" in error && typeof error.message === "string" && /Code:\s*`40001`/.test(error.message)) {
+    return true;
+  }
+  if (!("cause" in error)) return false;
+  const cause = error.cause;
+  return typeof cause === "object" && cause !== null && "originalCode" in cause && cause.originalCode === "40001";
+}
+
+function delayReceiptRetry(attempt: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
 }
 
 function isSerializableTransactionError(error: unknown): boolean {

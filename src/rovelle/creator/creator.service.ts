@@ -11,7 +11,9 @@ import { GenerationReviewService } from "../review/generation-review.service";
 import { RenderService } from "../render/render.service";
 import type { Prisma } from "../../generated/prisma/client";
 import { CreatorRepository } from "./creator.repository";
+import { CreatorCreativeService } from "./creator-creative.service";
 import { CreatorUploadService } from "./creator-upload.service";
+import { advanceCreatorBrief } from "./creator-validation";
 import type { CreatorDraftData, CreatorStep, CreatorTelegramReply, CreatorTelegramRequest } from "./dto/creator.dto";
 
 const ALLOWLISTED_USER = "976684739";
@@ -32,12 +34,15 @@ export class CreatorService {
     @Optional() private readonly canon?: CanonService,
     @Optional() private readonly renders?: RenderService,
     @Optional() private readonly uploads?: CreatorUploadService,
+    @Optional() private readonly creative?: CreatorCreativeService,
   ) {}
 
   async handleTelegram(request: CreatorTelegramRequest): Promise<CreatorTelegramReply> {
     if (request.telegramUserId !== ALLOWLISTED_USER || request.chatId !== ALLOWLISTED_USER) {
       return { text: "This private creator is not available for this Telegram account." };
     }
+    const creativeReply = await this.creative?.handle(request);
+    if (creativeReply) return creativeReply;
     if (request.callbackToken !== undefined) return this.handleCallback(request.telegramUserId, request.callbackToken);
     return this.handleMessage(request.telegramUserId, request.messageText ?? "");
   }
@@ -204,20 +209,16 @@ export class CreatorService {
     if (step === "IDLE") return { text: "Send /new to draft an episode." };
     if (!text) return { text: promptFor(step) };
 
+    const progression = advanceCreatorBrief(step, data, text);
+    if (progression.status === "invalid_duration") return { text: durationPrompt() };
+    if (progression.status === "advanced") {
+      await this.repository.upsertSession({ telegramUserId, step: progression.step, data: progression.data as Prisma.JsonObject });
+      return { text: promptFor(progression.step) };
+    }
+
     const next = { ...data };
     let nextStep: CreatorStep;
     switch (step) {
-      case "NEW_TITLE": next.title = text; nextStep = "NEW_DURATION"; break;
-      case "NEW_DURATION": {
-        if (!shotCountForDuration(text)) return { text: durationPrompt() };
-        next.duration = text;
-        nextStep = "NEW_PREMISE";
-        break;
-      }
-      case "NEW_PREMISE": next.premise = text; nextStep = "NEW_LEARNING_GOAL"; break;
-      case "NEW_LEARNING_GOAL": next.learningGoal = text; nextStep = "NEW_TONE"; break;
-      case "NEW_TONE": next.tone = text; nextStep = "NEW_CANON_CODES"; break;
-      case "NEW_CANON_CODES": next.canonCodes = text ? text.split(",").map((code) => code.trim()).filter(Boolean) : []; nextStep = "NEW_SHOT_DIRECTIONS"; break;
       case "NEW_SHOT_DIRECTIONS": {
         const directions = (next.shotDirections ?? []).map((direction) => direction.trim()).filter(Boolean);
         const required = shotCountForDuration(next.duration);
@@ -637,7 +638,10 @@ function promptFor(step: CreatorStep): string {
     NEW_LEARNING_GOAL: "What should viewers learn?",
     NEW_TONE: "What tone should it use?",
     NEW_CANON_CODES: "Which canon codes should it use? Enter comma separated codes, or leave blank.",
+    NEW_DRAFT_MODE: "Choose Draft with Codex or write the shots yourself.",
     NEW_SHOT_DIRECTIONS: "Send one manual shot direction per message. Send done when finished.",
+    CREATIVE_REVIEW: "Your creative draft is being prepared. Check /mywork for progress.",
+    CREATIVE_FEEDBACK: "Send feedback for the next creative revision.",
     CANON_SETUP: "Send canon details as CODE | CHARACTER, ENVIRONMENT, or STYLE | display name.",
     DRAFT_READY: "Draft ready. Use Confirm draft when you are ready.",
     IDLE: "Send /new to draft an episode.",
