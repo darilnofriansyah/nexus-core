@@ -8,10 +8,13 @@ import { randomBytes, randomUUID } from "node:crypto";
 import {
   Prisma,
   RovelleCreativeJobStatus,
+  type RovelleCreatorAction,
+  type RovelleCreativeJob,
   type RovelleCreatorSession,
 } from "../../generated/prisma/client";
 import { CreativeRepository } from "../creative/creative.repository";
-import { hashCreativeValue } from "../creative/creative-validation";
+import { renderCreativePages } from "../creative/creative-preview";
+import { hashCreativeValue, normalizeCreativeInput, normalizeCreativeResult } from "../creative/creative-validation";
 import type { CreativeInput } from "../creative/dto/creative.dto";
 import {
   CreatorRepository,
@@ -30,6 +33,7 @@ const ACTION_TTL_MS = 15 * 60 * 1000;
 const MODE_ACTION_KIND = "CREATIVE_MODE";
 const CODEX_MODE_LABEL = "Draft with Codex — uses AI quota";
 const MANUAL_MODE_LABEL = "Write shots myself";
+const CREATIVE_ACTION_KINDS = ["CREATIVE_PAGE", "CREATIVE_REVISE", "CREATIVE_APPROVE", "CREATIVE_RETRY"] as const;
 
 type CreativeMode = "CODEX" | "MANUAL";
 type CreativeModeAction = { actionGroup: string; mode: CreativeMode };
@@ -113,9 +117,14 @@ export class CreatorCreativeService {
     if (token === "mywork") return this.myWork(tx, session);
 
     const action = await this.creatorRepository.findActionInTransaction(tx, token);
-    if (!action || action.kind !== MODE_ACTION_KIND) return null;
+    if (!action) return null;
     if (action.telegramUserId !== session.telegramUserId) {
       return { text: "That creative action is not available for this account." };
+    }
+    if (action.kind !== MODE_ACTION_KIND) {
+      return CREATIVE_ACTION_KINDS.includes(action.kind as (typeof CREATIVE_ACTION_KINDS)[number])
+        ? this.handleCreativeAction(tx, session, action)
+        : null;
     }
     const selected = readCreativeModeAction(action.payload);
     if (!selected) return { text: "That creative choice is no longer available. Send /new to continue." };
@@ -227,6 +236,303 @@ export class CreatorCreativeService {
     throw new ConflictException("Creative choice could not be committed");
   }
 
+  private async handleCreativeAction(tx: Prisma.TransactionClient, session: CreativeSession, action: RovelleCreatorAction): Promise<CreatorTelegramReply> {
+    const stale = {
+      text: "That creative action is no longer current. Check /mywork.",
+    };
+    const payload = readCreativeReviewPayload(action.payload);
+    const data = asRecord(session.data);
+    if (
+      !payload ||
+      action.telegramUserId !== session.telegramUserId ||
+      data.creativeJobId !== payload.jobId ||
+      storedRevision(data.creativeInputRevision) !== payload.inputRevision
+    ) {
+      return stale;
+    }
+
+    const job = await this.creatorRepository.findCreativeJobInTransaction(tx, {
+      id: payload.jobId,
+      telegramUserId: session.telegramUserId,
+    });
+    if (!job || job.supersededAt || job.inputRevision !== payload.inputRevision) return stale;
+    const input = normalizeCreativeInput(job.input);
+    if (input.inputRevision !== payload.inputRevision || job.inputHash !== payload.inputHash || hashCreativeValue(input) !== payload.inputHash) {
+      return stale;
+    }
+    if (action.consumedAt) return storedReply(action.result) ?? stale;
+    if (action.expiresAt <= new Date())
+      return {
+        text: "That creative action expired. Check /mywork for fresh buttons.",
+      };
+
+    if (action.kind === "CREATIVE_RETRY") {
+      if (payload.page !== 1 || (job.status !== RovelleCreativeJobStatus.FAILED && job.status !== RovelleCreativeJobStatus.OUTCOME_UNKNOWN)) return stale;
+      return this.retryCreativeJob(tx, session, job, input, action.token);
+    }
+    if (job.status !== RovelleCreativeJobStatus.SUCCEEDED || !job.result) return stale;
+
+    const result = normalizeCreativeResult(job.result, input);
+    const pages = renderCreativePages(input, result);
+    if (payload.page > pages.length) return stale;
+    const progress = readCreativeReviewProgress(data.creativeReviewProgress, job, pages.length);
+
+    if (action.kind === "CREATIVE_PAGE") {
+      const maxViewed = Math.max(...progress.viewedPages);
+      if (payload.page > maxViewed + 1) return { text: "Open the preview pages in order before continuing." };
+      const nextProgress = progressForPage(progress, job, payload.page);
+      const reply = await this.pageReply(tx, session, job, pages, payload.page, nextProgress);
+      await this.consumeCreativeReply(tx, action, reply);
+      await this.saveReviewProgress(tx, session, nextProgress);
+      return reply;
+    }
+
+    if (action.kind === "CREATIVE_REVISE") {
+      if (!progress.viewedPages.includes(payload.page)) return stale;
+      const reply = { text: "Send feedback for the next creative revision." };
+      await this.consumeCreativeReply(tx, action, reply);
+      const nextData = {
+        ...data,
+        creativeFeedbackFor: {
+          jobId: job.id,
+          inputRevision: job.inputRevision,
+          inputHash: job.inputHash,
+        },
+      };
+      await this.creatorRepository.saveSession(tx, {
+        telegramUserId: session.telegramUserId,
+        step: "CREATIVE_FEEDBACK",
+        data: nextData as Prisma.JsonObject,
+      });
+      return reply;
+    }
+
+    if (action.kind === "CREATIVE_APPROVE") {
+      if (payload.page !== pages.length || !allPagesViewed(progress.viewedPages, pages.length)) {
+        return { text: "View every preview page before approving the plan." };
+      }
+      return {
+        text: "Plan approval is being prepared. Your storyboard is saved; check /mywork shortly.",
+      };
+    }
+
+    return stale;
+  }
+
+  private async submitFeedback(tx: Prisma.TransactionClient, session: CreativeSession, feedback: string, _chatId: string): Promise<CreatorTelegramReply> {
+    const data = asRecord(session.data);
+    const binding = readCreativeFeedbackBinding(data.creativeFeedbackFor);
+    const jobId = typeof data.creativeJobId === "string" ? data.creativeJobId : "";
+    if (!feedback) return { text: "Send feedback for the next creative revision." };
+    if (!binding || binding.jobId !== jobId || storedRevision(data.creativeInputRevision) !== binding.inputRevision) {
+      return { text: "That revision is no longer current. Check /mywork." };
+    }
+
+    const job = await this.creatorRepository.findCreativeJobInTransaction(tx, {
+      id: binding.jobId,
+      telegramUserId: session.telegramUserId,
+    });
+    if (!job || job.supersededAt || job.status !== RovelleCreativeJobStatus.SUCCEEDED || job.inputHash !== binding.inputHash) {
+      return { text: "That revision is no longer current. Check /mywork." };
+    }
+    const previousInput = normalizeCreativeInput(job.input);
+    const previousResult = normalizeCreativeResult(job.result, previousInput);
+    const input = normalizeCreativeInput({
+      ...previousInput,
+      inputRevision: nextCreativeRevision(job.inputRevision),
+      previousResult,
+      feedback,
+    });
+    const nextJob = await this.creativeRepository.createQueued(tx, {
+      sessionId: session.id,
+      telegramUserId: session.telegramUserId,
+      chatId: job.chatId,
+      input,
+    });
+    await this.creatorRepository.supersedeCreativeJob(tx, job, new Date());
+    await this.creatorRepository.invalidateCreativeActions(tx, session.telegramUserId, new Date());
+
+    const nextData: Record<string, unknown> = {
+      ...data,
+      draftMode: "CREATIVE",
+      creativeInputRevision: input.inputRevision,
+      creativeJobId: nextJob.id,
+    };
+    delete nextData.creativeFeedbackFor;
+    delete nextData.creativeReviewProgress;
+    await this.creatorRepository.saveSession(tx, {
+      telegramUserId: session.telegramUserId,
+      step: "CREATIVE_REVIEW",
+      data: nextData as Prisma.JsonObject,
+    });
+    return {
+      text: "Creative revision queued. Check /mywork for progress.",
+      creativeJob: { id: nextJob.id, action: "DISPATCH" },
+    };
+  }
+
+  private async retryCreativeJob(
+    tx: Prisma.TransactionClient,
+    session: CreativeSession,
+    job: RovelleCreativeJob,
+    input: CreativeInput,
+    token: string,
+  ): Promise<CreatorTelegramReply> {
+    const retryInput = normalizeCreativeInput({
+      ...input,
+      inputRevision: nextCreativeRevision(job.inputRevision),
+    });
+    const now = new Date();
+    if (job.status === RovelleCreativeJobStatus.OUTCOME_UNKNOWN) {
+      const resolved = await tx.rovelleCreativeJob.updateMany({
+        where: {
+          id: job.id,
+          status: RovelleCreativeJobStatus.OUTCOME_UNKNOWN,
+          supersededAt: null,
+        },
+        data: {
+          status: RovelleCreativeJobStatus.FAILED,
+          failureCode: "RETRY_AUTHORIZED_OUTCOME_UNKNOWN",
+          leaseExpiresAt: null,
+          supersededAt: now,
+        },
+      });
+      if (resolved.count !== 1) throw new ConflictException("Unknown creative outcome changed before retry");
+    } else {
+      await this.creatorRepository.supersedeCreativeJob(tx, job, now);
+    }
+    const nextJob = await this.creativeRepository.createQueued(tx, {
+      sessionId: session.id,
+      telegramUserId: session.telegramUserId,
+      chatId: job.chatId,
+      input: retryInput,
+    });
+
+    const nextData: Record<string, unknown> = {
+      ...asRecord(session.data),
+      draftMode: "CREATIVE",
+      creativeInputRevision: retryInput.inputRevision,
+      creativeJobId: nextJob.id,
+    };
+    delete nextData.creativeFeedbackFor;
+    delete nextData.creativeReviewProgress;
+    await this.creatorRepository.saveSession(tx, {
+      telegramUserId: session.telegramUserId,
+      step: "CREATIVE_REVIEW",
+      data: nextData as Prisma.JsonObject,
+    });
+
+    const reply: CreatorTelegramReply = {
+      text: "Creative retry queued. It may use AI quota again. Check /mywork for progress.",
+      creativeJob: { id: nextJob.id, action: "DISPATCH" },
+    };
+    await this.consumeCreativeReply(tx, await this.creatorRepository.findActionInTransaction(tx, token), reply);
+    await this.creatorRepository.invalidateCreativeActions(tx, session.telegramUserId, now);
+    return reply;
+  }
+
+  private async pageReply(
+    tx: Prisma.TransactionClient,
+    session: CreativeSession,
+    job: RovelleCreativeJob,
+    pages: string[],
+    page: number,
+    progress: CreativeReviewProgress,
+  ): Promise<CreatorTelegramReply> {
+    const specs: Array<{
+      kind: CreativeReviewActionKind;
+      page: number;
+      text: string;
+    }> = [];
+    if (page > 1) specs.push({ kind: "CREATIVE_PAGE", page: page - 1, text: "Previous" });
+    if (page < pages.length) specs.push({ kind: "CREATIVE_PAGE", page: page + 1, text: "Next" });
+    specs.push({ kind: "CREATIVE_REVISE", page, text: "Revise" });
+    if (page === pages.length && allPagesViewed(progress.viewedPages, pages.length)) {
+      specs.push({ kind: "CREATIVE_APPROVE", page, text: "Approve plan" });
+    }
+    const buttons = await this.creativeActionButtons(tx, session, job, specs);
+    return {
+      text: pages[page - 1]!,
+      inlineKeyboard: buttons.map((button) => [button]),
+    };
+  }
+
+  private async retryReply(tx: Prisma.TransactionClient, session: CreativeSession, job: RovelleCreativeJob): Promise<CreatorTelegramReply> {
+    const copy =
+      job.status === RovelleCreativeJobStatus.OUTCOME_UNKNOWN
+        ? "The previous run may have used AI quota. Retry may use quota again."
+        : "The previous creative run failed. It will not retry automatically.";
+    const buttons = await this.creativeActionButtons(tx, session, job, [{ kind: "CREATIVE_RETRY", page: 1, text: "Retry" }]);
+    return { text: copy, inlineKeyboard: buttons.map((button) => [button]) };
+  }
+
+  private async creativeActionButtons(
+    tx: Prisma.TransactionClient,
+    session: CreativeSession,
+    job: RovelleCreativeJob,
+    specs: Array<{
+      kind: CreativeReviewActionKind;
+      page: number;
+      text: string;
+    }>,
+  ): Promise<CreatorInlineButton[]> {
+    const now = new Date();
+    const active = await tx.rovelleCreatorAction.findMany({
+      where: {
+        telegramUserId: session.telegramUserId,
+        kind: { in: [...new Set(specs.map((spec) => spec.kind))] },
+        consumedAt: null,
+        expiresAt: { gt: now },
+      },
+    });
+    const input = normalizeCreativeInput(job.input);
+    const buttons: CreatorInlineButton[] = [];
+    for (const spec of specs) {
+      const existing = active.find((candidate) => {
+        if (candidate.kind !== spec.kind) return false;
+        const payload = readCreativeReviewPayload(candidate.payload);
+        return payload?.jobId === job.id && payload.inputRevision === job.inputRevision && payload.inputHash === job.inputHash && payload.page === spec.page;
+      });
+      const action =
+        existing ??
+        (await this.creatorRepository.createActionInTransaction(tx, {
+          token: randomBytes(18).toString("base64url"),
+          telegramUserId: session.telegramUserId,
+          kind: spec.kind,
+          payload: creativeReviewPayload(job.id, input.inputRevision, job.inputHash, spec.page) as unknown as Prisma.JsonObject,
+          expiresAt: new Date(now.getTime() + ACTION_TTL_MS),
+        }));
+      if (!existing) active.push(action);
+      buttons.push({ text: spec.text, callbackData: `rv:${action.token}` });
+    }
+    return buttons;
+  }
+
+  private async consumeCreativeReply(tx: Prisma.TransactionClient, action: RovelleCreatorAction | null, reply: CreatorTelegramReply): Promise<void> {
+    if (!action || !CREATIVE_ACTION_KINDS.includes(action.kind as (typeof CREATIVE_ACTION_KINDS)[number])) {
+      throw new ConflictException("Creative action could not be committed");
+    }
+    const result = await this.creatorRepository.consumeCreativeActionInTransaction(tx, {
+      token: action.token,
+      telegramUserId: action.telegramUserId,
+      kind: action.kind as CreativeReviewActionKind,
+      result: reply as unknown as Prisma.JsonObject,
+    });
+    if (result.status !== "consumed") throw new ConflictException("Creative action could not be committed");
+  }
+
+  private async saveReviewProgress(tx: Prisma.TransactionClient, session: CreativeSession, progress: CreativeReviewProgress): Promise<void> {
+    const data = {
+      ...asRecord(session.data),
+      creativeReviewProgress: progress,
+    };
+    await this.creatorRepository.saveSession(tx, {
+      telegramUserId: session.telegramUserId,
+      step: "CREATIVE_REVIEW",
+      data: data as unknown as Prisma.JsonObject,
+    });
+  }
+
   private async handleMessage(
     tx: Prisma.TransactionClient,
     session: CreativeSession,
@@ -240,7 +546,7 @@ export class CreatorCreativeService {
     if (session.step === "NEW_DRAFT_MODE") return this.modeMenu(tx, session);
     if (session.step === "CREATIVE_REVIEW") return this.myWork(tx, session);
     if (session.step === "CREATIVE_FEEDBACK") {
-      return { text: "Creative revisions are not available yet. Check /mywork for the saved draft." };
+      return this.submitFeedback(tx, session, text, chatId);
     }
     if (!isSharedBriefStep(session.step)) return null;
 
@@ -357,10 +663,7 @@ export class CreatorCreativeService {
     };
   }
 
-  private async myWork(
-    tx: Prisma.TransactionClient,
-    session: CreativeSession,
-  ): Promise<CreatorTelegramReply | null> {
+  private async myWork(tx: Prisma.TransactionClient, session: CreativeSession): Promise<CreatorTelegramReply | null> {
     const data = asRecord(session.data);
     const jobId = typeof data.creativeJobId === "string" ? data.creativeJobId : null;
     if (!jobId) return null;
@@ -368,20 +671,165 @@ export class CreatorCreativeService {
       id: jobId,
       telegramUserId: session.telegramUserId,
     });
-    if (!job) return { text: "The current creative draft could not be found. Send /new to start again." };
+    if (!job)
+      return {
+        text: "The current creative draft could not be found. Send /new to start again.",
+      };
     switch (job.status) {
       case RovelleCreativeJobStatus.QUEUED:
         return { text: "Creative draft queued. Check /mywork again shortly." };
       case RovelleCreativeJobStatus.RUNNING:
-        return { text: "Creative draft is in progress. Check /mywork again shortly." };
+        return {
+          text: "Creative draft is in progress. Check /mywork again shortly.",
+        };
       case RovelleCreativeJobStatus.OUTCOME_UNKNOWN:
-        return { text: "The previous draft run may have used AI quota. Check back before starting another run." };
+        return this.retryReply(tx, session, job);
       case RovelleCreativeJobStatus.SUCCEEDED:
-        return { text: "Creative draft saved. Preview and approval are the next step." };
+        if (!job.result)
+          return {
+            text: "The creative result could not be found. Check /mywork again shortly.",
+          };
+        {
+          const input = normalizeCreativeInput(job.input);
+          const result = normalizeCreativeResult(job.result, input);
+          const pages = renderCreativePages(input, result);
+          const progress = readCreativeReviewProgress(asRecord(session.data).creativeReviewProgress, job, pages.length);
+          const page = progress.currentPage;
+          const nextProgress = progressForPage(progress, job, page);
+          const reply = await this.pageReply(tx, session, job, pages, page, nextProgress);
+          await this.saveReviewProgress(tx, session, nextProgress);
+          return reply;
+        }
       case RovelleCreativeJobStatus.FAILED:
-        return { text: "Creative draft failed. It was not retried automatically; send /new when you are ready to try a new brief." };
+        return this.retryReply(tx, session, job);
     }
   }
+}
+
+type CreativeReviewActionKind = (typeof CREATIVE_ACTION_KINDS)[number];
+
+interface CreativeReviewPayload {
+  jobId: string;
+  inputRevision: number;
+  inputHash: string;
+  page: number;
+}
+
+interface CreativeReviewProgress {
+  jobId: string;
+  inputRevision: number;
+  inputHash: string;
+  currentPage: number;
+  viewedPages: number[];
+}
+
+interface CreativeFeedbackBinding extends Omit<CreativeReviewPayload, "page"> {}
+
+function creativeReviewPayload(jobId: string, inputRevision: number, inputHash: string, page: number): CreativeReviewPayload {
+  return { jobId, inputRevision, inputHash, page };
+}
+
+function readCreativeReviewPayload(value: unknown): CreativeReviewPayload | null {
+  const payload = asRecord(value);
+  const keys = Reflect.ownKeys(payload);
+  if (keys.length !== 4 || keys.some((key) => !["jobId", "inputRevision", "inputHash", "page"].includes(String(key)))) return null;
+  if (
+    typeof payload.jobId !== "string" ||
+    !payload.jobId ||
+    typeof payload.inputRevision !== "number" ||
+    !Number.isSafeInteger(payload.inputRevision) ||
+    payload.inputRevision < 1 ||
+    typeof payload.inputHash !== "string" ||
+    !/^[0-9a-f]{64}$/.test(payload.inputHash) ||
+    typeof payload.page !== "number" ||
+    !Number.isSafeInteger(payload.page) ||
+    payload.page < 1
+  )
+    return null;
+  return {
+    jobId: payload.jobId,
+    inputRevision: payload.inputRevision,
+    inputHash: payload.inputHash,
+    page: payload.page,
+  };
+}
+
+function readCreativeFeedbackBinding(value: unknown): CreativeFeedbackBinding | null {
+  const binding = asRecord(value);
+  const keys = Reflect.ownKeys(binding);
+  if (keys.length !== 3 || keys.some((key) => !["jobId", "inputRevision", "inputHash"].includes(String(key)))) return null;
+  if (
+    typeof binding.jobId !== "string" ||
+    !binding.jobId ||
+    typeof binding.inputRevision !== "number" ||
+    !Number.isSafeInteger(binding.inputRevision) ||
+    binding.inputRevision < 1 ||
+    typeof binding.inputHash !== "string" ||
+    !/^[0-9a-f]{64}$/.test(binding.inputHash)
+  )
+    return null;
+  return {
+    jobId: binding.jobId,
+    inputRevision: binding.inputRevision,
+    inputHash: binding.inputHash,
+  };
+}
+
+function readCreativeReviewProgress(value: unknown, job: RovelleCreativeJob, pageCount: number): CreativeReviewProgress {
+  const progress = asRecord(value);
+  const pages = progress.viewedPages;
+  if (
+    progress.jobId !== job.id ||
+    progress.inputRevision !== job.inputRevision ||
+    progress.inputHash !== job.inputHash ||
+    !Array.isArray(pages) ||
+    typeof progress.currentPage !== "number" ||
+    !Number.isSafeInteger(progress.currentPage) ||
+    progress.currentPage < 1 ||
+    progress.currentPage > pageCount ||
+    !pages.includes(progress.currentPage)
+  ) {
+    return {
+      jobId: job.id,
+      inputRevision: job.inputRevision,
+      inputHash: job.inputHash,
+      currentPage: 1,
+      viewedPages: [1],
+    };
+  }
+  const viewedPages = [
+    ...new Set(pages.filter((page): page is number => typeof page === "number" && Number.isSafeInteger(page) && page >= 1 && page <= pageCount)),
+  ].sort((left, right) => left - right);
+  if (!viewedPages.includes(1) || !viewedPages.includes(progress.currentPage)) {
+    return {
+      jobId: job.id,
+      inputRevision: job.inputRevision,
+      inputHash: job.inputHash,
+      currentPage: 1,
+      viewedPages: [1],
+    };
+  }
+  return {
+    jobId: job.id,
+    inputRevision: job.inputRevision,
+    inputHash: job.inputHash,
+    currentPage: progress.currentPage,
+    viewedPages,
+  };
+}
+
+function progressForPage(progress: CreativeReviewProgress, job: RovelleCreativeJob, page: number): CreativeReviewProgress {
+  return {
+    jobId: job.id,
+    inputRevision: job.inputRevision,
+    inputHash: job.inputHash,
+    currentPage: page,
+    viewedPages: [...new Set([...progress.viewedPages, page])].sort((left, right) => left - right),
+  };
+}
+
+function allPagesViewed(viewedPages: number[], pageCount: number): boolean {
+  return viewedPages.length === pageCount && viewedPages.every((page, index) => page === index + 1);
 }
 
 function isCreativeIntakeStep(step: string): boolean {

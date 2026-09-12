@@ -8,14 +8,19 @@ import { createHash, randomBytes } from "node:crypto";
 import {
   Prisma,
   RovelleCreativeJobStatus,
+  type RovelleCreativeJob,
 } from "../../generated/prisma/client";
 import { PrismaService } from "../../database/prisma.service";
-import type { CreatorTelegramReply } from "../creator/dto/creator.dto";
+import type {
+  CreatorInlineButton,
+  CreatorTelegramReply,
+} from "../creator/dto/creator.dto";
 import type {
   CreativeClaim,
   CreativeCompletion,
   CreativeInput,
 } from "./dto/creative.dto";
+import { renderCreativePages } from "./creative-preview";
 import {
   hashCreativeValue,
   normalizeCreativeCompletion,
@@ -25,6 +30,7 @@ import {
 const CREATIVE_TASK = "STORYBOARD" as const;
 const LEASE_MS = 10 * 60 * 1000;
 const QUEUED_LIMIT = 20;
+const CREATIVE_ACTION_TTL_MS = 15 * 60 * 1000;
 
 export interface CreateQueuedCreativeJobInput {
   sessionId: string;
@@ -132,8 +138,17 @@ export class CreativeRepository {
     now: Date,
   ): Promise<{ chatId: string; reply: CreatorTelegramReply }> {
     return this.runSerializable(async (tx) => {
+      const firstRead = await tx.rovelleCreativeJob.findUnique({
+        where: { id: jobId },
+      });
+      if (!firstRead) throw new NotFoundException("Creative job was not found");
+      await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT id
+        FROM rovelle_creator_sessions
+        WHERE id = ${firstRead.creatorSessionId}::uuid
+        FOR UPDATE
+      `;
       await this.reconcileExpired(tx, now, jobId);
-
       const job = await tx.rovelleCreativeJob.findUnique({
         where: { id: jobId },
       });
@@ -190,7 +205,7 @@ export class CreativeRepository {
         );
       }
 
-      const reply = completionReply(normalized);
+      const reply = await completionReply(tx, job, creativeInput, normalized);
       const updated = await tx.rovelleCreativeJob.updateMany({
         where: {
           id: job.id,
@@ -280,12 +295,91 @@ function hashToken(token: string): string {
   return createHash("sha256").update(token, "utf8").digest("hex");
 }
 
-function completionReply(completion: CreativeCompletion): CreatorTelegramReply {
-  return completion.status === "COMPLETED"
-    ? { text: "Creative draft ready. Check /mywork to review it." }
-    : {
-        text: "Creative draft could not be completed. Check /mywork to retry.",
-      };
+async function completionReply(
+  tx: Prisma.TransactionClient,
+  job: RovelleCreativeJob,
+  input: CreativeInput,
+  completion: CreativeCompletion,
+): Promise<CreatorTelegramReply> {
+  if (completion.status === "FAILED") {
+    const retry = await createCreativeAction(tx, job, "CREATIVE_RETRY", 1, "Retry");
+    return {
+      text: "Creative draft could not be completed. It was not retried automatically.",
+      inlineKeyboard: [[retry]],
+    };
+  }
+
+  const pages = renderCreativePages(input, completion.result);
+  const buttons: CreatorInlineButton[] = [];
+  if (pages.length > 1) {
+    buttons.push(await createCreativeAction(tx, job, "CREATIVE_PAGE", 2, "Next"));
+  }
+  buttons.push(await createCreativeAction(tx, job, "CREATIVE_REVISE", 1, "Revise"));
+  if (pages.length === 1) {
+    buttons.push(await createCreativeAction(tx, job, "CREATIVE_APPROVE", 1, "Approve plan"));
+  }
+  await recordInitialPreviewProgress(tx, job);
+  return {
+    text: pages[0]!,
+    inlineKeyboard: buttons.map((button) => [button]),
+  };
+}
+
+async function createCreativeAction(
+  tx: Prisma.TransactionClient,
+  job: RovelleCreativeJob,
+  kind: "CREATIVE_PAGE" | "CREATIVE_REVISE" | "CREATIVE_APPROVE" | "CREATIVE_RETRY",
+  page: number,
+  text: string,
+): Promise<CreatorInlineButton> {
+  const action = await tx.rovelleCreatorAction.create({
+    data: {
+      token: randomBytes(18).toString("base64url"),
+      telegramUserId: job.telegramUserId,
+      kind,
+      payload: {
+        jobId: job.id,
+        inputRevision: job.inputRevision,
+        inputHash: job.inputHash,
+        page,
+      },
+      expiresAt: new Date(Date.now() + CREATIVE_ACTION_TTL_MS),
+    },
+  });
+  return { text, callbackData: `rv:${action.token}` };
+}
+
+async function recordInitialPreviewProgress(
+  tx: Prisma.TransactionClient,
+  job: RovelleCreativeJob,
+): Promise<void> {
+  const session = await tx.rovelleCreatorSession.findUnique({
+    where: { id: job.creatorSessionId },
+  });
+  if (!session) return;
+  const data = plainRecord(session.data);
+  if (data.creativeJobId !== job.id || data.creativeInputRevision !== job.inputRevision) return;
+  await tx.rovelleCreatorSession.update({
+    where: { id: session.id },
+    data: {
+      data: {
+        ...data,
+        creativeReviewProgress: {
+          jobId: job.id,
+          inputRevision: job.inputRevision,
+          inputHash: job.inputHash,
+          currentPage: 1,
+          viewedPages: [1],
+        },
+      },
+    },
+  });
+}
+
+function plainRecord(value: Prisma.JsonValue): Record<string, Prisma.JsonValue> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, Prisma.JsonValue>)
+    : {};
 }
 
 function isSerializableTransactionError(error: unknown): boolean {

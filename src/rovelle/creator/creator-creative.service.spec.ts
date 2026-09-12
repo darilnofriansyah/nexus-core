@@ -4,7 +4,10 @@ import { BadRequestException } from "@nestjs/common";
 import { CreatorService } from "./creator.service";
 import { CreatorRepository } from "./creator.repository";
 import { CreatorCreativeService } from "./creator-creative.service";
-import type { CreatorTelegramReply, CreatorTelegramRequest } from "./dto/creator.dto";
+import type { CreatorInlineButton, CreatorTelegramReply, CreatorTelegramRequest } from "./dto/creator.dto";
+import { creativeInput, creativeResult } from "../creative/creative.fixture";
+import { hashCreativeValue } from "../creative/creative-validation";
+import type { CreativeInput, CreativeResult } from "../creative/dto/creative.dto";
 
 test("delegates authorized Telegram updates before legacy routing", async () => {
   const calls: string[] = [];
@@ -413,6 +416,208 @@ test("reconciles an expired running job to outcome-unknown before returning it",
   assert.equal(updates[0]?.data.leaseExpiresAt, null);
 });
 
+test("requires every preview page before showing plan approval and supports Previous", async () => {
+  await withCreativeEnabled(async () => {
+    const fixture = createReviewFixture("SUCCEEDED", 8_000);
+    const first = await fixture.service.handle({
+      telegramUserId: fixture.owner,
+      chatId: fixture.owner,
+      updateId: "review-1",
+      messageText: "/mywork",
+    });
+    assert.ok(first);
+    assert.match(first.text, /Creative draft \(page 1 of 3\)/);
+    assert.equal(findButton(first, "Approve plan"), undefined);
+
+    const second = await fixture.service.handle(callbackRequest(fixture.owner, findButton(first, "Next")!, "review-2"));
+    assert.ok(second);
+    assert.match(second.text, /Creative draft \(page 2 of 3\)/);
+    assert.equal(findButton(second, "Approve plan"), undefined);
+
+    const third = await fixture.service.handle(callbackRequest(fixture.owner, findButton(second, "Next")!, "review-3"));
+    assert.ok(third);
+    assert.match(third.text, /Creative draft \(page 3 of 3\)/);
+    assert.ok(findButton(third, "Approve plan"));
+
+    const previous = await fixture.service.handle(callbackRequest(fixture.owner, findButton(third, "Previous")!, "review-4"));
+    assert.equal(previous?.text, second.text);
+    assert.deepEqual(fixture.getReviewProgress()?.viewedPages, [1, 2, 3]);
+    assert.equal(fixture.getReviewProgress()?.currentPage, 2);
+  });
+});
+
+test("shows Approve plan for a one-page preview and regenerates expired page actions", async () => {
+  await withCreativeEnabled(async () => {
+    const fixture = createReviewFixture("SUCCEEDED", 20);
+    const first = await fixture.service.handle({
+      telegramUserId: fixture.owner,
+      chatId: fixture.owner,
+      updateId: "one-page-1",
+      messageText: "/mywork",
+    });
+    assert.ok(first);
+    const firstNext = findButton(first, "Next");
+    assert.equal(firstNext, undefined);
+    assert.ok(findButton(first, "Approve plan"));
+    assert.ok(findButton(first, "Revise"));
+
+    for (const action of fixture.getActions().values()) action.expiresAt = new Date(0);
+    const refreshed = await fixture.service.handle({
+      telegramUserId: fixture.owner,
+      chatId: fixture.owner,
+      updateId: "one-page-2",
+      messageText: "/mywork",
+    });
+    assert.ok(refreshed);
+    assert.ok(findButton(refreshed, "Approve plan"));
+    assert.notEqual(findButton(refreshed, "Approve plan")?.callbackData, findButton(first, "Approve plan")?.callbackData);
+  });
+});
+
+test("requires explicit quota-risk confirmation to retry an unknown outcome once", async () => {
+  await withCreativeEnabled(async () => {
+    const fixture = createReviewFixture("OUTCOME_UNKNOWN", 20);
+    const review = await fixture.service.handle({
+      telegramUserId: fixture.owner,
+      chatId: fixture.owner,
+      updateId: "unknown-1",
+      messageText: "/mywork",
+    });
+    assert.ok(review);
+    assert.match(review.text, /may have used AI quota.*retry may use quota again/i);
+    const retry = findButton(review, "Retry");
+    assert.ok(retry);
+
+    const request = callbackRequest(fixture.owner, retry, "unknown-2");
+    const first = await fixture.service.handle(request);
+    const replay = await fixture.service.handle(request);
+
+    assert.deepEqual(replay, first);
+    assert.equal(fixture.getJobs().length, 2);
+    assert.equal(fixture.getJobs()[0]?.status, "FAILED");
+    assert.equal(fixture.getJobs()[0]?.failureCode, "RETRY_AUTHORIZED_OUTCOME_UNKNOWN");
+    assert.equal(fixture.getJobs()[1]?.input.inputRevision, 2);
+    assert.deepEqual(fixture.getJobs()[1]?.input.canon, creativeInput.canon);
+    assert.equal((first as CreatorTelegramReply | null)?.creativeJob?.action, "DISPATCH");
+    assert.equal(fixture.getSession()?.data.creativeJobId, fixture.getJobs()[1]?.id);
+  });
+});
+
+test("offers retry for a definitive failure but never starts it from /mywork alone", async () => {
+  await withCreativeEnabled(async () => {
+    const fixture = createReviewFixture("FAILED", 20);
+    const review = await fixture.service.handle({
+      telegramUserId: fixture.owner,
+      chatId: fixture.owner,
+      updateId: "failed-1",
+      messageText: "/mywork",
+    });
+    assert.match(review?.text ?? "", /failed.*not retry automatically/i);
+    assert.equal(fixture.getJobs().length, 1);
+    const retry = findButton(review!, "Retry");
+    assert.ok(retry);
+
+    const response = await fixture.service.handle(callbackRequest(fixture.owner, retry, "failed-2"));
+
+    assert.equal(fixture.getJobs().length, 2);
+    assert.equal(fixture.getJobs()[0]?.supersededAt instanceof Date, true);
+    assert.equal(fixture.getJobs()[1]?.input.inputRevision, 2);
+    assert.equal(response?.creativeJob?.action, "DISPATCH");
+  });
+});
+
+test("revision feedback creates one bound revision and invalidates the old approval", async () => {
+  await withCreativeEnabled(async () => {
+    const fixture = createReviewFixture("SUCCEEDED", 20);
+    const review = await fixture.service.handle({
+      telegramUserId: fixture.owner,
+      chatId: fixture.owner,
+      updateId: "revise-1",
+      messageText: "/mywork",
+    });
+    assert.ok(review);
+    const oldApproval = findButton(review, "Approve plan");
+    const revise = findButton(review, "Revise");
+    assert.ok(oldApproval && revise);
+
+    const prompt = await fixture.service.handle(callbackRequest(fixture.owner, revise, "revise-2"));
+    assert.match(prompt?.text ?? "", /send feedback/i);
+    const feedbackRequest: CreatorTelegramRequest = {
+      telegramUserId: fixture.owner,
+      chatId: fixture.owner,
+      updateId: "revise-3",
+      messageText: "Make the ending hopeful.",
+    };
+    const firstRevision = await fixture.service.handle(feedbackRequest);
+    const replay = await fixture.service.handle(feedbackRequest);
+    assert.deepEqual(replay, firstRevision);
+    assert.equal(fixture.getJobs().length, 2);
+    assert.equal(fixture.getJobs()[1]?.input.inputRevision, 2);
+    assert.deepEqual(fixture.getJobs()[1]?.input.previousResult, fixture.getJobs()[0]?.result);
+    assert.equal(fixture.getJobs()[1]?.input.feedback, "Make the ending hopeful.");
+    assert.equal(fixture.getReviewProgress(), undefined);
+
+    const stale = await fixture.service.handle(callbackRequest(fixture.owner, oldApproval, "revise-4"));
+    assert.match(stale?.text ?? "", /no longer current/i);
+    assert.equal(fixture.getJobs().length, 2);
+  });
+});
+
+test("rejects forged preview page indexes without advancing review progress", async () => {
+  await withCreativeEnabled(async () => {
+    const fixture = createReviewFixture("SUCCEEDED", 8_000);
+    const first = await fixture.service.handle({
+      telegramUserId: fixture.owner,
+      chatId: fixture.owner,
+      updateId: "forged-1",
+      messageText: "/mywork",
+    });
+    assert.ok(first);
+    const next = findButton(first, "Next");
+    assert.ok(next);
+    const action = [...fixture.getActions().values()].find((candidate) => candidate.token === next.callbackData.slice(3));
+    assert.ok(action);
+    action.payload.page = 99;
+
+    const reply = await fixture.service.handle(callbackRequest(fixture.owner, next, "forged-2"));
+
+    assert.match(reply?.text ?? "", /no longer current|invalid/i);
+    assert.deepEqual(fixture.getReviewProgress()?.viewedPages, [1]);
+  });
+});
+
+test("rejects expired, cross-owner, mismatched, and superseded review actions", async () => {
+  await withCreativeEnabled(async () => {
+    for (const invalidation of ["expired", "foreign", "revision", "hash", "superseded"] as const) {
+      const fixture = createReviewFixture("SUCCEEDED", 20);
+      const review = await fixture.service.handle({
+        telegramUserId: fixture.owner,
+        chatId: fixture.owner,
+        updateId: `${invalidation}-review`,
+        messageText: "/mywork",
+      });
+      assert.ok(review);
+      const revise = findButton(review, "Revise");
+      assert.ok(revise);
+      const action = fixture.getActions().get(revise.callbackData.slice(3));
+      assert.ok(action);
+      if (invalidation === "expired") action.expiresAt = new Date(0);
+      if (invalidation === "revision") action.payload.inputRevision = 2;
+      if (invalidation === "hash") action.payload.inputHash = "0".repeat(64);
+      if (invalidation === "superseded") fixture.getJobs()[0]!.supersededAt = new Date();
+
+      const reply = await fixture.service.handle(
+        callbackRequest(invalidation === "foreign" ? "another-owner" : fixture.owner, revise, `${invalidation}-callback`),
+      );
+
+      if (invalidation === "foreign") assert.equal(reply, null);
+      else assert.match(reply?.text ?? "", invalidation === "expired" ? /expired/i : /no longer current/i);
+      assert.equal(fixture.getJobs().length, 1);
+      assert.deepEqual(fixture.getReviewProgress()?.viewedPages, [1]);
+    }
+  });
+});
+
 type TestSession = { id: string; telegramUserId: string; step: string; data: Record<string, unknown> };
 
 function createCreativeService(initial: TestSession | null) {
@@ -549,6 +754,219 @@ function createReceiptRetryRepository(errors: unknown[]) {
     repository: new CreatorRepository(prisma as never),
     getRawQueryAttempts: () => rawQueryAttempts,
     getCreatedReceipt: () => createdReceipt,
+  };
+}
+
+type ReviewJob = {
+  id: string;
+  creatorSessionId: string;
+  telegramUserId: string;
+  chatId: string;
+  inputRevision: number;
+  input: CreativeInput;
+  inputHash: string;
+  status: string;
+  result: CreativeResult | null;
+  failureCode: string | null;
+  supersededAt: Date | null;
+  leaseExpiresAt: Date | null;
+};
+
+type ReviewAction = {
+  token: string;
+  telegramUserId: string;
+  kind: string;
+  payload: Record<string, unknown>;
+  expiresAt: Date;
+  consumedAt: Date | null;
+  result: CreatorTelegramReply | null;
+};
+
+function createReviewFixture(status: string, scriptLength: number) {
+  const owner = "review-owner";
+  const input = { ...creativeInput, targetDurationSeconds: 4 };
+  const result = { ...creativeResult, script: "s".repeat(scriptLength) };
+  let session: TestSession = {
+    id: "session-review",
+    telegramUserId: owner,
+    step: "CREATIVE_REVIEW",
+    data: {
+      creativeJobId: "job-1",
+      creativeInputRevision: 1,
+      draftMode: "CREATIVE",
+    },
+  };
+  const jobs: ReviewJob[] = [
+    {
+      id: "job-1",
+      creatorSessionId: session.id,
+      telegramUserId: owner,
+      chatId: owner,
+      inputRevision: input.inputRevision,
+      input,
+      inputHash: hashCreativeValue(input),
+      status,
+      result: status === "SUCCEEDED" ? result : null,
+      failureCode: status === "FAILED" ? "EXECUTION_FAILED" : null,
+      supersededAt: null,
+      leaseExpiresAt: null,
+    },
+  ];
+  const actions = new Map<string, ReviewAction>();
+  const receipts = new Map<string, { requestHash: string; response: CreatorTelegramReply }>();
+  let nextAction = 0;
+  const transaction = {
+    rovelleCreatorAction: {
+      findMany: async ({ where }: { where: Record<string, unknown> }) => {
+        const kinds = (where.kind as { in?: string[] } | undefined)?.in;
+        const expiresAt = (where.expiresAt as { gt?: Date } | undefined)?.gt;
+        return [...actions.values()].filter(
+          (action) =>
+            action.telegramUserId === where.telegramUserId &&
+            (!kinds || kinds.includes(action.kind)) &&
+            action.consumedAt === null &&
+            (!expiresAt || action.expiresAt > expiresAt),
+        );
+      },
+    },
+    rovelleCreativeJob: {
+      updateMany: async ({ where, data }: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
+        const job = jobs.find((candidate) => candidate.id === where.id);
+        if (!job || (where.status && job.status !== where.status) || (where.supersededAt === null && job.supersededAt !== null)) return { count: 0 };
+        Object.assign(job, data);
+        return { count: 1 };
+      },
+    },
+  };
+  const creatorRepository = {
+    findSession: async (telegramUserId: string) => (session.telegramUserId === telegramUserId ? session : null),
+    findTelegramReceipt: async ({ updateId, requestHash }: { updateId: string; requestHash: string }) => {
+      const receipt = receipts.get(updateId);
+      if (!receipt) return null;
+      if (receipt.requestHash !== requestHash) throw new Error("changed update");
+      return receipt.response;
+    },
+    withTelegramReceipt: async (input: { updateId: string; requestHash: string }, operation: (tx: unknown) => Promise<CreatorTelegramReply | null>) => {
+      const previous = receipts.get(input.updateId);
+      if (previous) return previous.response;
+      const response = await operation(transaction);
+      if (response)
+        receipts.set(input.updateId, {
+          requestHash: input.requestHash,
+          response,
+        });
+      return response;
+    },
+    lockSession: async () => session,
+    saveSession: async (_tx: unknown, update: Omit<TestSession, "id">) => {
+      session = { id: session.id, ...update };
+      return session;
+    },
+    findAction: async (token: string, telegramUserId: string) => {
+      const action = actions.get(token);
+      return action?.telegramUserId === telegramUserId ? action : null;
+    },
+    findActionInTransaction: async (_tx: unknown, token: string) => actions.get(token) ?? null,
+    createActionInTransaction: async (_tx: unknown, action: Omit<ReviewAction, "token" | "consumedAt" | "result">) => {
+      nextAction += 1;
+      const created: ReviewAction = {
+        ...action,
+        token: `review-token-${nextAction}`,
+        consumedAt: null,
+        result: null,
+      };
+      actions.set(created.token, created);
+      return created;
+    },
+    consumeCreativeActionInTransaction: async (
+      _tx: unknown,
+      input: {
+        token: string;
+        telegramUserId: string;
+        kind: string;
+        result: CreatorTelegramReply;
+      },
+    ) => {
+      const action = actions.get(input.token);
+      if (!action || action.kind !== input.kind) return { status: "not_found" };
+      if (action.telegramUserId !== input.telegramUserId) return { status: "foreign_user" };
+      if (action.expiresAt <= new Date()) return { status: "expired" };
+      if (action.consumedAt) return { status: "duplicate", action, result: action.result };
+      action.consumedAt = new Date();
+      action.result = input.result;
+      return { status: "consumed", action, result: input.result };
+    },
+    findCreativeJobInTransaction: async (_tx: unknown, query: { id: string; telegramUserId: string }) =>
+      jobs.find((job) => job.id === query.id && job.telegramUserId === query.telegramUserId) ?? null,
+    supersedeCreativeJob: async (_tx: unknown, job: ReviewJob, now: Date) => {
+      if (job.status === "QUEUED") {
+        job.status = "FAILED";
+        job.failureCode = "SUPERSEDED_BEFORE_START";
+      }
+      job.supersededAt = now;
+    },
+    invalidateCreativeActions: async (_tx: unknown, telegramUserId: string, now: Date) => {
+      for (const action of actions.values()) {
+        if (action.telegramUserId === telegramUserId && action.kind.startsWith("CREATIVE_") && !action.consumedAt) {
+          action.consumedAt = now;
+          action.result = {
+            text: "That creative action is no longer current.",
+          };
+        }
+      }
+    },
+  };
+  const creativeRepository = {
+    createQueued: async (
+      _tx: unknown,
+      create: {
+        sessionId: string;
+        telegramUserId: string;
+        chatId: string;
+        input: CreativeInput;
+      },
+    ) => {
+      const job: ReviewJob = {
+        id: `job-${jobs.length + 1}`,
+        creatorSessionId: create.sessionId,
+        telegramUserId: create.telegramUserId,
+        chatId: create.chatId,
+        inputRevision: create.input.inputRevision,
+        input: create.input,
+        inputHash: hashCreativeValue(create.input),
+        status: "QUEUED",
+        result: null,
+        failureCode: null,
+        supersededAt: null,
+        leaseExpiresAt: null,
+      };
+      jobs.push(job);
+      return job;
+    },
+  };
+  const Constructor = CreatorCreativeService as unknown as new (...args: unknown[]) => CreatorCreativeService;
+  return {
+    owner,
+    service: new Constructor(creatorRepository, creativeRepository),
+    getSession: () => session,
+    getJobs: () => jobs,
+    getActions: () => actions,
+    getReviewProgress: () => session.data.creativeReviewProgress as { currentPage: number; viewedPages: number[] } | undefined,
+  };
+}
+
+function findButton(reply: CreatorTelegramReply, text: string): Extract<CreatorInlineButton, { callbackData: string }> | undefined {
+  return reply.inlineKeyboard?.flat().find((button) => button.text === text && "callbackData" in button) as
+    | Extract<CreatorInlineButton, { callbackData: string }>
+    | undefined;
+}
+
+function callbackRequest(owner: string, button: Extract<CreatorInlineButton, { callbackData: string }>, updateId: string): CreatorTelegramRequest {
+  return {
+    telegramUserId: owner,
+    chatId: owner,
+    updateId,
+    callbackToken: button.callbackData.slice(3),
   };
 }
 

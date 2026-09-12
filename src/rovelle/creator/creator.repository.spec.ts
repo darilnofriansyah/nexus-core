@@ -82,6 +82,7 @@ function createRepository(options: {
   };
   return {
     calls,
+    transaction: tx,
     repository: new CreatorRepository({ client } as unknown as PrismaService),
   };
 }
@@ -135,6 +136,38 @@ test("consumes a button once for its Telegram user", async () => {
   });
   assert.equal((result.action as RovelleCreatorAction).token, action.token);
   assert.deepEqual(calls.find((call) => call.operation === "transaction")?.args, { isolationLevel: "Serializable" });
+});
+
+test("consumes a creative action inside the caller's transaction", async () => {
+  const creativeAction = { ...action, kind: "CREATIVE_PAGE" };
+  const { calls, repository, transaction } = createRepository({
+    foundAction: creativeAction,
+  });
+  const consume = (
+    repository as unknown as {
+      consumeCreativeActionInTransaction?: (...args: unknown[]) => Promise<{ status: string }>;
+    }
+  ).consumeCreativeActionInTransaction;
+
+  assert.equal(typeof consume, "function");
+  const result = await consume!.call(repository, transaction, {
+    token: creativeAction.token,
+    telegramUserId: creativeAction.telegramUserId,
+    kind: "CREATIVE_PAGE",
+    result: { text: "Page 2" },
+  });
+
+  assert.equal(result.status, "consumed");
+  assert.equal(
+    calls.some((call) => call.operation === "transaction"),
+    false,
+  );
+  const update = calls.find((call) => call.operation === "action.updateMany")?.args as {
+    where: Record<string, unknown>;
+    data: Record<string, unknown>;
+  };
+  assert.equal(update.where.kind, "CREATIVE_PAGE");
+  assert.deepEqual(update.data.result, { text: "Page 2" });
 });
 
 test("replaces a consumed button result with a safe terminal reply", async () => {

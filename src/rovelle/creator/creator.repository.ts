@@ -22,6 +22,7 @@ const ACTION_GROUP_KINDS = {
 } as const;
 
 type ActionGroupScope = keyof typeof ACTION_GROUP_KINDS;
+type CreativeReviewActionKind = "CREATIVE_PAGE" | "CREATIVE_REVISE" | "CREATIVE_APPROVE" | "CREATIVE_RETRY";
 
 export interface CreatorTelegramReceiptKey {
   botId: string;
@@ -273,6 +274,50 @@ export class CreatorRepository {
     return {
       status: "consumed",
       action: { ...action, consumedAt: now, result: input.result as unknown as Prisma.JsonValue },
+      result: input.result,
+    };
+  }
+
+  async consumeCreativeActionInTransaction(
+    tx: Prisma.TransactionClient,
+    input: {
+      token: string;
+      telegramUserId: string;
+      kind: CreativeReviewActionKind;
+      result: SafeActionResult;
+    },
+  ): Promise<CreatorActionResult> {
+    if (!isSafeActionResult(input.result)) return { status: "invalid_result" };
+    const action = await tx.rovelleCreatorAction.findUnique({
+      where: { token: input.token },
+    });
+    if (!action || action.kind !== input.kind) return { status: "not_found" };
+
+    const state = classifyButton(action, input.telegramUserId, new Date());
+    if (state.status !== "pending") return state;
+
+    const now = new Date();
+    const consumed = await tx.rovelleCreatorAction.updateMany({
+      where: {
+        id: state.action.id,
+        token: input.token,
+        telegramUserId: input.telegramUserId,
+        kind: input.kind,
+        consumedAt: null,
+        expiresAt: { gt: now },
+      },
+      data: { consumedAt: now, result: input.result as Prisma.InputJsonValue },
+    });
+    if (consumed.count !== 1) {
+      const current = await tx.rovelleCreatorAction.findUnique({
+        where: { token: input.token },
+      });
+      return current ? actionResultAfterRace(current, input.telegramUserId, false) : { status: "not_found" };
+    }
+
+    return {
+      status: "consumed",
+      action: { ...state.action, consumedAt: now, result: input.result },
       result: input.result,
     };
   }

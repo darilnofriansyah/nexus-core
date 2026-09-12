@@ -21,6 +21,7 @@ describe("Rovelle creative job persistence", () => {
   let repository!: CreativeRepository;
   const sessionIds: string[] = [];
   const jobIds: string[] = [];
+  const telegramUserIds: string[] = [];
   const episodeIds: string[] = [];
 
   before(async () => {
@@ -37,6 +38,9 @@ describe("Rovelle creative job persistence", () => {
   afterEach(async () => {
     if (!prisma) return;
 
+    await prisma.client.rovelleCreatorAction.deleteMany({
+      where: { telegramUserId: { in: telegramUserIds.splice(0) } },
+    });
     await prisma.client.rovelleCreativeJob.deleteMany({
       where: { id: { in: jobIds.splice(0) } },
     });
@@ -60,6 +64,7 @@ describe("Rovelle creative job persistence", () => {
 
   async function createFixture(inputOverrides: Partial<CreativeInput> = {}) {
     const telegramUserId = `test-${randomUUID().slice(0, 20)}`;
+    telegramUserIds.push(telegramUserId);
     const session = await prisma.client.rovelleCreatorSession.create({
       data: {
         telegramUserId,
@@ -79,6 +84,16 @@ describe("Rovelle creative job persistence", () => {
       }),
     );
     jobIds.push(job.id);
+    await prisma.client.rovelleCreatorSession.update({
+      where: { id: session.id },
+      data: {
+        data: {
+          creativeJobId: job.id,
+          creativeInputRevision: input.inputRevision,
+          draftMode: "CREATIVE",
+        },
+      },
+    });
     return { input, job, telegramUserId, session };
   }
 
@@ -219,6 +234,91 @@ describe("Rovelle creative job persistence", () => {
     assert.equal(stored.status, RovelleCreativeJobStatus.SUCCEEDED);
     assert.deepEqual(stored.completionResponse, first.reply);
     assert.equal("attemptTokenHash" in first, false);
+    assert.ok(first.reply.text.includes("Creative draft (page 1 of 1)"));
+    assert.deepEqual(
+      first.reply.inlineKeyboard?.flat().map((button) => button.text),
+      ["Revise", "Approve plan"],
+    );
+    const actions = await prisma.client.rovelleCreatorAction.findMany({
+      where: {
+        telegramUserId: fixture.telegramUserId,
+        kind: { startsWith: "CREATIVE_" },
+      },
+      orderBy: { kind: "asc" },
+    });
+    assert.deepEqual(
+      actions.map((action) => action.kind),
+      ["CREATIVE_APPROVE", "CREATIVE_REVISE"],
+    );
+    assert.ok(
+      actions.every(
+        (action) => action.consumedAt === null && action.expiresAt > new Date(),
+      ),
+    );
+    assert.ok(
+      actions.every((action) => {
+        const payload = action.payload as Record<string, unknown>;
+        return (
+          payload.jobId === fixture.job.id &&
+          payload.inputRevision === fixture.input.inputRevision &&
+          payload.inputHash === fixture.job.inputHash &&
+          payload.page === 1
+        );
+      }),
+    );
+    const session = await prisma.client.rovelleCreatorSession.findUniqueOrThrow({
+      where: { id: fixture.session.id },
+    });
+    assert.deepEqual((session.data as Record<string, unknown>).creativeReviewProgress, {
+      jobId: fixture.job.id,
+      inputRevision: fixture.input.inputRevision,
+      inputHash: fixture.job.inputHash,
+      currentPage: 1,
+      viewedPages: [1],
+    });
+  });
+
+  test("failed completion offers explicit retry without creating another job", async () => {
+    const fixture = await createFixture();
+    const claim = await repository.claim(fixture.job.id, new Date("2026-09-11T12:00:00.000Z"));
+    assert.ok(claim.claimed);
+    const response = await repository.complete(
+      fixture.job.id,
+      {
+        attemptToken: claim.attemptToken,
+        inputHash: claim.inputHash,
+        status: "FAILED",
+        metadata: {
+          instructionVersion: "storyboard-v1",
+          sdkVersion: "0.154.0",
+          model: "gpt-5.6-luna",
+          threadId: null,
+          usage: null,
+        },
+        errorCode: "EXECUTION_FAILED",
+      } as CreativeCompletion,
+      new Date("2026-09-11T12:01:00.000Z"),
+    );
+
+    assert.match(response.reply.text, /not retried automatically/i);
+    assert.equal(response.reply.inlineKeyboard?.flat()[0]?.text, "Retry");
+    assert.equal(
+      await prisma.client.rovelleCreativeJob.count({
+        where: { telegramUserId: fixture.telegramUserId },
+      }),
+      1,
+    );
+    const actions = await prisma.client.rovelleCreatorAction.findMany({
+      where: { telegramUserId: fixture.telegramUserId },
+    });
+    assert.equal(actions.length, 1);
+    assert.equal(actions[0]?.kind, "CREATIVE_RETRY");
+    assert.deepEqual(actions[0]?.payload, {
+      jobId: fixture.job.id,
+      inputRevision: fixture.input.inputRevision,
+      inputHash: fixture.job.inputHash,
+      page: 1,
+    });
   });
 
   test("rejects a wrong token and conflicting completion replay", async () => {
