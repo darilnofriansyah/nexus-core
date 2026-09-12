@@ -1,0 +1,50 @@
+#!/usr/sbin/nft -f
+
+# Rollout-only host policy. Replace every address/subnet/port below with the
+# reserved values from ops/codex-worker/compose.yaml and the deployed n8n and
+# inference-proxy networks. Install before starting either container. The
+# inference proxy must independently allowlist only the Task 1 verified
+# provider endpoints and reject arbitrary CONNECT/redirect destinations.
+
+define CODEX_TRANSPORT_N8N_IP = 172.30.80.2
+define CODEX_TRANSPORT_EXECUTION_IP = 172.31.90.2
+define CODEX_EXECUTOR_EXECUTION_IP = 172.31.90.3
+define CODEX_EXECUTOR_PROXY_IP = 172.31.91.2
+define CODEX_EXECUTION_BRIDGE_IF = "br-codex-exec"
+define CODEX_PROXY_BRIDGE_IF = "br-codex-proxy"
+define CODEX_N8N_SUBNET = 172.30.80.0/24
+define CODEX_INFERENCE_PROXY_IP = 172.31.91.3
+define CODEX_INFERENCE_PROXY_PORT = 3128
+
+table inet rovelle_codex_worker {
+  chain forward {
+    type filter hook forward priority filter - 50; policy accept;
+
+    # The inet chain defaults to accept, so explicitly block IPv6 on both
+    # worker bridges before allowing established traffic.
+    meta nfproto ipv6 iifname { $CODEX_EXECUTION_BRIDGE_IF, $CODEX_PROXY_BRIDGE_IF } drop
+    meta nfproto ipv6 oifname { $CODEX_EXECUTION_BRIDGE_IF, $CODEX_PROXY_BRIDGE_IF } drop
+
+    # Only responses to an already-authorized inbound flow may return.
+    ct state established,related accept
+
+    # n8n dispatch ingress to transport; transport forwards claim/results.
+    ip saddr $CODEX_N8N_SUBNET ip daddr $CODEX_TRANSPORT_N8N_IP tcp dport 8080 ct state new accept
+    ip saddr $CODEX_TRANSPORT_N8N_IP ip daddr $CODEX_N8N_SUBNET tcp dport { 5678, 443 } ct state new accept
+
+    # Transport can initiate the one private execution request.
+    ip saddr $CODEX_TRANSPORT_EXECUTION_IP ip daddr $CODEX_EXECUTOR_EXECUTION_IP tcp dport 8081 ct state new accept
+
+    # SDK egress can reach only the configured proxy endpoint.
+    ip saddr $CODEX_EXECUTOR_PROXY_IP ip daddr $CODEX_INFERENCE_PROXY_IP tcp dport $CODEX_INFERENCE_PROXY_PORT ct state new accept
+
+    # Do not allow any other peer to initiate traffic to either listener.
+    ip daddr $CODEX_TRANSPORT_N8N_IP tcp dport 8080 ct state new drop
+    ip daddr $CODEX_EXECUTOR_EXECUTION_IP tcp dport 8081 ct state new drop
+
+    # Deny every other new egress route from transport and executor, including
+    # Core, PostgreSQL, host/metadata, n8n-from-executor, and arbitrary internet.
+    ip saddr { $CODEX_TRANSPORT_N8N_IP, $CODEX_TRANSPORT_EXECUTION_IP } drop
+    ip saddr { $CODEX_EXECUTOR_EXECUTION_IP, $CODEX_EXECUTOR_PROXY_IP } drop
+  }
+}

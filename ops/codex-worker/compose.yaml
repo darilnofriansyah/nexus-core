@@ -1,0 +1,102 @@
+services:
+  # Keep the default private PID namespace per service; never set pid_mode.
+  transport:
+    image: rovelle-codex-worker-transport:${CODEX_WORKER_IMAGE_TAG:-local}
+    build:
+      context: ../..
+      dockerfile: Dockerfile.codex-worker
+      target: transport
+    command: ["node", "dist/codex-worker/main.js", "transport"]
+    user: "1000:1000"
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    sysctls:
+      net.ipv6.conf.all.disable_ipv6: "1"
+      net.ipv6.conf.default.disable_ipv6: "1"
+    pids_limit: 128
+    mem_limit: 512m
+    restart: unless-stopped
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
+    environment:
+      CODEX_WORKER_BIND_ADDRESS: ${CODEX_WORKER_BIND_ADDRESS:?reserve a private address on the n8n network}
+      CODEX_WORKER_PORT: "8080"
+      CODEX_WORKER_SPOOL_DIR: /var/lib/codex-worker
+      CODEX_WORKER_SPOOL_MAX_BYTES: ${CODEX_WORKER_SPOOL_MAX_BYTES:-67108864}
+      CODEX_N8N_BASE_URL: ${CODEX_N8N_BASE_URL:?set the n8n base URL}
+      CODEX_EXECUTOR_BASE_URL: http://172.31.90.3:8081
+      CODEX_WORKER_DISPATCH_KEY: ${CODEX_WORKER_DISPATCH_KEY:?set a dedicated dispatch key}
+      CODEX_WORKER_CALLBACK_KEY: ${CODEX_WORKER_CALLBACK_KEY:?set a distinct callback key}
+    volumes:
+      - codex_spool:/var/lib/codex-worker
+    networks:
+      n8n_forward:
+        ipv4_address: ${CODEX_WORKER_BIND_ADDRESS:?reserve a private address on the n8n network}
+      codex_execution:
+        ipv4_address: 172.31.90.2
+    depends_on:
+      - executor
+
+  executor:
+    image: rovelle-codex-worker-executor:${CODEX_WORKER_IMAGE_TAG:-local}
+    build:
+      context: ../..
+      dockerfile: Dockerfile.codex-worker
+      target: executor
+    command: ["node", "dist/codex-worker/main.js", "executor"]
+    user: "1000:1000"
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    sysctls:
+      net.ipv6.conf.all.disable_ipv6: "1"
+      net.ipv6.conf.default.disable_ipv6: "1"
+    pids_limit: 128
+    mem_limit: 2g
+    cpus: 2
+    restart: unless-stopped
+    tmpfs:
+      - /tmp/rovelle-codex-worker:rw,noexec,nosuid,nodev,size=256m,mode=0700,uid=1000,gid=1000
+    environment:
+      CODEX_EXECUTOR_BIND_ADDRESS: 172.31.90.3
+      CODEX_EXECUTOR_PORT: "8081"
+      CODEX_CREATIVE_WORK_DIR: /tmp/rovelle-codex-worker
+      CODEX_CREATIVE_MODEL: ${CODEX_CREATIVE_MODEL:?set the verified creative model}
+      CODEX_API_KEY: ${CODEX_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      HTTPS_PROXY: ${CODEX_INFERENCE_PROXY_URL:?set the isolated inference proxy URL}
+      HTTP_PROXY: ${CODEX_INFERENCE_PROXY_URL:?set the isolated inference proxy URL}
+      ALL_PROXY: ${CODEX_INFERENCE_PROXY_URL:?set the isolated inference proxy URL}
+    networks:
+      codex_execution:
+        ipv4_address: 172.31.90.3
+      codex_inference_proxy:
+        ipv4_address: ${CODEX_EXECUTOR_PROXY_IP:?reserve an address on the dedicated proxy network}
+
+volumes:
+  codex_spool:
+    name: rovelle-codex-worker-spool
+
+networks:
+  # Existing dedicated network containing n8n; executor must never join it.
+  n8n_forward:
+    external: true
+    name: ${N8N_NETWORK:?set the existing n8n network name}
+  codex_execution:
+    internal: true
+    driver_opts:
+      com.docker.network.bridge.name: br-codex-exec
+    ipam:
+      config:
+        - subnet: 172.31.90.0/29
+  # Dedicated egress-proxy-only network; do not attach Core or n8n here. Its
+  # host bridge must be named br-codex-proxy to match the IPv6 nft drops.
+  codex_inference_proxy:
+    external: true
+    name: ${CODEX_INFERENCE_PROXY_NETWORK:?set the dedicated inference proxy network}

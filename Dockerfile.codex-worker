@@ -1,0 +1,45 @@
+ARG NODE_IMAGE=node:24.16.0-bookworm-slim
+
+FROM ${NODE_IMAGE} AS build
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm ci
+
+COPY nest-cli.json prisma.config.ts tsconfig*.json ./
+COPY prisma ./prisma
+COPY src ./src
+RUN npm run build
+
+FROM ${NODE_IMAGE} AS worker-runtime
+
+WORKDIR /app
+ENV NODE_ENV=production
+
+# Creative validation shares Nest's exception type but no Core/DB service.
+RUN npm install --prefix /app --no-save --package-lock=false --omit=dev \
+      @nestjs/common@10.4.22
+
+COPY --from=build /app/dist/codex-worker ./dist/codex-worker
+COPY --from=build /app/dist/rovelle/creative ./dist/rovelle/creative
+
+FROM worker-runtime AS transport
+
+RUN install -d -m 0700 -o node -g node /var/lib/codex-worker
+USER node
+CMD ["node", "dist/codex-worker/main.js", "transport"]
+
+# Keep the SDK runtime small: the executor receives the pinned Codex SDK only,
+# not Nest, Prisma, PostgreSQL, Core modules, or the source checkout.
+FROM worker-runtime AS executor-runtime
+RUN npm install --prefix /app --no-save --package-lock=false --omit=dev \
+      @nestjs/common@10.4.22 \
+      @openai/codex-sdk@0.154.0
+
+FROM executor-runtime AS executor
+
+RUN install -d -m 0700 -o node -g node /tmp/rovelle-codex-worker
+ENV CODEX_CREATIVE_WORK_DIR=/tmp/rovelle-codex-worker
+USER node
+CMD ["node", "dist/codex-worker/main.js", "executor"]

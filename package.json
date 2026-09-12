@@ -17,7 +17,11 @@
     "start": "nest start",
     "start:dev": "nest start --watch",
     "start:prod": "node dist/main.js",
-    "start:render-worker": "node dist/render-worker/main.js"
+    "start:render-worker": "node dist/render-worker/main.js",
+    "start:codex-worker": "node dist/codex-worker/main.js transport",
+    "start:codex-executor": "node dist/codex-worker/main.js executor",
+    "test:codex-worker:isolation": "node --test --test-reporter=spec ops/codex-worker/isolation.test.cjs",
+    "test:codex-worker:isolation:runtime": "CODEX_ISOLATION_TEST_RUNTIME=1 node --test --test-reporter=spec ops/codex-worker/isolation.test.cjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "3.1118.0",

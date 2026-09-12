@@ -11,9 +11,22 @@ const WORKER_ENV_KEYS = [
   "CODEX_CREATIVE_MODEL",
   "CODEX_CREATIVE_WORK_DIR",
   "CODEX_CREATIVE_TIMEOUT_MS",
+  "CODEX_WORKER_BIND_ADDRESS",
+  "CODEX_WORKER_PORT",
+  "CODEX_WORKER_SPOOL_DIR",
+  "CODEX_WORKER_SPOOL_MAX_BYTES",
+  "CODEX_N8N_BASE_URL",
+  "CODEX_EXECUTOR_BASE_URL",
+  "CODEX_WORKER_DISPATCH_KEY",
+  "CODEX_WORKER_CALLBACK_KEY",
+  "CODEX_EXECUTOR_BIND_ADDRESS",
+  "CODEX_EXECUTOR_PORT",
   "CODEX_API_KEY",
   "OPENAI_API_KEY",
   "OPENAI_BASE_URL",
+  "HTTPS_PROXY",
+  "HTTP_PROXY",
+  "ALL_PROXY",
   "PATH",
   "HOME",
   "TMPDIR",
@@ -135,5 +148,157 @@ test("does not allow the fixed execution timeout to be overridden", () => {
     () => {
       assert.equal(readWorkerConfig().executionTimeoutMs, 480_000);
     },
+  );
+});
+
+test("keeps transport credentials and spool settings separate from SDK config", () => {
+  const workerConfigModule = require("./worker-config") as Record<
+    string,
+    unknown
+  >;
+  const readTransportConfig = workerConfigModule.readTransportConfig as
+    | ((env?: NodeJS.ProcessEnv) => Record<string, unknown>)
+    | undefined;
+
+  assert.equal(typeof readTransportConfig, "function");
+  if (!readTransportConfig) return;
+
+  const dispatchKey = "d".repeat(32);
+  const callbackKey = "c".repeat(32);
+  const config = readTransportConfig({
+    CODEX_WORKER_BIND_ADDRESS: "172.30.80.2",
+    CODEX_WORKER_PORT: "8080",
+    CODEX_WORKER_SPOOL_DIR: "/var/lib/codex-worker",
+    CODEX_WORKER_SPOOL_MAX_BYTES: "67108864",
+    CODEX_N8N_BASE_URL: "http://n8n:5678",
+    CODEX_EXECUTOR_BASE_URL: "http://172.30.80.3:8081",
+    CODEX_WORKER_DISPATCH_KEY: dispatchKey,
+    CODEX_WORKER_CALLBACK_KEY: callbackKey,
+    CODEX_API_KEY: "provider-secret",
+    DATABASE_URL: "postgresql://database-secret",
+  });
+
+  assert.deepEqual(config, {
+    bindAddress: "172.30.80.2",
+    port: 8080,
+    spoolDirectory: "/var/lib/codex-worker",
+    spoolMaxBytes: 67_108_864,
+    n8nBaseUrl: "http://n8n:5678",
+    executorBaseUrl: "http://172.30.80.3:8081",
+    dispatchKey,
+    callbackKey,
+  });
+  assert.equal(JSON.stringify(config).includes("provider-secret"), false);
+  assert.equal(JSON.stringify(config).includes("database-secret"), false);
+});
+
+test("rejects weak or shared transport keys and non-private listener addresses", () => {
+  const workerConfigModule = require("./worker-config") as Record<
+    string,
+    unknown
+  >;
+  const readTransportConfig = workerConfigModule.readTransportConfig as
+    | ((env?: NodeJS.ProcessEnv) => Record<string, unknown>)
+    | undefined;
+  assert.equal(typeof readTransportConfig, "function");
+  if (!readTransportConfig) return;
+
+  const valid = {
+    CODEX_WORKER_BIND_ADDRESS: "172.30.80.2",
+    CODEX_WORKER_PORT: "8080",
+    CODEX_WORKER_SPOOL_DIR: "/var/lib/codex-worker",
+    CODEX_N8N_BASE_URL: "http://n8n:5678",
+    CODEX_EXECUTOR_BASE_URL: "http://172.30.80.3:8081",
+    CODEX_WORKER_DISPATCH_KEY: "d".repeat(32),
+    CODEX_WORKER_CALLBACK_KEY: "c".repeat(32),
+  };
+
+  assert.throws(
+    () =>
+      readTransportConfig({
+        ...valid,
+        CODEX_WORKER_CALLBACK_KEY: valid.CODEX_WORKER_DISPATCH_KEY,
+      }),
+    /key/i,
+  );
+  assert.throws(
+    () => readTransportConfig({ ...valid, CODEX_WORKER_DISPATCH_KEY: "weak" }),
+    /key/i,
+  );
+  assert.throws(
+    () =>
+      readTransportConfig({
+        ...valid,
+        CODEX_WORKER_BIND_ADDRESS: "0.0.0.0",
+      }),
+    /address/i,
+  );
+  assert.throws(
+    () =>
+      readTransportConfig({
+        ...valid,
+        CODEX_EXECUTOR_BASE_URL: "http://executor:8081/execute?url=attacker",
+      }),
+    /url/i,
+  );
+  assert.throws(
+    () =>
+      readTransportConfig({
+        ...valid,
+        CODEX_EXECUTOR_BASE_URL: "http://203.0.113.8:8081",
+      }),
+    /address/i,
+  );
+  assert.throws(
+    () =>
+      readTransportConfig({
+        ...valid,
+        CODEX_EXECUTOR_BASE_URL: "http://172.31.90.3:8082",
+      }),
+    /port/i,
+  );
+});
+
+test("keeps verified provider proxy settings in the SDK child allowlist", () => {
+  withWorkerEnv(
+    {
+      CODEX_CREATIVE_MODEL: "gpt-storyboard-test",
+      OPENAI_API_KEY: "provider-secret",
+      HTTPS_PROXY: "http://inference-proxy:3128",
+      HTTP_PROXY: "http://inference-proxy:3128",
+      ALL_PROXY: "http://inference-proxy:3128",
+      CODEX_WORKER_CALLBACK_KEY: "transport-secret",
+    },
+    () => {
+      assert.deepEqual(readWorkerConfig().childEnvironment, {
+        OPENAI_API_KEY: "provider-secret",
+        HTTPS_PROXY: "http://inference-proxy:3128",
+        HTTP_PROXY: "http://inference-proxy:3128",
+        ALL_PROXY: "http://inference-proxy:3128",
+      });
+    },
+  );
+});
+
+test("keeps the private executor endpoint fixed to port 8081", () => {
+  const workerConfigModule = require("./worker-config") as Record<
+    string,
+    unknown
+  >;
+  const readExecutionServerConfig =
+    workerConfigModule.readExecutionServerConfig as
+      | ((env?: NodeJS.ProcessEnv) => Record<string, unknown>)
+      | undefined;
+  assert.equal(typeof readExecutionServerConfig, "function");
+  if (!readExecutionServerConfig) return;
+
+  assert.throws(
+    () =>
+      readExecutionServerConfig({
+        CODEX_EXECUTOR_BIND_ADDRESS: "172.31.90.3",
+        CODEX_EXECUTOR_PORT: "8082",
+        CODEX_CREATIVE_MODEL: "gpt-storyboard-test",
+      }),
+    /port/i,
   );
 });
