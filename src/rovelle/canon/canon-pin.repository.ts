@@ -77,10 +77,12 @@ export class CanonPinRepository {
     episodeId: string,
     canonEntityId: string,
     canonVersionId: string,
+    tx?: Prisma.TransactionClient,
   ): Promise<PinMutationResult> {
-    return this.prisma.client.$transaction(
-      async (tx) => {
-        const episode = await tx.rovelleEpisode.findUnique({
+    const pin = async (
+      transaction: Prisma.TransactionClient,
+    ): Promise<PinMutationResult> => {
+        const episode = await transaction.rovelleEpisode.findUnique({
           where: { id: episodeId },
         });
         if (!episode) return { status: "not_found" };
@@ -89,21 +91,24 @@ export class CanonPinRepository {
         }
 
         const validation = await this.validateLockedVersion(
-          tx,
+          transaction,
           canonEntityId,
           canonVersionId,
         );
         if (validation.status !== "valid") return validation;
 
-        const pin = await tx.rovelleEpisodeCanonPin.upsert({
+        const pin = await transaction.rovelleEpisodeCanonPin.upsert({
           where: { episodeId_canonEntityId: { episodeId, canonEntityId } },
           update: { canonVersionId },
           create: { episodeId, canonEntityId, canonVersionId },
         });
         return { status: "pinned", pin };
-      },
-      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
-    );
+    };
+    return tx
+      ? pin(tx)
+      : this.prisma.client.$transaction(pin, {
+          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+        });
   }
 
   async unpinEpisodeEntity(
@@ -129,8 +134,11 @@ export class CanonPinRepository {
     );
   }
 
-  async listEpisodePins(episodeId: string): Promise<CanonPinWithVersion[]> {
-    return this.prisma.client.rovelleEpisodeCanonPin.findMany({
+  async listEpisodePins(
+    episodeId: string,
+    tx?: Prisma.TransactionClient,
+  ): Promise<CanonPinWithVersion[]> {
+    return (tx ?? this.prisma.client).rovelleEpisodeCanonPin.findMany({
       where: { episodeId },
       orderBy: { canonEntityId: "asc" },
       include: includePinVersion,

@@ -3,6 +3,7 @@ import {
   Injectable,
   NotFoundException,
 } from "@nestjs/common";
+import type { Prisma } from "../../generated/prisma/client";
 import { toCanonVersionDto } from "./canon-mapper";
 import {
   CanonPinRepository,
@@ -20,19 +21,21 @@ export class CanonPinService {
     episodeId: string,
     canonEntityId: string,
     request: PinCanonVersionRequestDto,
+    tx?: Prisma.TransactionClient,
   ): Promise<CanonPinDto> {
     const canonVersionId = normalizePinCanonVersionRequest(request).canonVersionId;
     const result = await this.repository.pinEpisodeVersion(
       episodeId,
       canonEntityId,
       canonVersionId,
+      tx,
     );
     if (result.status !== "pinned") {
       this.mapMutationFailure(result);
       throw new Error("Unreachable pin mutation result");
     }
 
-    const pin = (await this.repository.listEpisodePins(episodeId)).find(
+    const pin = (await this.repository.listEpisodePins(episodeId, tx)).find(
       (candidate) =>
         candidate.canonEntityId === canonEntityId &&
         candidate.canonVersionId === result.pin.canonVersionId,

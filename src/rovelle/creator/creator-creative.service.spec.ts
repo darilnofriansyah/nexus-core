@@ -53,7 +53,7 @@ test("routes legacy creator commands outside an enabled creative intake", async 
         return session;
       },
     };
-    const creative = new CreatorCreativeService(creativeRepository as never, {} as never);
+    const creative = new CreatorCreativeService(creativeRepository as never, {} as never, { approve: async () => ({ text: "Approved." }) } as never);
     const service = new Constructor(legacyRepository, ...Array(9).fill(undefined), creative);
     const commands = [
       { text: "/start", expected: /creator ready/i },
@@ -109,7 +109,7 @@ test("replays the canon update after Manual selection moves routing to NEW_SHOT_
         return session;
       },
     };
-    const creative = new CreatorCreativeService(creativeRepository as never, {} as never);
+    const creative = new CreatorCreativeService(creativeRepository as never, {} as never, { approve: async () => ({ text: "Approved." }) } as never);
     const Constructor = CreatorService as unknown as new (...args: unknown[]) => CreatorService;
     const service = new Constructor(legacyRepository, ...Array(9).fill(undefined), creative);
 
@@ -474,6 +474,28 @@ test("shows Approve plan for a one-page preview and regenerates expired page act
   });
 });
 
+test("runs CREATIVE_APPROVE through the receipt transaction approval service", async () => {
+  await withCreativeEnabled(async () => {
+    const fixture = createReviewFixture("SUCCEEDED", 20);
+    const review = await fixture.service.handle({
+      telegramUserId: fixture.owner,
+      chatId: fixture.owner,
+      updateId: "approval-review",
+      messageText: "/mywork",
+    });
+    assert.ok(review);
+    const approve = findButton(review, "Approve plan");
+    assert.ok(approve);
+
+    const reply = await fixture.service.handle(callbackRequest(fixture.owner, approve, "approval-click"));
+
+    assert.deepEqual(reply, { text: "Approved." });
+    assert.equal(fixture.getApprovalCalls().length, 1);
+    assert.equal(fixture.getApprovalCalls()[0]?.input.telegramUserId, fixture.owner);
+    assert.equal(fixture.getApprovalCalls()[0]?.input.token, approve.callbackData.slice(3));
+  });
+});
+
 test("requires explicit quota-risk confirmation to retry an unknown outcome once", async () => {
   await withCreativeEnabled(async () => {
     const fixture = createReviewFixture("OUTCOME_UNKNOWN", 20);
@@ -714,7 +736,7 @@ function createCreativeService(initial: TestSession | null) {
   };
   const Constructor = CreatorCreativeService as unknown as new (...args: unknown[]) => CreatorCreativeService;
   return {
-    service: new Constructor(repository, repository),
+    service: new Constructor(repository, repository, { approve: async () => ({ text: "Approved." }) }),
     calls,
     getSession: () => session,
     getJobs: () => jobs,
@@ -814,6 +836,7 @@ function createReviewFixture(status: string, scriptLength: number) {
   ];
   const actions = new Map<string, ReviewAction>();
   const receipts = new Map<string, { requestHash: string; response: CreatorTelegramReply }>();
+  const approvalCalls: Array<{ tx: unknown; input: { telegramUserId: string; token: string } }> = [];
   let nextAction = 0;
   const transaction = {
     rovelleCreatorAction: {
@@ -947,7 +970,13 @@ function createReviewFixture(status: string, scriptLength: number) {
   const Constructor = CreatorCreativeService as unknown as new (...args: unknown[]) => CreatorCreativeService;
   return {
     owner,
-    service: new Constructor(creatorRepository, creativeRepository),
+    service: new Constructor(creatorRepository, creativeRepository, {
+      approve: async (tx: unknown, input: { telegramUserId: string; token: string }) => {
+        approvalCalls.push({ tx, input });
+        return { text: "Approved." };
+      },
+    }),
+    getApprovalCalls: () => approvalCalls,
     getSession: () => session,
     getJobs: () => jobs,
     getActions: () => actions,

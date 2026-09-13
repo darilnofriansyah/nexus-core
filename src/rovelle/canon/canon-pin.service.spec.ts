@@ -2,6 +2,7 @@ import * as assert from "node:assert/strict";
 import { test } from "node:test";
 import { BadRequestException, NotFoundException } from "@nestjs/common";
 import {
+  type Prisma,
   RovelleCanonEntityType,
   RovelleCanonVersionStatus,
   RovelleEpisodeStatus,
@@ -122,12 +123,16 @@ class FakeCanonPinRepository {
   unpinShotResult: PinMutationResult = { status: "unpinned" };
   episodePins: CanonPinWithVersion[] = [episodePin];
   effectiveShot: EffectiveShotPins | null = makeEffectiveShot();
+  pinTransaction?: Prisma.TransactionClient;
+  readTransaction?: Prisma.TransactionClient;
 
   async pinEpisodeVersion(
     _episodeId: string,
     _canonEntityId: string,
     _canonVersionId: string,
+    tx?: Prisma.TransactionClient,
   ): Promise<PinMutationResult> {
+    this.pinTransaction = tx;
     return this.pinEpisodeResult;
   }
 
@@ -138,7 +143,8 @@ class FakeCanonPinRepository {
     return this.unpinEpisodeResult;
   }
 
-  async listEpisodePins(_episodeId: string): Promise<CanonPinWithVersion[]> {
+  async listEpisodePins(_episodeId: string, tx?: Prisma.TransactionClient): Promise<CanonPinWithVersion[]> {
+    this.readTransaction = tx;
     return this.episodePins;
   }
 
@@ -193,6 +199,16 @@ test("rejects an invalid canon version pin request before repository access", as
     BadRequestException,
   );
   assert.equal(repository.pinEpisodeResult.status, "pinned");
+});
+
+test("pins and rereads episode canon through the supplied transaction", async () => {
+  const { repository, service } = createService();
+  const tx = {} as Prisma.TransactionClient;
+
+  await service.pinEpisode(EPISODE_ID, ENTITY_ID, pinRequest(), tx);
+
+  assert.equal(repository.pinTransaction, tx);
+  assert.equal(repository.readTransaction, tx);
 });
 
 test("maps pin mutation outcomes to the required exceptions", async () => {

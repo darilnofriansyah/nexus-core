@@ -2,6 +2,7 @@ import * as assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import {
+  Prisma,
   RovelleEpisodeStatus,
   RovelleShotStatus,
 } from '../../generated/prisma/client';
@@ -41,18 +42,22 @@ class StubEpisodeRepository implements Pick<
   updateBriefRequest?: unknown;
   transitionRequest?: unknown;
   replaceShotsRequest?: unknown;
+  transactions: Array<Prisma.TransactionClient | undefined> = [];
 
-  async createEpisode(request: unknown) {
+  async createEpisode(request: unknown, tx?: Prisma.TransactionClient) {
     this.createRequest = request;
+    this.transactions.push(tx);
     return draftEpisode;
   }
 
-  async findEpisode() {
+  async findEpisode(_id?: string, tx?: Prisma.TransactionClient) {
+    this.transactions.push(tx);
     return this.episode;
   }
 
-  async updateBrief(_id: string, brief: Record<string, unknown>) {
+  async updateBrief(_id: string, brief: Record<string, unknown>, tx?: Prisma.TransactionClient) {
     this.updateBriefRequest = brief;
+    this.transactions.push(tx);
     return this.episode;
   }
 
@@ -60,13 +65,17 @@ class StubEpisodeRepository implements Pick<
     id: string,
     from: RovelleEpisodeStatus,
     to: RovelleEpisodeStatus,
+    tx?: Prisma.TransactionClient,
   ) {
     this.transitionRequest = { id, from, to };
+    this.transactions.push(tx);
+    if (this.episode) this.episode = { ...this.episode, status: to };
     return this.episode;
   }
 
-  async replaceShots(id: string, shots: unknown[]) {
+  async replaceShots(id: string, shots: unknown[], tx?: Prisma.TransactionClient) {
     this.replaceShotsRequest = { id, shots };
+    this.transactions.push(tx);
     return this.episode;
   }
 
@@ -97,6 +106,23 @@ test('creates an episode with normalized input', async () => {
     title: 'Berry Count',
     targetDurationSeconds: 30,
   });
+});
+
+test('passes one supplied transaction through the episode approval methods', async () => {
+  const { repository, service } = createService();
+  const tx = {} as Prisma.TransactionClient;
+
+  await service.createEpisode({ code: 'EP-001', title: 'Berry Count' }, tx);
+  await service.getEpisode('episode-1', tx);
+  await service.updateBrief('episode-1', { brief: { premise: 'Count berries' } }, tx);
+  await service.approveBrief('episode-1', tx);
+  await service.startPreproduction('episode-1', tx);
+  await service.replaceShots('episode-1', {
+    shots: [{ sequence: 1, direction: 'Open on the basket.', targetDurationSeconds: 4 }],
+  }, tx);
+
+  assert.equal(repository.transactions.length, 10);
+  assert.ok(repository.transactions.every((transaction) => transaction === tx));
 });
 
 test('throws when reading a missing episode', async () => {

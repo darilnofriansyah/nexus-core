@@ -2,6 +2,7 @@ import * as assert from "node:assert/strict";
 import { test } from "node:test";
 import { PrismaService } from "../../database/prisma.service";
 import {
+  Prisma,
   RovelleEpisode,
   RovelleEpisodeStatus,
   RovelleShot,
@@ -18,6 +19,7 @@ type RepositoryCall = {
 
 type FakeOptions = {
   createdEpisode?: EpisodeWithShots;
+  transactionCreatedEpisode?: EpisodeWithShots;
   foundEpisodes?: Array<RovelleEpisode | null>;
   updatedCounts?: number[];
   transactionEpisode?: RovelleEpisode | null;
@@ -71,6 +73,10 @@ function createRepository(options: FakeOptions = {}) {
 
   const transactionClient = {
     rovelleEpisode: {
+      create: async (args: unknown) => {
+        record("episode.create", args);
+        return options.transactionCreatedEpisode ?? aggregate;
+      },
       findUnique: async (args: unknown) => {
         record("episode.findUnique", args);
         return transactionEpisode;
@@ -129,6 +135,7 @@ function createRepository(options: FakeOptions = {}) {
   const prisma = { client } as unknown as PrismaService;
   return {
     calls,
+    transactionClient,
     repository: new EpisodeRepository(prisma),
     get transactionCount() {
       return transactionCount;
@@ -165,6 +172,26 @@ test("createEpisode maps the episode fields and includes ordered shots", async (
     },
     inTransaction: false,
   });
+});
+
+test("uses a supplied transaction for creation and shot replacement without nesting", async () => {
+  const fake = createRepository({
+    transactionCreatedEpisode: { ...aggregate, id: "transaction-episode" },
+    transactionEpisode: { ...episode, status: RovelleEpisodeStatus.PREPRODUCTION },
+  });
+  const tx = fake.transactionClient as unknown as Prisma.TransactionClient;
+  const request = { code: "TX-001", title: "Transactional", targetDurationSeconds: 4 };
+
+  const created = await fake.repository.createEpisode(request, tx);
+  const replaced = await fake.repository.replaceShots("episode-1", [
+    { sequence: 1, direction: "Open on the basket.", targetDurationSeconds: 4 },
+  ], tx);
+
+  assert.equal(created.id, "transaction-episode");
+  assert.equal(replaced?.status, RovelleEpisodeStatus.PREPRODUCTION);
+  assert.equal(fake.transactionCount, 0);
+  assert.equal(callsFor(fake.calls, "shot.deleteMany").length, 1);
+  assert.equal(callsFor(fake.calls, "shot.createMany").length, 1);
 });
 
 test("findEpisode includes shots ordered by sequence", async () => {

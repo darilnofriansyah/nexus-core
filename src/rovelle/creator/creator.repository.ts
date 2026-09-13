@@ -179,6 +179,14 @@ export class CreatorRepository {
     return tx.rovelleCreatorAction.findUnique({ where: { token } });
   }
 
+  async lockActionInTransaction(
+    tx: Prisma.TransactionClient,
+    token: string,
+  ): Promise<RovelleCreatorAction | null> {
+    await tx.$queryRaw<Array<{ id: string }>>`SELECT id FROM rovelle_creator_actions WHERE token = ${token} FOR UPDATE`;
+    return this.findActionInTransaction(tx, token);
+  }
+
   createActionInTransaction(
     tx: Prisma.TransactionClient,
     input: { token: string; telegramUserId: string; kind: string; payload: JsonResult; expiresAt: Date },
@@ -341,6 +349,41 @@ export class CreatorRepository {
       },
     });
     return tx.rovelleCreativeJob.findFirst({ where: { id: input.id, telegramUserId: input.telegramUserId } });
+  }
+
+  async lockCreativeJob(
+    tx: Prisma.TransactionClient,
+    input: { id: string; telegramUserId: string },
+  ): Promise<RovelleCreativeJob | null> {
+    await tx.$queryRaw<Array<{ id: string }>>`SELECT id FROM rovelle_creative_jobs WHERE id = ${input.id}::uuid AND telegram_user_id = ${input.telegramUserId} FOR UPDATE`;
+    return this.findCreativeJobInTransaction(tx, input);
+  }
+
+  async approveCreativeJobInTransaction(
+    tx: Prisma.TransactionClient,
+    input: {
+      id: string;
+      telegramUserId: string;
+      inputRevision: number;
+      inputHash: string;
+      episodeId: string;
+      approvedAt: Date;
+    },
+  ): Promise<boolean> {
+    const result = await tx.rovelleCreativeJob.updateMany({
+      where: {
+        id: input.id,
+        telegramUserId: input.telegramUserId,
+        inputRevision: input.inputRevision,
+        inputHash: input.inputHash,
+        status: RovelleCreativeJobStatus.SUCCEEDED,
+        supersededAt: null,
+        episodeId: null,
+        approvedAt: null,
+      },
+      data: { episodeId: input.episodeId, approvedAt: input.approvedAt },
+    });
+    return result.count === 1;
   }
 
   findActiveCreativeJobInTransaction(

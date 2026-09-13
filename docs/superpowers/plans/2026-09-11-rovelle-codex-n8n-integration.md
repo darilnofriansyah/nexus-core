@@ -363,9 +363,9 @@ Use an authorized title-answer request after setup for the assertion above. Incl
 
 **Interfaces:** `CreativeApprovalService.approve(tx: Prisma.TransactionClient, input: {telegramUserId:string; token:string}): Promise<CreatorTelegramReply>`. It runs inside Task 4's receipt transaction. Add optional trailing `tx?: Prisma.TransactionClient` only to existing episode methods needed below and `CanonPinService.pinEpisode`/repository reads; production callers keep existing signatures. Repository code uses `tx ?? prisma.client` and runs inner transactions only when no transaction was supplied. Never cast a transaction into PrismaService or mutate singleton repository state.
 
-- [ ] Before adapting anything, add a failure-injection characterization of legacy `confirmDraft` immediately after episode creation and before `persistConfirmation`. Record the duplicate/orphan risk; do not claim checkpoints make that sequence atomic. The new path must not call it.
-- [ ] Pass the same optional transaction through `createEpisode`, `getEpisode`, `updateBrief`, `approveBrief`, `startPreproduction`, `replaceShots`, and canon pin/read operations. Factor each existing transaction closure into a local function and execute it directly when `tx` is provided. Preserve validators, transition guards, and standalone transactions for existing callers.
-- [ ] Implement approval owner/revision/token/preview-progress checks, then use this exact operation order within the outer receipt transaction:
+- [x] Before adapting anything, add a failure-injection characterization of legacy `confirmDraft` immediately after episode creation and before `persistConfirmation`. Record the duplicate/orphan risk; do not claim checkpoints make that sequence atomic. The new path must not call it.
+- [x] Pass the same optional transaction through `createEpisode`, `getEpisode`, `updateBrief`, `approveBrief`, `startPreproduction`, `replaceShots`, and canon pin/read operations. Factor each existing transaction closure into a local function and execute it directly when `tx` is provided. Preserve validators, transition guards, and standalone transactions for existing callers.
+- [x] Implement approval owner/revision/token/preview-progress checks, then use this exact operation order within the outer receipt transaction:
 
 ```text
 lock creator session and current job; replay stored approval if already approved
@@ -379,8 +379,8 @@ persist session IDLE + episodeId + saved creative job reference; return saved-pl
 outer caller inserts Telegram receipt; commit once
 ```
 
-- [ ] Inject failure after every mutation, especially after episode create and shot replacement. Assert no episode/job approval/action consumption/receipt survives rollback. Re-run the same request and assert exactly one episode and one shot set. Concurrent approvals with different update IDs still create one episode; duplicate token returns the stored saved-plan reply.
-- [ ] Assert episode PREPRODUCTION, complete JSON content preserved, pinned versions unchanged, no generation/preflight/render calls, and missing video images do not turn saved-plan success into failure. Manual creator/generation regression tests remain green.
+- [x] Inject failure after every mutation, especially after episode create and shot replacement. Assert no episode/job approval/action consumption/receipt survives rollback. Re-run the same request and assert exactly one episode and one shot set. Concurrent approvals with different update IDs still create one episode; duplicate token returns the stored saved-plan reply.
+- [x] Assert episode PREPRODUCTION, complete JSON content preserved, pinned versions unchanged, no generation/preflight/render calls, and missing video images do not turn saved-plan success into failure. Manual creator/generation regression tests remain green.
 
 **Checks:** `creative-approval.integration.spec.js`, existing episode/canon repository/service specs, `creator.service.spec.js`, new creator creative suites. DB rollback tests are mandatory acceptance evidence.
 

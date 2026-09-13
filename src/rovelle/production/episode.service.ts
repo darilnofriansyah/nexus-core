@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { RovelleEpisodeStatus } from '../../generated/prisma/client';
+import { Prisma, RovelleEpisodeStatus } from '../../generated/prisma/client';
 import type {
   CreateEpisodeRequestDto,
   ReplaceEpisodeShotsRequestDto,
@@ -17,12 +17,12 @@ import {
 export class EpisodeService {
   constructor(private readonly repository: EpisodeRepository) {}
 
-  async createEpisode(request: CreateEpisodeRequestDto) {
-    return this.repository.createEpisode(normalizeCreateEpisodeRequest(request));
+  async createEpisode(request: CreateEpisodeRequestDto, tx?: Prisma.TransactionClient) {
+    return this.repository.createEpisode(normalizeCreateEpisodeRequest(request), tx);
   }
 
-  async getEpisode(id: string) {
-    const episode = await this.repository.findEpisode(id);
+  async getEpisode(id: string, tx?: Prisma.TransactionClient) {
+    const episode = await this.repository.findEpisode(id, tx);
 
     if (!episode) {
       throw new NotFoundException('Rovelle episode not found');
@@ -31,15 +31,15 @@ export class EpisodeService {
     return episode;
   }
 
-  async updateBrief(id: string, request: UpdateEpisodeBriefRequestDto) {
+  async updateBrief(id: string, request: UpdateEpisodeBriefRequestDto, tx?: Prisma.TransactionClient) {
     const brief = normalizeBriefRequest(request);
-    const episode = await this.getEpisode(id);
+    const episode = await this.getEpisode(id, tx);
 
     if (episode.status !== RovelleEpisodeStatus.DRAFT) {
       throw new BadRequestException('Episode brief can only be edited in DRAFT');
     }
 
-    const updated = await this.repository.updateBrief(id, brief.brief);
+    const updated = await this.repository.updateBrief(id, brief.brief, tx);
 
     if (!updated) {
       throw new BadRequestException('Episode brief can only be edited in DRAFT');
@@ -48,8 +48,8 @@ export class EpisodeService {
     return updated;
   }
 
-  async approveBrief(id: string) {
-    const episode = await this.getEpisode(id);
+  async approveBrief(id: string, tx?: Prisma.TransactionClient) {
+    const episode = await this.getEpisode(id, tx);
 
     assertEpisodeTransition(
       episode.status,
@@ -69,6 +69,7 @@ export class EpisodeService {
       id,
       RovelleEpisodeStatus.DRAFT,
       RovelleEpisodeStatus.BRIEF_APPROVED,
+      tx,
     );
 
     if (!updated) {
@@ -78,8 +79,8 @@ export class EpisodeService {
     return updated;
   }
 
-  async startPreproduction(id: string) {
-    const episode = await this.getEpisode(id);
+  async startPreproduction(id: string, tx?: Prisma.TransactionClient) {
+    const episode = await this.getEpisode(id, tx);
 
     assertEpisodeTransition(
       episode.status,
@@ -90,6 +91,7 @@ export class EpisodeService {
       id,
       RovelleEpisodeStatus.BRIEF_APPROVED,
       RovelleEpisodeStatus.PREPRODUCTION,
+      tx,
     );
 
     if (!updated) {
@@ -99,8 +101,8 @@ export class EpisodeService {
     return updated;
   }
 
-  async replaceShots(id: string, request: ReplaceEpisodeShotsRequestDto) {
-    const episode = await this.getEpisode(id);
+  async replaceShots(id: string, request: ReplaceEpisodeShotsRequestDto, tx?: Prisma.TransactionClient) {
+    const episode = await this.getEpisode(id, tx);
 
     if (episode.status !== RovelleEpisodeStatus.PREPRODUCTION) {
       throw new BadRequestException(
@@ -109,7 +111,7 @@ export class EpisodeService {
     }
 
     const shots = normalizeShotsRequest(request);
-    const updated = await this.repository.replaceShots(id, shots.shots);
+    const updated = await this.repository.replaceShots(id, shots.shots, tx);
 
     if (!updated) {
       throw new BadRequestException(

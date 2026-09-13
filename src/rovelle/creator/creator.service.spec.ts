@@ -105,6 +105,7 @@ function createActionService(options: {
   generations?: Array<Record<string, unknown>>;
   consumeStatus?: "consumed" | "duplicate";
   failBrief?: boolean;
+  failConfirmationCheckpoint?: boolean;
   preflightError?: boolean;
   canonIssue?: "missing" | "unlocked" | "unavailable" | "excess";
   generationError?: boolean;
@@ -120,11 +121,19 @@ function createActionService(options: {
   const createdActions = new Map<string, Action>();
   let storedResult = options.action.result;
   let activeAction = options.action;
+  let confirmationCheckpointFailures = 0;
   const actionFor = (token: string) => options.reviewActions?.[token] ?? createdActions.get(token) ?? options.action;
   const actionGroupFor = (action: Action) => typeof action.payload.actionGroup === "string" ? action.payload.actionGroup : null;
   const repository = {
     findSession: async () => session,
-    upsertSession: async (input: Session) => { session = input; return input; },
+    upsertSession: async (input: Session) => {
+      confirmationCheckpointFailures += 1;
+      if (options.failConfirmationCheckpoint) {
+        throw new Error("injected confirmation checkpoint failure");
+      }
+      session = input;
+      return input;
+    },
     createAction: async (input: Record<string, unknown>) => {
       calls.push({ method: "action.create", args: [input] });
       const baseToken = `${input.kind}-token`;
@@ -218,6 +227,7 @@ function createActionService(options: {
     service: new Constructor(repository, episodes, canonRepository, canonPins, generation, review, preflight, undefined, renders),
     calls,
     getSession: () => session,
+    getConfirmationCheckpointFailures: () => confirmationCheckpointFailures,
     getCreatedActionTokens: () => [...createdActions.keys()],
   };
 }
@@ -295,6 +305,24 @@ test("a confirmation domain failure keeps the episode and offers a resume action
   assert.equal(getSession()?.data.episodeId, "episode-1");
   assert.equal(getSession()?.data.confirmationStage, "CREATED");
   assert.deepEqual(reply.inlineKeyboard, [[{ text: "Retry confirmation", callbackData: "rv:CONFIRM_DRAFT-token" }]]);
+});
+
+test("legacy confirmDraft can orphan its episode when the post-create checkpoint also fails", async () => {
+  const { service, calls, getSession, getConfirmationCheckpointFailures } = createActionService({
+    action: { kind: "CONFIRM_DRAFT", payload: { draft } },
+    failConfirmationCheckpoint: true,
+  });
+
+  await assert.rejects(() => service.handleTelegram({
+    telegramUserId: "976684739",
+    chatId: "976684739",
+    callbackToken: "confirm",
+  }), /injected confirmation checkpoint failure/);
+
+  assert.equal(calls.filter((call) => call.method === "episode.create").length, 1);
+  assert.equal(getConfirmationCheckpointFailures(), 2);
+  assert.equal(getSession(), null);
+  // No durable episode ID survived; a fresh confirm action can create an orphan duplicate.
 });
 
 test("a retry resumes the saved episode instead of creating another", async () => {

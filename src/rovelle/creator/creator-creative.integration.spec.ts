@@ -51,7 +51,7 @@ before(async () => {
   creatorRepository = new CreatorRepository(prisma);
   creativeRepository = new CreativeRepository(prisma);
   const CreativeConstructor = CreatorCreativeService as unknown as new (...args: unknown[]) => CreatorCreativeService;
-  creativeService = new CreativeConstructor(creatorRepository, creativeRepository);
+  creativeService = new CreativeConstructor(creatorRepository, creativeRepository, { approve: async () => ({ text: "Approved." }) });
   creatorService = new CreatorService(
     creatorRepository,
     undefined,

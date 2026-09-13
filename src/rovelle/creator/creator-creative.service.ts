@@ -20,6 +20,7 @@ import {
   CreatorRepository,
   type LockedCreatorCanonVersion,
 } from "./creator.repository";
+import { CreativeApprovalService } from "../creative/creative-approval.service";
 import { advanceCreatorBrief } from "./creator-validation";
 import type {
   CreatorDraftData,
@@ -44,6 +45,7 @@ export class CreatorCreativeService {
   constructor(
     private readonly creatorRepository: CreatorRepository,
     private readonly creativeRepository: CreativeRepository,
+    private readonly creativeApprovalService: CreativeApprovalService,
   ) {}
 
   async handle(request: CreatorTelegramRequest): Promise<CreatorTelegramReply | null> {
@@ -311,9 +313,10 @@ export class CreatorCreativeService {
       if (payload.page !== pages.length || !allPagesViewed(progress.viewedPages, pages.length)) {
         return { text: "View every preview page before approving the plan." };
       }
-      return {
-        text: "Plan approval is being prepared. Your storyboard is saved; check /mywork shortly.",
-      };
+      return this.creativeApprovalService.approve(tx, {
+        telegramUserId: session.telegramUserId,
+        token: action.token,
+      });
     }
 
     return stale;

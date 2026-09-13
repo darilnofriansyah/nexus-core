@@ -39,8 +39,8 @@ export class EpisodeRepository {
     code,
     title,
     targetDurationSeconds,
-  }: CreateEpisodeRequestDto): Promise<EpisodeWithShots> {
-    return this.prisma.client.rovelleEpisode.create({
+  }: CreateEpisodeRequestDto, tx?: Prisma.TransactionClient): Promise<EpisodeWithShots> {
+    return (tx ?? this.prisma.client).rovelleEpisode.create({
       data: {
         code,
         title,
@@ -50,8 +50,8 @@ export class EpisodeRepository {
     });
   }
 
-  async findEpisode(id: string): Promise<EpisodeWithShots | null> {
-    return this.prisma.client.rovelleEpisode.findUnique({
+  async findEpisode(id: string, tx?: Prisma.TransactionClient): Promise<EpisodeWithShots | null> {
+    return (tx ?? this.prisma.client).rovelleEpisode.findUnique({
       where: { id },
       include: includeShots,
     });
@@ -60,8 +60,9 @@ export class EpisodeRepository {
   async updateBrief(
     id: string,
     brief: Record<string, unknown>,
+    tx?: Prisma.TransactionClient,
   ): Promise<EpisodeWithShots | null> {
-    const result = await this.prisma.client.rovelleEpisode.updateMany({
+    const result = await (tx ?? this.prisma.client).rovelleEpisode.updateMany({
       where: {
         id,
         status: RovelleEpisodeStatus.DRAFT,
@@ -71,28 +72,30 @@ export class EpisodeRepository {
       },
     });
 
-    return result.count === 1 ? this.findEpisode(id) : null;
+    return result.count === 1 ? this.findEpisode(id, tx) : null;
   }
 
   async transitionStatus(
     id: string,
     from: RovelleEpisodeStatus,
     to: RovelleEpisodeStatus,
+    tx?: Prisma.TransactionClient,
   ): Promise<EpisodeWithShots | null> {
-    const result = await this.prisma.client.rovelleEpisode.updateMany({
+    const result = await (tx ?? this.prisma.client).rovelleEpisode.updateMany({
       where: { id, status: from },
       data: { status: to },
     });
 
-    return result.count === 1 ? this.findEpisode(id) : null;
+    return result.count === 1 ? this.findEpisode(id, tx) : null;
   }
 
   async replaceShots(
     episodeId: string,
     shots: ShotInputDto[],
+    tx?: Prisma.TransactionClient,
   ): Promise<EpisodeWithShots | null> {
-    const replaced = await this.prisma.client.$transaction(async (tx) => {
-      const episode = await tx.rovelleEpisode.findUnique({
+    const replace = async (transaction: Prisma.TransactionClient) => {
+      const episode = await transaction.rovelleEpisode.findUnique({
         where: { id: episodeId },
       });
 
@@ -100,7 +103,7 @@ export class EpisodeRepository {
         return false;
       }
 
-      const guarded = await tx.rovelleEpisode.updateMany({
+      const guarded = await transaction.rovelleEpisode.updateMany({
         where: {
           id: episodeId,
           status: RovelleEpisodeStatus.PREPRODUCTION,
@@ -112,12 +115,12 @@ export class EpisodeRepository {
         return false;
       }
 
-      await tx.rovelleShot.deleteMany({
+      await transaction.rovelleShot.deleteMany({
         where: { episodeId },
       });
 
       if (shots.length > 0) {
-        await tx.rovelleShot.createMany({
+        await transaction.rovelleShot.createMany({
           data: shots.map((shot) => ({
             episodeId,
             sequence: shot.sequence,
@@ -129,9 +132,12 @@ export class EpisodeRepository {
       }
 
       return true;
-    });
+    };
+    const replaced = tx
+      ? await replace(tx)
+      : await this.prisma.client.$transaction(replace);
 
-    return replaced ? this.findEpisode(episodeId) : null;
+    return replaced ? this.findEpisode(episodeId, tx) : null;
   }
 
   async markReady(id: string): Promise<MarkReadyResult> {

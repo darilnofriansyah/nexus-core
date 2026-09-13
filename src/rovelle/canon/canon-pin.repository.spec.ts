@@ -175,6 +175,10 @@ function createRepository(options: FakeOptions = {}) {
       },
     },
     rovelleEpisodeCanonPin: {
+      findMany: async (args: unknown) => {
+        record("episodePin.findMany", args);
+        return [pinWithVersion];
+      },
       upsert: async (args: unknown) => {
         record("episodePin.upsert", args);
         return options.episodePin ?? episodePin;
@@ -231,6 +235,7 @@ function createRepository(options: FakeOptions = {}) {
 
   return {
     calls,
+    transactionClient,
     repository: new CanonPinRepository({ client } as unknown as PrismaService),
     get transactionCount() {
       return transactionCount;
@@ -277,6 +282,18 @@ test("pins an episode to a locked version in a serializable transaction", async 
     },
     inTransaction: true,
   });
+});
+
+test("pins and reads episode canon inside a caller transaction without nesting", async () => {
+  const fake = createRepository();
+  const tx = fake.transactionClient as unknown as Prisma.TransactionClient;
+
+  const result = await fake.repository.pinEpisodeVersion(EPISODE_ID, ENTITY_ID, VERSION_ID, tx);
+  const pins = await fake.repository.listEpisodePins(EPISODE_ID, tx);
+
+  assert.equal(result.status, "pinned");
+  assert.deepEqual(pins, [pinWithVersion]);
+  assert.equal(fake.transactionCount, 0);
 });
 
 test("rejects episode pins for missing, locked, draft, and mismatched entities", async () => {
