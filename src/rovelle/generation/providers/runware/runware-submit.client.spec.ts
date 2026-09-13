@@ -28,6 +28,8 @@ function env(overrides: Partial<CoreApiEnv> = {}): CoreApiEnv {
     runwareApiBaseUrl: "https://runware.test/v1",
     runwareVideoModel: "bytedance:seedance@2.5",
     runwareSubmitTimeoutMs: 1000,
+    rovelleCreativeEnabled: false,
+    rovelleCreativeBodyLimitBytes: 512 * 1024,
     ...overrides,
   };
 }

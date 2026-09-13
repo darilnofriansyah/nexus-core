@@ -1,9 +1,23 @@
-import * as assert from 'node:assert/strict';
-import { describe, test } from 'node:test';
-import { RovelleModule } from './rovelle.module';
+import * as assert from "node:assert/strict";
+import { afterEach, test } from "node:test";
+import { Test } from "@nestjs/testing";
+import { CreativeController } from "./creative/creative.controller";
+import { CreativeRepository } from "./creative/creative.repository";
+import { RovelleModule } from "./rovelle.module";
 
-describe('RovelleModule', () => {
-  test('is defined', () => {
-    assert.ok(RovelleModule);
-  });
+const originalFlag = process.env.ROVELLE_CREATIVE_ENABLED;
+
+afterEach(() => {
+  if (originalFlag === undefined) delete process.env.ROVELLE_CREATIVE_ENABLED;
+  else process.env.ROVELLE_CREATIVE_ENABLED = originalFlag;
+});
+
+test("boots the Rovelle creative boundary without circular module imports", async () => {
+  process.env.ROVELLE_CREATIVE_ENABLED = "false";
+  const module = await Test.createTestingModule({
+    imports: [RovelleModule],
+  }).compile();
+  assert.ok(module.get(CreativeRepository));
+  assert.ok(module.get(CreativeController));
+  await module.close();
 });

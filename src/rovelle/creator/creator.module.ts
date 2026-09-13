@@ -7,26 +7,36 @@ import { GenerationModule } from "../generation/generation.module";
 import { ProductionModule } from "../production/production.module";
 import { ReviewModule } from "../review/review.module";
 import { RenderModule } from "../render/render.module";
-import { CreativeRepository } from "../creative/creative.repository";
+import { CreativeModule } from "../creative/creative.module";
 import { CreatorController } from "./creator.controller";
-import { CreatorRepository } from "./creator.repository";
 import { CreatorService } from "./creator.service";
 import { CreatorCreativeService } from "./creator-creative.service";
-import { CreativeApprovalService } from "../creative/creative-approval.service";
 import { CreatorUploadController } from "./creator-upload.controller";
-import { CREATOR_UPLOAD_BASE_URL, CreatorUploadService } from "./creator-upload.service";
+import {
+  CREATOR_UPLOAD_BASE_URL,
+  CreatorUploadService,
+} from "./creator-upload.service";
 
 @Module({
-  imports: [PrismaModule, AssetsModule, ProductionModule, CanonModule, GenerationModule, ReviewModule, RenderModule],
+  imports: [
+    PrismaModule,
+    AssetsModule,
+    ProductionModule,
+    CanonModule,
+    GenerationModule,
+    ReviewModule,
+    RenderModule,
+    CreativeModule,
+  ],
   controllers: [CreatorController, CreatorUploadController],
   providers: [
-    CreatorRepository,
-    CreativeRepository,
-    CreativeApprovalService,
     CreatorCreativeService,
     CreatorService,
     CreatorUploadService,
-    { provide: CREATOR_UPLOAD_BASE_URL, useFactory: () => readEnv().corePublicBaseUrl },
+    {
+      provide: CREATOR_UPLOAD_BASE_URL,
+      useFactory: () => readEnv().corePublicBaseUrl,
+    },
   ],
   exports: [CreatorService],
 })

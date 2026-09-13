@@ -30,9 +30,18 @@ export interface CoreApiEnv {
   renderWorkerTempDir?: string;
   renderFfmpegPath?: string;
   renderFfprobePath?: string;
+  rovelleCreativeEnabled: boolean;
+  rovelleTelegramBotId?: string;
+  rovelleCreativeWorkerKey?: string;
+  rovelleCreativeBodyLimitBytes: number;
 }
 
 export function readEnv(): CoreApiEnv {
+  const rovelleCreativeEnabled = readBooleanEnv(
+    "ROVELLE_CREATIVE_ENABLED",
+    false,
+  );
+
   return {
     nodeEnv: process.env.NODE_ENV ?? "development",
     port: Number(process.env.PORT ?? 3001),
@@ -75,5 +84,37 @@ export function readEnv(): CoreApiEnv {
       process.env.RENDER_WORKER_TEMP_DIR ?? "/tmp/rovelle-render-worker",
     renderFfmpegPath: process.env.RENDER_FFMPEG_PATH ?? "/usr/bin/ffmpeg",
     renderFfprobePath: process.env.RENDER_FFPROBE_PATH ?? "/usr/bin/ffprobe",
+    rovelleCreativeEnabled,
+    rovelleTelegramBotId: process.env.ROVELLE_TELEGRAM_BOT_ID,
+    rovelleCreativeWorkerKey: process.env.ROVELLE_CREATIVE_WORKER_KEY,
+    rovelleCreativeBodyLimitBytes: 512 * 1024,
   };
+}
+
+export function validateRovelleCreativeEnv(env: CoreApiEnv): void {
+  if (!env.rovelleCreativeEnabled) return;
+  if (
+    !env.rovelleTelegramBotId ||
+    !/^[A-Za-z0-9_-]{1,32}$/.test(env.rovelleTelegramBotId)
+  ) {
+    throw new Error(
+      "ROVELLE_TELEGRAM_BOT_ID must be configured as 1-32 letters, digits, underscores, or hyphens when ROVELLE_CREATIVE_ENABLED=true",
+    );
+  }
+  if (
+    !env.rovelleCreativeWorkerKey ||
+    Buffer.byteLength(env.rovelleCreativeWorkerKey, "utf8") < 32
+  ) {
+    throw new Error(
+      "ROVELLE_CREATIVE_WORKER_KEY must contain at least 32 bytes when ROVELLE_CREATIVE_ENABLED=true",
+    );
+  }
+}
+
+function readBooleanEnv(name: string, fallback: boolean): boolean {
+  const value = process.env[name];
+  if (value === undefined) return fallback;
+  if (value === "true") return true;
+  if (value === "false") return false;
+  throw new Error(`${name} must be "true" or "false"`);
 }

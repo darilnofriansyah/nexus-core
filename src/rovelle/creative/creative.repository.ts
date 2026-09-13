@@ -134,7 +134,7 @@ export class CreativeRepository {
 
   async complete(
     jobId: string,
-    completion: CreativeCompletion,
+    completion: unknown,
     now: Date,
   ): Promise<{ chatId: string; reply: CreatorTelegramReply }> {
     return this.runSerializable(async (tx) => {
@@ -162,9 +162,15 @@ export class CreativeRepository {
       if (job.inputHash !== expectedInputHash) {
         throw new ConflictException("Creative job input hash is invalid");
       }
+      const completionInputHash =
+        completion !== null &&
+        typeof completion === "object" &&
+        !Array.isArray(completion)
+          ? (completion as Record<string, unknown>).inputHash
+          : undefined;
       if (
-        typeof completion.inputHash === "string" &&
-        completion.inputHash !== job.inputHash
+        typeof completionInputHash === "string" &&
+        completionInputHash !== job.inputHash
       ) {
         throw new ConflictException(
           "Creative completion input hash does not match",
@@ -302,7 +308,13 @@ async function completionReply(
   completion: CreativeCompletion,
 ): Promise<CreatorTelegramReply> {
   if (completion.status === "FAILED") {
-    const retry = await createCreativeAction(tx, job, "CREATIVE_RETRY", 1, "Retry");
+    const retry = await createCreativeAction(
+      tx,
+      job,
+      "CREATIVE_RETRY",
+      1,
+      "Retry",
+    );
     return {
       text: "Creative draft could not be completed. It was not retried automatically.",
       inlineKeyboard: [[retry]],
@@ -312,11 +324,23 @@ async function completionReply(
   const pages = renderCreativePages(input, completion.result);
   const buttons: CreatorInlineButton[] = [];
   if (pages.length > 1) {
-    buttons.push(await createCreativeAction(tx, job, "CREATIVE_PAGE", 2, "Next"));
+    buttons.push(
+      await createCreativeAction(tx, job, "CREATIVE_PAGE", 2, "Next"),
+    );
   }
-  buttons.push(await createCreativeAction(tx, job, "CREATIVE_REVISE", 1, "Revise"));
+  buttons.push(
+    await createCreativeAction(tx, job, "CREATIVE_REVISE", 1, "Revise"),
+  );
   if (pages.length === 1) {
-    buttons.push(await createCreativeAction(tx, job, "CREATIVE_APPROVE", 1, "Approve plan"));
+    buttons.push(
+      await createCreativeAction(
+        tx,
+        job,
+        "CREATIVE_APPROVE",
+        1,
+        "Approve plan",
+      ),
+    );
   }
   await recordInitialPreviewProgress(tx, job);
   return {
@@ -328,7 +352,11 @@ async function completionReply(
 async function createCreativeAction(
   tx: Prisma.TransactionClient,
   job: RovelleCreativeJob,
-  kind: "CREATIVE_PAGE" | "CREATIVE_REVISE" | "CREATIVE_APPROVE" | "CREATIVE_RETRY",
+  kind:
+    | "CREATIVE_PAGE"
+    | "CREATIVE_REVISE"
+    | "CREATIVE_APPROVE"
+    | "CREATIVE_RETRY",
   page: number,
   text: string,
 ): Promise<CreatorInlineButton> {
@@ -358,7 +386,11 @@ async function recordInitialPreviewProgress(
   });
   if (!session) return;
   const data = plainRecord(session.data);
-  if (data.creativeJobId !== job.id || data.creativeInputRevision !== job.inputRevision) return;
+  if (
+    data.creativeJobId !== job.id ||
+    data.creativeInputRevision !== job.inputRevision
+  )
+    return;
   await tx.rovelleCreatorSession.update({
     where: { id: session.id },
     data: {
@@ -376,7 +408,9 @@ async function recordInitialPreviewProgress(
   });
 }
 
-function plainRecord(value: Prisma.JsonValue): Record<string, Prisma.JsonValue> {
+function plainRecord(
+  value: Prisma.JsonValue,
+): Record<string, Prisma.JsonValue> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, Prisma.JsonValue>)
     : {};

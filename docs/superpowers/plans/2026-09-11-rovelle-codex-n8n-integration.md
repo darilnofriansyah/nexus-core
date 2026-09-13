@@ -447,10 +447,10 @@ Use a fake executor and intercepted HTTP server for the assertion; restart the p
 
 **Interfaces:** Implements the three frozen Core HTTP routes; exports CreativeRepository and CreativeApprovalService to creator wiring. Creative module never imports CreatorModule; reply types are type-only imports. Creator creative service is provided in CreatorModule.
 
-- [ ] Write guard assertions for missing expected key, absent header, wrong key, correct key; all but correct key deny. Use timing-safe comparison with explicit equal-length handling. Apply existing skip decorator only to this dedicated guarded controller.
-- [ ] Implement UUID/body/status validation, explicit 200 responses and normal envelope. Enforce body byte limit before costly validation. Return only bounded queued IDs and Core-owned reply destination. Normalize controlled errors without exposing tokens or content.
-- [ ] Wire feature flag, stable bot ID, dedicated worker key with config validation. Flag off keeps old creator path. Flag on with missing bot ID/key fails startup; do not silently enable unauthenticated routes.
-- [ ] Test HTTP-level request through Nest: unauthorized request cannot call repository; valid claim works; malformed output returns 400; wrong ownership/token/hash rejects; duplicate completion response unchanged; module boots without circular dependencies. Run existing module/controller regressions.
+- [x] Write guard assertions for missing expected key, absent header, wrong key, correct key; all but correct key deny. Use timing-safe comparison with explicit equal-length handling. Apply existing skip decorator only to this dedicated guarded controller.
+- [x] Implement UUID/body/status validation, explicit 200 responses and normal envelope. Enforce body byte limit before costly validation. Return only bounded queued IDs and Core-owned reply destination. Normalize controlled errors without exposing tokens or content.
+- [x] Wire feature flag, stable bot ID, dedicated worker key with config validation. Flag off keeps old creator path. Flag on with missing bot ID/key fails startup; do not silently enable unauthenticated routes.
+- [x] Test HTTP-level request through Nest: unauthorized request cannot call repository; valid claim works; malformed output returns 400; wrong ownership/token/hash rejects; duplicate completion response unchanged; module boots without circular dependencies. Run existing module/controller regressions.
 
 **Checks:** new creative controller/guard specs, `rovelle.module.spec.js`, `creator.module.spec.js`, `creator.controller.spec.js`, environment specs.
 
