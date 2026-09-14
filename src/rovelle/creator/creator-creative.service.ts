@@ -16,10 +16,7 @@ import { CreativeRepository } from "../creative/creative.repository";
 import { renderCreativePages } from "../creative/creative-preview";
 import { hashCreativeValue, normalizeCreativeInput, normalizeCreativeResult } from "../creative/creative-validation";
 import type { CreativeInput } from "../creative/dto/creative.dto";
-import {
-  CreatorRepository,
-  type LockedCreatorCanonVersion,
-} from "./creator.repository";
+import { CreatorRepository } from "./creator.repository";
 import { CreativeApprovalService } from "../creative/creative-approval.service";
 import { advanceCreatorBrief } from "./creator-validation";
 import type {

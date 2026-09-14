@@ -9,7 +9,6 @@ import {
 } from "../../generated/prisma/client";
 import { PrismaService } from "../../database/prisma.service";
 import type { CreatorTelegramReply } from "./dto/creator.dto";
-import { hashCreativeValue } from "../creative/creative-validation";
 
 type JsonResult = Prisma.JsonValue;
 type SafeActionResult = Prisma.JsonObject;
