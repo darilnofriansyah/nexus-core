@@ -372,8 +372,8 @@ describe("RenderWorkerRepository PostgreSQL lease claiming", { skip: !testDataba
   }
 
   test("two workers claim different jobs and one job only once", async () => {
-    await createQueuedJob(`LEASE-A-${randomUUID()}`);
-    await createQueuedJob(`LEASE-B-${randomUUID()}`);
+    await createQueuedJob(`LEASE-A-${randomUUID().replaceAll("-", "").slice(0, 24)}`);
+    await createQueuedJob(`LEASE-B-${randomUUID().replaceAll("-", "").slice(0, 24)}`);
     const [first, second] = await Promise.all([
       repository.claimNext({ workerId: "worker-one", leaseSeconds: 120 }),
       repository.claimNext({ workerId: "worker-two", leaseSeconds: 120 }),
@@ -381,7 +381,7 @@ describe("RenderWorkerRepository PostgreSQL lease claiming", { skip: !testDataba
     assert.ok(first && second);
     assert.notEqual(first.jobId, second.jobId);
 
-    await createQueuedJob(`LEASE-C-${randomUUID()}`);
+    await createQueuedJob(`LEASE-C-${randomUUID().replaceAll("-", "").slice(0, 24)}`);
     const [third, fourth] = await Promise.all([
       repository.claimNext({ workerId: "worker-three", leaseSeconds: 120 }),
       repository.claimNext({ workerId: "worker-four", leaseSeconds: 120 }),
