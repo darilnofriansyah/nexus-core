@@ -136,6 +136,9 @@ test("Compose keeps transport and executor privileges, mounts and networks split
   const transport = serviceBlock(source, "transport");
   const executor = serviceBlock(source, "executor");
 
+  assert.match(transport, /^\s+mem_limit:\s*512m\s*$/m);
+  assert.match(executor, /^\s+mem_limit:\s*1g\s*$/m);
+
   for (const service of [transport, executor]) {
     assert.match(service, /read_only:\s*true/);
     assert.match(service, /cap_drop:\s*\[ALL\]/);
