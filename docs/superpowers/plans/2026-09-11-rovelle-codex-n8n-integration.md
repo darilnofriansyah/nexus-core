@@ -462,11 +462,11 @@ Use a fake executor and intercepted HTTP server for the assertion; restart the p
 
 **Interfaces:** Existing normalized creator requests gain real `updateId`; new exported pure functions `buildCreativeDispatch(response)`, `buildCreativeClaimForward(body)`, `buildCreativeResultForward(body)`, `buildCreativeQueuedDispatches(response)` return validated fixed-route HTTP descriptions. HTTP/send execution stays in actual n8n nodes.
 
-- [ ] Inspect current helper exports and tests before changing them. Preserve `/rv`, operator/private allowlists, text answers, callback acknowledgement, URL/callback keyboards, error handling, and original credential references.
-- [ ] Add tests that extract `update_id` for both messages and callbacks, preserve it as decimal string, dispatch only exact Core `creativeJob.action === 'DISPATCH'` with valid UUID, and reject model-provided URLs/unknown actions. Acknowledgement precedes Core for callbacks.
-- [ ] Implement claim/result forwarding with fixed routes, dedicated credentials by reference, 10-second timeout, redirects off, and body caps. Result webhook acknowledges Core persistence before Telegram sending. Result/Telegram replay may redeliver text but must not rerun Codex or approval.
-- [ ] Prepare recovery mapping: scheduled GET of queued work every minute, at most 20 IDs, dispatch only returned IDs; Core owns expiry/eligibility. No text parsing to decide retry or spending. No new production Telegram Trigger.
-- [ ] Document exact node changes to existing RV-00 and worker webhooks/recovery trigger; do not call n8n MCP or synthesize a fake live graph. Actual workflow IDs/version and installed node settings are verified only in Task 12.
+- [x] Inspect current helper exports and tests before changing them. Preserve `/rv`, operator/private allowlists, text answers, callback acknowledgement, URL/callback keyboards, error handling, and original credential references.
+- [x] Add tests that extract `update_id` for both messages and callbacks, preserve it as decimal string, dispatch only exact Core `creativeJob.action === 'DISPATCH'` with valid UUID, and reject model-provided URLs/unknown actions. Acknowledgement precedes Core for callbacks.
+- [x] Implement claim/result forwarding with fixed routes, dedicated credentials by reference, 10-second timeout, redirects off, and body caps. Result webhook acknowledges Core persistence before Telegram sending. Result/Telegram replay may redeliver text but must not rerun Codex or approval.
+- [x] Prepare recovery mapping: scheduled GET of queued work every minute, at most 20 IDs, dispatch only returned IDs; Core owns expiry/eligibility. No text parsing to decide retry or spending. No new production Telegram Trigger.
+- [x] Document exact node changes to existing RV-00 and worker webhooks/recovery trigger; do not call n8n MCP or synthesize a fake live graph. Actual workflow IDs/version and installed node settings are verified only in Task 12.
 
 ```json
 {"telegramUserId":"976684739","chatId":"976684739","updateId":"987654321","messageText":"/new"}

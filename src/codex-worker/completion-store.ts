@@ -44,7 +44,10 @@ export interface SpoolRecord {
   createdAt: string;
   updatedAt: string;
   claim?: Extract<CreativeClaim, { claimed: true }>;
-  completion?: CreativeCompletion;
+  completionEnvelope?: {
+    jobId: string;
+    completion: CreativeCompletion;
+  };
   deliveryAttempts: number;
   lastDeliveryAttemptAt: string | null;
   acknowledgedAt: string | null;
@@ -166,7 +169,7 @@ export class CompletionStore {
         throw new Error("Creative completion does not match the durable claim");
       }
       record.state = "completed";
-      record.completion = normalized;
+      record.completionEnvelope = { jobId: id, completion: normalized };
       record.deliveryAttempts = 0;
       record.lastDeliveryAttemptAt = null;
     });
@@ -178,7 +181,7 @@ export class CompletionStore {
   ): Promise<SpoolRecord> {
     let updated: SpoolRecord | undefined;
     await this.transition(jobId, now, (record) => {
-      if (record.state !== "completed" || !record.completion) {
+      if (record.state !== "completed" || !record.completionEnvelope) {
         throw new Error("Creative completion is not ready for delivery");
       }
       record.deliveryAttempts += 1;
@@ -191,7 +194,7 @@ export class CompletionStore {
 
   async markAcknowledged(jobId: string, now = new Date()): Promise<void> {
     await this.transition(jobId, now, (record) => {
-      if (record.state !== "completed" || !record.completion) {
+      if (record.state !== "completed" || !record.completionEnvelope) {
         throw new Error("Creative completion is not awaiting acknowledgement");
       }
       record.state = "acknowledged";
@@ -205,7 +208,7 @@ export class CompletionStore {
     now = new Date(),
   ): Promise<void> {
     await this.transition(jobId, now, (record) => {
-      if (record.state !== "completed" || !record.completion) {
+      if (record.state !== "completed" || !record.completionEnvelope) {
         throw new Error("Creative completion is not available to quarantine");
       }
       record.state = "quarantined";
@@ -374,19 +377,44 @@ export class CompletionStore {
       record.claim = this.normalizeClaim(jobId, value.claim as never);
     }
     if (["completed", "acknowledged", "quarantined"].includes(record.state)) {
-      if (!record.claim || !value.completion) {
+      if (!record.claim) {
         throw new Error("Spool completion is missing");
       }
-      record.completion = normalizeCreativeCompletion(
-        value.completion,
+
+      // Older v1 records persisted the completion beside jobId.
+      const legacyCompletion = value.completion;
+      if (
+        value.completionEnvelope !== undefined &&
+        legacyCompletion !== undefined
+      ) {
+        throw new Error("Spool completion envelope is ambiguous");
+      }
+      const envelopeValue =
+        value.completionEnvelope ??
+        (legacyCompletion === undefined
+          ? undefined
+          : { jobId, completion: legacyCompletion });
+      if (
+        !isRecord(envelopeValue) ||
+        Object.keys(envelopeValue).length !== 2 ||
+        !Object.keys(envelopeValue).includes("jobId") ||
+        !Object.keys(envelopeValue).includes("completion") ||
+        envelopeValue.jobId !== jobId
+      ) {
+        throw new Error("Spool completion envelope is invalid");
+      }
+      const normalizedCompletion = normalizeCreativeCompletion(
+        envelopeValue.completion,
         record.claim.input,
       );
       if (
-        record.completion.attemptToken !== record.claim.attemptToken ||
-        record.completion.inputHash !== record.claim.inputHash
+        normalizedCompletion.attemptToken !== record.claim.attemptToken ||
+        normalizedCompletion.inputHash !== record.claim.inputHash
       ) {
         throw new Error("Spool completion does not match its claim");
       }
+      delete value.completion;
+      record.completionEnvelope = { jobId, completion: normalizedCompletion };
     }
     if (
       record.state === "acknowledged" &&

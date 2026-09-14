@@ -20,7 +20,10 @@ import type {
 interface SpoolRecord {
   state: string;
   claim?: Extract<CreativeClaim, { claimed: true }>;
-  completion?: CreativeCompletion;
+  completionEnvelope?: {
+    jobId: string;
+    completion: CreativeCompletion;
+  };
   deliveryAttempts: number;
 }
 
@@ -227,7 +230,10 @@ test("quarantines callback redirects without following or retrying them", async 
 test("restarts delivery with the same saved envelope after Core commits but its ack is lost", async () => {
   await withDirectory(async (directory) => {
     const store = new CompletionStore(directory);
-    const resultBodies: CreativeCompletion[] = [];
+    const resultBodies: Array<{
+      jobId: string;
+      completion: CreativeCompletion;
+    }> = [];
     const executorBodies: unknown[] = [];
     const executorHeaders: Array<
       Record<string, string | string[] | undefined>
@@ -254,8 +260,8 @@ test("restarts delivery with the same saved envelope after Core commits but its 
         return;
       }
       if (request.url === "/webhook/rovelle-codex-result") {
-        const completion = JSON.parse(body) as CreativeCompletion;
-        resultBodies.push(completion);
+        const envelope = JSON.parse(body) as (typeof resultBodies)[number];
+        resultBodies.push(envelope);
         if (resultBodies.length === 1) {
           resolveFirstResult();
           response.destroy();
@@ -302,6 +308,16 @@ test("restarts delivery with the same saved envelope after Core commits but its 
       assert.deepEqual(attempts, [1000]);
       assert.equal(executorCalls, 1);
       assert.equal(resultBodies.length, 1);
+      assert.deepEqual(Object.keys(resultBodies[0]).sort(), [
+        "completion",
+        "jobId",
+      ]);
+      assert.equal(resultBodies[0].jobId, JOB_ID);
+      assert.equal(resultBodies[0].completion.attemptToken, "A".repeat(43));
+      assert.equal(
+        JSON.stringify(resultBodies[0]).includes(CALLBACK_KEY),
+        false,
+      );
 
       const executionRequest = executorBodies[0] as Record<string, unknown>;
       assert.deepEqual(Object.keys(executionRequest), [
@@ -343,7 +359,10 @@ test("restarts delivery with the same saved envelope after Core commits but its 
       assert.equal(executorCalls, 1);
       assert.equal(resultBodies.length, 2);
       assert.deepEqual(resultBodies[1], resultBodies[0]);
-      assert.equal(resultBodies[1].attemptToken, resultBodies[0].attemptToken);
+      assert.equal(
+        resultBodies[1].completion.attemptToken,
+        resultBodies[0].completion.attemptToken,
+      );
       assert.equal((await store.get(JOB_ID))?.state, "acknowledged");
     } finally {
       await firstProcessor.shutdown();
@@ -356,7 +375,10 @@ test("restarts delivery with the same saved envelope after Core commits but its 
 test("retries malformed and invalid 200 acknowledgements without re-executing", async () => {
   await withDirectory(async (directory) => {
     const store = new CompletionStore(directory);
-    const resultBodies: CreativeCompletion[] = [];
+    const resultBodies: Array<{
+      jobId: string;
+      completion: CreativeCompletion;
+    }> = [];
     let executorCalls = 0;
     let currentTime = NOW.getTime();
     const n8nServer = createServer(async (request, response) => {
@@ -368,7 +390,7 @@ test("retries malformed and invalid 200 acknowledgements without re-executing", 
         return;
       }
       if (request.url === "/webhook/rovelle-codex-result") {
-        resultBodies.push(JSON.parse(body) as CreativeCompletion);
+        resultBodies.push(JSON.parse(body) as (typeof resultBodies)[number]);
         response.writeHead(200, { "content-type": "application/json" });
         if (resultBodies.length === 1) {
           response.end("{malformed");
@@ -441,9 +463,8 @@ test("cleans expired acknowledged spool entries during new admissions", async ()
       NOW,
     );
     await seedStore.markAcknowledged(JOB_ID, NOW);
-    const acknowledgedBytes = (
-      await stat(join(directory, `${JOB_ID}.json`))
-    ).size;
+    const acknowledgedBytes = (await stat(join(directory, `${JOB_ID}.json`)))
+      .size;
     const admissionTime = new Date(NOW.getTime() + 24 * 60 * 60 * 1000 + 1);
     const acceptedBytes = Buffer.byteLength(
       JSON.stringify({

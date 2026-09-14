@@ -1,5 +1,5 @@
 import * as assert from "node:assert/strict";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -25,7 +25,10 @@ interface SpoolRecord {
     | "quarantined"
     | "not_claimed";
   claim?: Extract<CreativeClaim, { claimed: true }>;
-  completion?: CreativeCompletion;
+  completionEnvelope?: {
+    jobId: string;
+    completion: CreativeCompletion;
+  };
   deliveryAttempts: number;
   acknowledgedAt?: string | null;
 }
@@ -112,8 +115,52 @@ test("persists private markers and the original completion across restarts", asy
     await reopened.initialize();
     const record = await reopened.get(JOB_ID);
     assert.equal(record?.state, "completed");
-    assert.deepEqual(record?.completion, COMPLETION);
+    assert.deepEqual(record?.completionEnvelope, {
+      jobId: JOB_ID,
+      completion: COMPLETION,
+    });
     assert.equal(record?.claim?.attemptToken, CLAIM.attemptToken);
+  });
+});
+
+test("migrates legacy v1 completions into the durable callback envelope", async () => {
+  await withSpool(async (directory) => {
+    const store = new CompletionStore(directory);
+    await store.initialize();
+    await store.createAccepted(JOB_ID, NOW);
+    await store.markClaiming(JOB_ID, NOW);
+    await store.markStarted(JOB_ID, CLAIM, NOW);
+    await store.markCompleted(JOB_ID, COMPLETION, NOW);
+
+    const path = join(directory, `${JOB_ID}.json`);
+    const record = JSON.parse(await readFile(path, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    const envelope = record.completionEnvelope as {
+      completion: CreativeCompletion;
+    };
+    record.completion = envelope.completion;
+    delete record.completionEnvelope;
+    await writeFile(path, JSON.stringify(record));
+
+    const reopened = new CompletionStore(directory);
+    await reopened.initialize();
+    assert.deepEqual((await reopened.get(JOB_ID))?.completionEnvelope, {
+      jobId: JOB_ID,
+      completion: COMPLETION,
+    });
+    await reopened.markDeliveryAttempt(JOB_ID, NOW);
+
+    const migrated = JSON.parse(await readFile(path, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    assert.equal("completion" in migrated, false);
+    assert.deepEqual(migrated.completionEnvelope, {
+      jobId: JOB_ID,
+      completion: COMPLETION,
+    });
   });
 });
 

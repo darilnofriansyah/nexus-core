@@ -280,7 +280,7 @@ export function createJobProcessor(options: JobProcessorOptions): JobProcessor {
     const id = validateJobId(jobId);
     while (!stopping && !stopped.signal.aborted) {
       const record = await options.store.get(id);
-      if (record?.state !== "completed" || !record.completion) return;
+      if (record?.state !== "completed" || !record.completionEnvelope) return;
 
       const delay = nextDeliveryDelay(record, clock());
       if (delay > 0) await wait(delay, stopped.signal);
@@ -305,7 +305,7 @@ export function createJobProcessor(options: JobProcessorOptions): JobProcessor {
               "content-type": "application/json",
               "x-codex-callback-key": options.config.callbackKey,
             },
-            body: JSON.stringify(attempted.completion),
+            body: JSON.stringify(attempted.completionEnvelope),
             signal: AbortSignal.any([
               stopped.signal,
               AbortSignal.timeout(requestTimeoutMs),
