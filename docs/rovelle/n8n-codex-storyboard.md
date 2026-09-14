@@ -61,9 +61,10 @@ outbound claim bodies at 1 KiB and result bodies at 512 KiB. The Core creative
 body limit is 512 KiB. Claim responses are bounded by the worker at 600 KiB.
 
 The worker result callback must include its spool job ID. The current Task 8
-transport sends only `completion`; add the wrapper shown above before wiring
-the result webhook. The local result helper rejects callbacks without that ID,
-so n8n cannot guess or accept a destination URL from the body.
+transport sends `{jobId, completion}`. The Task 10 result helper validates the
+spool job ID, then forwards only `completion` to the fixed Core result route.
+It rejects callbacks without that ID, so n8n cannot guess or accept a
+destination URL from the body.
 
 Forward the Core claim envelope unchanged to the worker. For result delivery,
 Core must persist first; then return its successful envelope with HTTP 200 to
@@ -84,7 +85,8 @@ message text or recompute eligibility in n8n.
 
 These are the exact Task 2 completion shapes inside the result webhook's
 `completion` property. The worker already has the attempt token and input hash;
-it must add its spool `jobId` outside this object for n8n routing.
+Task 10 wraps this object with its spool `jobId` for n8n routing, then removes
+that wrapper when forwarding to Core.
 
 ```json
 {
@@ -180,7 +182,39 @@ has a 64 MiB default capacity. At rollout, disable n8n execution-data retention
 for these sensitive creator and worker executions. Never place spool tokens,
 raw SDK logs, or bearer links in alerts.
 
-The Node tests exercise only local pure functions. They intercept no external
-side effects because they make no network, provider, database, Telegram, or n8n
-calls. Actual n8n node IDs, credential IDs, node versions, execution retention,
-and rollback version remain Task 12 inspection items.
+Task 10's `.cjs` tests exercise local pure adapters. Task 11 also runs a full
+local acceptance flow against a verified disposable `rovelle_phase3a` database,
+loopback-only worker/n8n HTTP servers, a fake SDK, and intercepted Telegram
+delivery. It does not call a provider or live n8n/Telegram service. Actual n8n
+node IDs, credential IDs, node versions, execution retention, and rollback
+version remain Task 12 inspection items.
+
+## Task 11 local acceptance evidence (2026-09-14)
+
+The gated database suite passed 22/22 tests with no skips across the new
+creative-flow integration and the existing creative approval, creator creative,
+and creative integration suites. The test requires both
+`ROVELLE_TEST_DATABASE_URL` and `ROVELLE_TEST_DATABASE_DISPOSABLE=true`, checks
+`current_database()` is exactly `rovelle_phase3a` before fixture cleanup, and
+runs serially. It exercises intake through approval, lost-dispatch discovery,
+duplicate dispatch/receipt/result replays, two revisions with locked canon,
+unknown-outcome recovery, malformed fake output, result-spool recovery,
+Telegram failure and `/mywork` recovery, approval rollback/retry, foreign-owner
+rejection, and missing update-ID rejection. Approval creates exactly one
+PREPRODUCTION episode from revision two with its full script/storyboard and
+canon pin; no generation/render/provider submission occurs.
+
+The creator and creative workflow helper tests passed. TypeScript test
+compilation, worker static-isolation checks, and `git diff --check` passed.
+The full `rtk npm test` run reported 1,380 passed and one unrelated existing
+failure in `src/render-worker/render-worker.repository.spec.ts`: its lease
+fixture builds `LEASE-A-<UUID>` (44 characters) for `RovelleEpisode.code`,
+whose schema limit is `VARCHAR(32)`. No Task 11 test failed in that run.
+
+The adversarial-brief check exercises the fake SDK boundary: its environment is
+limited to `CODEX_API_KEY`, `CODEX_HOME`, `HOME`, and `TMPDIR`, and its request
+options assert read-only mode with network and web search disabled. This is
+mock-level evidence only, not proof of host/container enforcement. The separate
+isolated worker runtime denial probe was not run because its prepared runtime
+fixtures are unavailable; `CODEX_WORKER_ISOLATION_VERIFIED` remains false.
+No real Codex provider, live n8n workflow, Telegram API, or deployment was used.

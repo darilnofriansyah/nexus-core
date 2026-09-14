@@ -492,11 +492,12 @@ The documentation must include completed/failed envelopes matching Task 2, respo
 
 **Interfaces:** Real Core/Prisma state plus intercepted n8n HTTP/Telegram and fake SDK. Use real DTOs/actions, never bypass approval by inserting an already-approved row.
 
-- [ ] Drive authorized `/new`, title/duration/premise/learning goal/tone/canon, Draft choice, dispatch, claim, fake structured completion, every preview page, Revise feedback, second completion, final-page approval, and `/mywork`.
-- [ ] Assert one saved PREPRODUCTION episode from the second job, full script/storyboard content, exact pinned versions, revision-one button rejected, and zero video/render/provider submissions. Duplicate each delivery boundary and verify stable job/episode counts.
-- [ ] Exercise unknown execution outcome, lost initial dispatch recovered by queued discovery, result transport failure recovered from spool, Telegram failure recovered through `/mywork`, approval rollback, foreign owner, malformed SDK output, and missing update ID.
-- [ ] Run the focused DB acceptance suite with no skips, workflow tests, full `rtk npm test`, and `rtk git diff --check`. Record pre-existing failures separately; unresolved new failures block completion. Production build evidence comes from GitHub Actions only.
-- [ ] Review permissions with a deliberately malicious brief. Prove forbidden tool attempts cannot read transport secrets or reach production services. Mock assertions alone do not establish OS isolation; record the isolated worker runtime check separately.
+- [x] Drive authorized `/new`, title/duration/premise/learning goal/tone/canon, Draft choice, dispatch, claim, fake structured completion, every preview page, Revise feedback, second completion, final-page approval, and `/mywork`.
+- [x] Assert one saved PREPRODUCTION episode from the second job, full script/storyboard content, exact pinned versions, revision-one button rejected, and zero video/render/provider submissions. Duplicate each delivery boundary and verify stable job/episode counts.
+- [x] Exercise unknown execution outcome, lost initial dispatch recovered by queued discovery, result transport failure recovered from spool, Telegram failure recovered through `/mywork`, approval rollback, foreign owner, malformed SDK output, and missing update ID.
+- [x] Run the focused DB acceptance suite with no skips, workflow tests, full `rtk npm test`, and `rtk git diff --check`. Record the pre-existing render-worker fixture failure separately; no Task 11 test failed. Production build evidence comes from GitHub Actions only.
+- [x] Use a deliberately malicious brief to check fake-SDK environment allowlisting and read-only/no-network/no-web-search request options. This is mock-boundary evidence only.
+- [ ] Run the separate isolated worker runtime denial probe to prove OS-level restrictions on secret access and production network reachability. It was not run: prepared runtime fixtures are unavailable and `CODEX_WORKER_ISOLATION_VERIFIED` remains false.
 
 **Local acceptance:** Tests demonstrate the business loop and failure behavior. A real Codex run, live workflow integration, and deployed end-to-end acceptance are separate evidence, not inferred from fixture success.
 
