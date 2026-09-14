@@ -17,6 +17,24 @@ jobs:
   ci:
     name: CI
     runs-on: ubuntu-latest
+    env:
+      ROVELLE_TEST_DATABASE_URL: postgresql://rovelle_test:rovelle_test@localhost:5432/rovelle_phase3a?schema=public
+      ROVELLE_TEST_DATABASE_DISPOSABLE: "true"
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: rovelle_phase3a
+          POSTGRES_USER: rovelle_test
+          POSTGRES_PASSWORD: rovelle_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U rovelle_test -d rovelle_phase3a"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
 
     steps:
       - name: Checkout
@@ -30,6 +48,11 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Migrate disposable test database
+        env:
+          DATABASE_URL: ${{ env.ROVELLE_TEST_DATABASE_URL }}
+        run: npx prisma migrate deploy
 
       - name: Lint
         run: npm run lint
