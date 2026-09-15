@@ -5603,11 +5603,9 @@ export class TransactionService {
         message: `${alert.category} budget reached ${alert.usedPercent}%`,
       };
 
-      if (alert.type !== "budget_forecast_overrun") return base;
-
       return {
         ...base,
-        message: alert.telegramText ?? base.message,
+        ...(alert.telegramText ? { message: alert.telegramText } : {}),
         alertType: alert.type,
         budgetId: alert.budgetId,
         ...(alert.alertRecord ? { alertRecord: alert.alertRecord } : {}),
@@ -5765,40 +5763,33 @@ export class TransactionService {
   ): Promise<RiskBudgetFacts> {
     const result = await this.database.query<RiskBudgetFactsRow>(
       `
-        WITH category_budget AS (
-          SELECT b.id, b.category, b.amount, b.parent_budget_id
-          FROM budgets b
-          WHERE b.user_id::text = $1
-            AND (($6::text IS NOT NULL AND b.parent_budget_id::text = $6 AND lower(b.category) = lower($2))
-              OR ($6::text IS NULL AND lower(b.category) = lower($2)))
-            AND COALESCE(b.is_active, true) = true
-          ORDER BY CASE WHEN b.parent_budget_id IS NOT NULL THEN 0 ELSE 1 END
-          LIMIT 1
-        ),
-        parent_budget AS (
-          SELECT p.id, p.category, COALESCE(p.amount, SUM(c.amount)) AS amount
+        WITH parent_budget AS (
+          SELECT p.id, p.category, COALESCE(p.amount, 0) AS amount
           FROM budgets p
-          LEFT JOIN budgets c ON c.parent_budget_id = p.id AND COALESCE(c.is_active, true) = true
           WHERE p.user_id::text = $1
             AND p.parent_budget_id IS NULL
             AND COALESCE(p.is_active, true) = true
             AND (
               ($6::text IS NOT NULL AND p.id::text = $6)
-              OR ($6::text IS NULL AND p.id = COALESCE((SELECT parent_budget_id FROM category_budget), (SELECT id FROM category_budget)))
+              OR (
+                $6::text IS NULL
+                AND (
+                  lower(p.category) = lower($2)
+                  OR EXISTS (
+                    SELECT 1
+                    FROM budgets child
+                    WHERE child.user_id = p.user_id
+                      AND child.parent_budget_id = p.id
+                      AND child.is_active = true
+                      AND lower(child.category) = lower($2)
+                  )
+                )
+              )
             )
-          GROUP BY p.id, p.category, p.amount
-        ),
-        category_spend AS (
-          SELECT COALESCE(SUM(t.amount), 0) AS amount
-          FROM transactions t
-          JOIN category_budget cb ON lower(t.category) = lower(cb.category)
-          WHERE t.user_id::text = $1
-            AND t.id::text <> $3
-            AND t.status = 'confirmed'
-            AND t.transaction_type = 'expense'
-            AND t.transaction_date >= $4::date
-            AND t.transaction_date < $5::date
-            AND (t.pocket_id::text = $6 OR (t.pocket_id IS NULL AND lower(t.category) = lower(cb.category)))
+          ORDER BY
+            CASE WHEN lower(p.category) = lower($2) THEN 0 ELSE 1 END,
+            p.id
+          LIMIT 1
         ),
         parent_categories AS (
           SELECT pb.category FROM parent_budget pb
@@ -5838,10 +5829,10 @@ export class TransactionService {
             AND t.transaction_date < $5::date
         )
         SELECT
-          cb.id AS category_budget_id,
-          cb.category AS category_budget_category,
-          cb.amount AS category_budget_amount,
-          cs.amount AS category_spend_before,
+          NULL::bigint AS category_budget_id,
+          NULL::text AS category_budget_category,
+          NULL::numeric AS category_budget_amount,
+          NULL::numeric AS category_spend_before,
           pb.id AS parent_budget_id,
           pb.category AS parent_budget_category,
           pb.amount AS parent_budget_amount,
@@ -5850,9 +5841,7 @@ export class TransactionService {
           ts.amount AS total_spend_before
         FROM total_budget tb
         CROSS JOIN total_spend ts
-        LEFT JOIN category_budget cb ON true
         LEFT JOIN parent_budget pb ON true
-        LEFT JOIN category_spend cs ON true
         LEFT JOIN parent_spend ps ON true
       `,
       [
@@ -6297,12 +6286,12 @@ export class TransactionService {
     message: string,
     watchdog: TransactionWatchdogResponseDto | undefined,
   ): string {
-    const sections = [
+    const sections = [...new Set([
       ...(watchdog?.notifications ?? [])
         .filter((notification) => notification.message.includes("\n"))
         .map((notification) => notification.message),
       watchdog?.watchdog?.hasAlert ? watchdog.watchdog.message?.text : null,
-    ].filter((section): section is string => Boolean(section));
+    ].filter((section): section is string => Boolean(section)))];
 
     if (sections.length === 0) {
       return message;

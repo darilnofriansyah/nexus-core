@@ -74,7 +74,7 @@ test('weekpart spending uses user-scoped confirmed expense transaction dates', a
   ]);
 });
 
-test('active budgets aggregate child budget amounts and categories', async () => {
+test('active pockets use their own amount while retaining legacy category names', async () => {
   const { calls, repository } = createRepository([
     [
       {
@@ -89,9 +89,10 @@ test('active budgets aggregate child budget amounts and categories', async () =>
   const budgets = await repository.activeBudgets('1', null);
 
   assert.match(calls[0].text, /LEFT JOIN budgets child/);
-  assert.match(calls[0].text, /COALESCE\(b\.amount, SUM\(child\.amount\)\)/);
+  assert.match(calls[0].text, /COALESCE\(b\.amount, 0\) AS amount/);
   assert.match(calls[0].text, /b\.parent_budget_id IS NULL/);
   assert.match(calls[0].text, /ARRAY_AGG\(child\.category/);
+  assert.doesNotMatch(calls[0].text, /SUM\(child\.amount\)/);
   assert.deepEqual(calls[0].values, ['1', null]);
   assert.deepEqual(budgets, [
     {

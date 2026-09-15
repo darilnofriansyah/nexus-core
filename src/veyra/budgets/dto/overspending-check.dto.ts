@@ -2,6 +2,7 @@ export type OverspendingAlertType =
   | "budget_75"
   | "budget_90"
   | "budget_100"
+  | "budget_over_100_daily"
   | "budget_forecast_overrun"
   | "overspend_80"
   | "overspend_100"

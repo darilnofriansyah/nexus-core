@@ -68,7 +68,10 @@ test('pocket status SQL gives explicit ID precedence over a colliding category',
         parent_budget_id: null,
         budget_amount: '1000000',
         spent_amount: '500000',
-        child_breakdown: [],
+        category_breakdown: [
+          { category: 'Food', spent_amount: '250000' },
+          { category: 'Other', spent_amount: '250000' },
+        ],
       },
     ],
   ]);
@@ -82,6 +85,10 @@ test('pocket status SQL gives explicit ID precedence over a colliding category',
   });
 
   assert.equal(row?.budget_id, '42');
+  assert.deepEqual(row?.category_breakdown, [
+    { category: 'Food', spent_amount: '250000' },
+    { category: 'Other', spent_amount: '250000' },
+  ]);
   assert.deepEqual(calls[0].values, [
     '1',
     '42',
@@ -103,25 +110,64 @@ test('pocket status SQL gives explicit ID precedence over a colliding category',
     calls[0].text,
     /t\.pocket_id = pocket\.id\s+AND lower\(t\.category\)/,
   );
-  assert.match(calls[0].text, /t\.pocket_id = child\.parent_budget_id/);
-  assert.match(
-    calls[0].text,
-    /lower\(t\.category\) = lower\(child\.category\)/,
-  );
   assert.match(
     calls[0].text,
     /t\.pocket_id IS NULL AND lower\(t\.category\) IN/,
   );
   assert.match(calls[0].text, /t\.status = 'confirmed'/);
   assert.match(calls[0].text, /t\.transaction_type = 'expense'/);
-  assert.match(calls[0].text, /t\.transaction_date >= \$3::date/);
-  assert.match(calls[0].text, /t\.transaction_date < \$4::date/);
   assert.match(
     calls[0].text,
-    /WHEN \(SELECT budget_amount FROM pocket\) IS NOT NULL/,
+    /t\.transaction_date >= \(\$3::date::timestamp AT TIME ZONE u\.timezone\)/,
   );
-  assert.match(calls[0].text, /SUM\(child_spending\.budget_amount\)/);
+  assert.match(
+    calls[0].text,
+    /t\.transaction_date < \(\$4::date::timestamp AT TIME ZONE u\.timezone\)/,
+  );
+  assert.match(
+    calls[0].text,
+    /COALESCE\(timezone, 'Asia\/Jakarta'\) AS timezone/,
+  );
+  assert.match(calls[0].text, /COALESCE\(b\.amount, 0\) AS budget_amount/);
+  assert.match(calls[0].text, /matched_transactions AS/);
+  assert.match(
+    calls[0].text,
+    /totals AS \(\s*SELECT COALESCE\(SUM\(amount\), 0\) AS spent_amount\s+FROM matched_transactions\s*\)/,
+  );
+  assert.match(
+    calls[0].text,
+    /FROM matched_transactions\s+GROUP BY category/,
+  );
+  assert.match(calls[0].text, /'category', category/);
+  assert.match(calls[0].text, /'spent_amount', spent_amount/);
+  assert.equal(calls[0].text.match(/FROM matched_transactions/g)?.length, 2);
   assert.match(calls[0].text, /COALESCE\(child\.is_active, true\) = true/);
+  assert.doesNotMatch(calls[0].text, /child_spending|child_breakdown/);
+  assert.doesNotMatch(calls[0].text, /SUM\(child\.amount\)/);
+});
+
+test('resolves a legacy category to its active top-level pocket', async () => {
+  const { calls, repository } = createRepository([[{ id: '42' }]]);
+
+  assert.equal(await repository.resolveLegacyPocketId('1', 'Food'), '42');
+  assert.deepEqual(calls[0].values, ['1', 'Food']);
+  assert.match(calls[0].text, /pocket\.user_id = \$1::bigint/);
+  assert.match(calls[0].text, /pocket\.parent_budget_id IS NULL/);
+  assert.match(calls[0].text, /pocket\.is_active = true/);
+  assert.match(calls[0].text, /lower\(pocket\.category\) = lower\(\$2\)/);
+  assert.match(calls[0].text, /child\.parent_budget_id = pocket\.id/);
+  assert.match(calls[0].text, /child\.user_id = pocket\.user_id/);
+  assert.match(calls[0].text, /child\.is_active = true/);
+  assert.match(
+    calls[0].text,
+    /ORDER BY\s+CASE WHEN lower\(pocket\.category\) = lower\(\$2\) THEN 0 ELSE 1 END,\s+pocket\.id/,
+  );
+});
+
+test('returns null when a legacy category has no active pocket', async () => {
+  const { repository } = createRepository();
+
+  assert.equal(await repository.resolveLegacyPocketId('1', 'Food'), null);
 });
 
 test('pocket status SQL uses category compatibility only when ID is omitted', async () => {
@@ -176,8 +222,19 @@ test('pocket overview SQL keeps assigned and null-pocket compatibility isolated'
   );
   assert.match(calls[0].text, /t\.status = 'confirmed'/);
   assert.match(calls[0].text, /t\.transaction_type = 'expense'/);
-  assert.match(calls[0].text, /t\.transaction_date >= \$2::date/);
-  assert.match(calls[0].text, /t\.transaction_date < \$3::date/);
-  assert.match(calls[0].text, /COALESCE\(b\.amount, SUM\(child\.amount\)\)/);
+  assert.match(
+    calls[0].text,
+    /t\.transaction_date >= \(\$2::date::timestamp AT TIME ZONE u\.timezone\)/,
+  );
+  assert.match(
+    calls[0].text,
+    /t\.transaction_date < \(\$3::date::timestamp AT TIME ZONE u\.timezone\)/,
+  );
+  assert.match(
+    calls[0].text,
+    /COALESCE\(timezone, 'Asia\/Jakarta'\) AS timezone/,
+  );
+  assert.match(calls[0].text, /COALESCE\(b\.amount, 0\) AS amount/);
+  assert.doesNotMatch(calls[0].text, /SUM\(child\.amount\)/);
   assert.match(calls[0].text, /child\.is_active = true/);
 });

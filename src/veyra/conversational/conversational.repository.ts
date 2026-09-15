@@ -411,7 +411,7 @@ export class ConversationalRepository {
         SELECT
           b.id,
           b.category,
-          COALESCE(b.amount, SUM(child.amount)) AS amount,
+          COALESCE(b.amount, 0) AS amount,
           ARRAY[b.category] || COALESCE(
             ARRAY_AGG(child.category ORDER BY child.category)
               FILTER (WHERE child.id IS NOT NULL),
@@ -426,7 +426,7 @@ export class ConversationalRepository {
           AND b.parent_budget_id IS NULL
           AND ($2::text IS NULL OR lower(b.category) = lower($2))
         GROUP BY b.id, b.category, b.amount
-        HAVING COALESCE(b.amount, SUM(child.amount)) IS NOT NULL
+        HAVING b.amount IS NOT NULL
         ORDER BY b.category
       `,
       [userId, category],

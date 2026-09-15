@@ -341,10 +341,7 @@ export class DashboardOverviewService {
                 transaction.category.trim().toLocaleLowerCase(),
               )),
         );
-        const limit =
-          budget.amount > 0
-            ? budget.amount
-            : children.reduce((sum, child) => sum + child.amount, 0);
+        const limit = budget.amount > 0 ? budget.amount : 0;
 
         return {
           id: budget.id,

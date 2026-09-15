@@ -2569,12 +2569,20 @@ test("allows income email confirmation without merchant or category", async () =
 });
 
 test("confirmed transaction appends watchdog warning text", async () => {
+  const warningText = "<b>Budget warning.</b>\nTransport is now 91% used.";
+  const alertRecord = {
+    userId: "1",
+    budgetId: "12",
+    alertType: "budget_forecast_overrun" as const,
+    thresholdPercent: 0,
+    periodKey: "2026-06-01",
+  };
   const watchdog = {
     checked: true,
     hasAlert: true,
     alerts: [
       {
-        type: "budget_90" as const,
+        type: "budget_forecast_overrun" as const,
         budgetId: "12",
         category: "Transport",
         usedPercent: 91,
@@ -2582,10 +2590,13 @@ test("confirmed transaction appends watchdog warning text", async () => {
         safeDailySpend: 12857,
         projectedCycleSpend: 1200000,
         projectedOverrun: 200000,
+        telegramText: warningText,
+        miniAppUrl: "https://t.me/veyra/app?startapp=pocket_12",
+        alertRecord,
       },
     ],
     message: {
-      text: "<b>Budget warning.</b>\nTransport is now 91% used.",
+      text: warningText,
       parse_mode: "HTML" as const,
       disable_web_page_preview: true as const,
     },
@@ -2637,10 +2648,26 @@ test("confirmed transaction appends watchdog warning text", async () => {
       type: "budget_alert",
       priority: 2,
       severity: "warning",
-      message: "Transport budget reached 91%",
+      message: warningText,
+      alertType: "budget_forecast_overrun",
+      budgetId: "12",
+      alertRecord,
+      reply_markup: {
+        inline_keyboard: [
+          [
+            {
+              text: "View Transport pocket",
+              url: "https://t.me/veyra/app?startapp=pocket_12",
+            },
+          ],
+        ],
+      },
     },
   ]);
-  assert.match(result.editMessage?.text ?? "", /Budget warning/);
+  assert.equal(
+    (result.editMessage?.text.match(/Budget warning/g) ?? []).length,
+    1,
+  );
   assert.equal(result.editMessage?.parseMode, "HTML");
 });
 
@@ -8753,7 +8780,80 @@ test("forecast notification keeps facts without an unconfigured Mini App link", 
   assert.equal(notification?.reply_markup, undefined);
 });
 
-test("watchdog uses the stored user timezone at a financial-cycle boundary", async () => {
+test("daily over-budget alert carries its pocket card details", async () => {
+  const telegramText =
+    "<b>Budget exceeded</b>\nMonthly Allowance is now 105% used.";
+  const alertRecord = {
+    userId: "1",
+    budgetId: "12",
+    alertType: "budget_over_100_daily" as const,
+    thresholdPercent: 100,
+    periodKey: "2026-08-04",
+  };
+  const budgetService = {
+    evaluateTransaction: async () => ({
+      checked: true,
+      hasAlert: true,
+      alerts: [
+        {
+          type: "budget_over_100_daily" as const,
+          budgetId: "12",
+          category: "Monthly Allowance",
+          usedPercent: 105,
+          remainingAmount: -75000,
+          safeDailySpend: 0,
+          projectedCycleSpend: 0,
+          projectedOverrun: 0,
+          telegramText,
+          miniAppUrl: "https://t.me/veyra/app?startapp=pocket_12",
+          alertRecord,
+        },
+      ],
+      message: null,
+    }),
+  } as unknown as BudgetService;
+  const { service } = createService(
+    [
+      [
+        {
+          ...transaction,
+          id: "101",
+          user_id: "1",
+          transaction_type: "expense",
+          status: "confirmed",
+        },
+      ],
+    ],
+    budgetService,
+  );
+
+  const result = await service.evaluateTransactionWatchdog("101");
+  const notification = result.notifications.find(
+    ({ type }) => type === "budget_alert",
+  );
+
+  assert.deepEqual(notification, {
+    type: "budget_alert",
+    priority: 2,
+    severity: "warning",
+    message: telegramText,
+    alertType: "budget_over_100_daily",
+    budgetId: "12",
+    alertRecord,
+    reply_markup: {
+      inline_keyboard: [
+        [
+          {
+            text: "View Monthly Allowance pocket",
+            url: "https://t.me/veyra/app?startapp=pocket_12",
+          },
+        ],
+      ],
+    },
+  });
+});
+
+test("watchdog uses the stored user timezone for a financial-cycle boundary", async () => {
   const calls: Array<{ text: string; values: unknown[] }> = [];
   const transactionDate = "2026-07-31T17:30:00.000Z";
   const database = {
@@ -8761,7 +8861,7 @@ test("watchdog uses the stored user timezone at a financial-cycle boundary", asy
       calls.push({ text, values });
 
       if (
-        /FROM transactions[\s\S]*WHERE (?:transactions\.)?id::text = \$1/.test(
+        /FROM transactions[\s\S]*WHERE (?:transactions\.|t\.)?id::text = \$1/.test(
           text,
         )
       ) {
@@ -8778,7 +8878,7 @@ test("watchdog uses the stored user timezone at a financial-cycle boundary", asy
               pocket_id: "42",
               transaction_date: transactionDate,
               status: "confirmed",
-              ...(/SELECT timezone FROM telegram_users/.test(text)
+              ...(/u\.timezone/.test(text)
                 ? { timezone: "America/Los_Angeles" }
                 : {}),
             },
@@ -8799,7 +8899,7 @@ test("watchdog uses the stored user timezone at a financial-cycle boundary", asy
               parent_budget_id: null,
               budget_amount: "1500000",
               spent_amount: "1600000",
-              child_breakdown: [],
+              category_breakdown: [],
             },
           ],
         };
@@ -8809,7 +8909,7 @@ test("watchdog uses the stored user timezone at a financial-cycle boundary", asy
         return { rows: [{ exists: values[2] !== "budget_forecast_overrun" }] };
       }
 
-      if (/WITH category_budget AS/.test(text)) {
+      if (/WITH parent_budget AS/.test(text)) {
         return { rows: [] };
       }
 
@@ -8825,21 +8925,19 @@ test("watchdog uses the stored user timezone at a financial-cycle boundary", asy
   const service = new TransactionService(database, budgetService);
 
   const result = await service.evaluateTransactionWatchdog("101");
-  const forecast = result.watchdog?.alerts.find(
-    ({ type }) => type === "budget_forecast_overrun",
-  );
   const statusQuery = calls.find(({ text }) =>
     /WITH matched_user AS[\s\S]*pocket AS/.test(text),
   );
 
-  assert.equal(forecast?.alertRecord?.periodKey, "2026-07-01");
+  assert.equal(result.watchdog?.checked, true);
+  assert.equal(result.watchdog?.hasAlert, false);
   assert.deepEqual(statusQuery?.values.slice(2, 4), [
     "2026-07-01",
     "2026-08-01",
   ]);
 });
 
-test("risk review keeps an assigned top-level pocket without a matching child", async (t) => {
+test("risk review ignores legacy child budget limits for an assigned pocket", async (t) => {
   t.mock.timers.enable({
     apis: ["Date"],
     now: new Date("2026-08-30T12:00:00.000Z"),
@@ -8851,13 +8949,13 @@ test("risk review keeps an assigned top-level pocket without a matching child", 
     amount: "750000",
     merchant: "Uniqlo",
     merchant_normalized: "Uniqlo",
-    category: "Toys",
+    category: "Food",
     transaction_type: "expense",
     transaction_date: "2026-08-30T12:00:00.000Z",
     status: "confirmed",
     pocket_id: "42",
   };
-  const parentOnlyFacts = {
+  const pocketOnlyFacts = {
     category_budget_id: null,
     category_budget_category: null,
     category_budget_amount: null,
@@ -8865,9 +8963,9 @@ test("risk review keeps an assigned top-level pocket without a matching child", 
     parent_budget_id: "42",
     parent_budget_category: "Monthly Transactions",
     parent_budget_amount: "1000000",
-    parent_spend_before: "100000",
+    parent_spend_before: "0",
     total_budget_amount: "1000000",
-    total_spend_before: "100000",
+    total_spend_before: "0",
   };
   const riskReviews = createRiskReviewRepository({
     ...riskReview,
@@ -8878,9 +8976,9 @@ test("risk review keeps an assigned top-level pocket without a matching child", 
     [
       [assignedTransaction],
       [{ cycle_start_day: 1 }],
-      [parentOnlyFacts],
+      [pocketOnlyFacts],
       [{ cycle_start_day: 1 }],
-      [parentOnlyFacts],
+      [pocketOnlyFacts],
       [],
       [{ count: "0" }],
     ],
@@ -8890,12 +8988,13 @@ test("risk review keeps an assigned top-level pocket without a matching child", 
 
   const result = await service.evaluateTransactionWatchdog("101");
   const budgetQueries = calls.filter(({ text }) =>
-    /WITH category_budget AS/.test(text),
+    /WITH parent_budget AS/.test(text),
   );
   const saved = riskReviews.calls.find(
     ({ method }) => method === "saveLargeTransactionEvaluation",
   )?.args[0] as {
     riskMetrics: Record<string, unknown>;
+    riskReasons: Array<{ code: string }>;
     status: string;
   };
 
@@ -8907,16 +9006,25 @@ test("risk review keeps an assigned top-level pocket without a matching child", 
       query.text,
       /t\.pocket_id::text = \$6 OR \(t\.pocket_id IS NULL AND lower\(t\.category\) IN/,
     );
+    assert.match(query.text, /COALESCE\(p\.amount, 0\) AS amount/);
     assert.doesNotMatch(
       query.text,
-      /t\.pocket_id IS NOT NULL[\s\S]*lower\(t\.category\)/,
+      /WITH category_budget AS|category_spend AS|SUM\(c\.amount\)/,
     );
   }
   assert.equal(saved.riskMetrics.parentBudgetId, "42");
+  assert.equal(saved.riskMetrics.parentBudgetAmount, 1000000);
   assert.equal(saved.riskMetrics.categoryBudgetId, null);
+  assert.equal(saved.riskMetrics.categoryBudgetCategory, null);
+  assert.equal(saved.riskMetrics.categoryBudgetAmount, null);
+  assert.equal(saved.riskMetrics.causedCategoryOverspend, false);
+  assert.equal(
+    saved.riskReasons.some(({ code }) => code === "causes_budget_overspend"),
+    false,
+  );
   assert.equal(
     saved.riskMetrics.evaluationFingerprint,
-    "large_transaction_v1|101|750000|Toys|Uniqlo|2026-08-30T12:00:00.000Z|confirmed|expense",
+    "large_transaction_v1|101|750000|Food|Uniqlo|2026-08-30T12:00:00.000Z|confirmed|expense",
   );
   assert.equal(saved.status, "pending");
   assert.deepEqual(

@@ -4,7 +4,7 @@ NestJS API for gradually moving reusable Veyra and Aegis business logic out of n
 
 This app is intentionally small. It is a service layer pilot, not a replacement for existing production workflows.
 
-`/veyra/budgets/status` accepts `{ "userId": "1", "pocketId": "42" }`. Category lookup remains compatible for rows with `pocket_id IS NULL`; n8n still triggers watchdogs and sends Telegram messages.
+`/veyra/budgets/status` accepts `{ "userId": "1", "pocketId": "42" }`. Confirmed legacy expenses with `pocket_id IS NULL` remain compatible during transaction watchdog evaluation; n8n still triggers watchdogs and sends Telegram messages.
 
 `docs/migration/2026-08-20-budget-categories-pockets-backfill.sql` remains unapplied. It assigns only unambiguous historical expense rows; ambiguous rows stay `NULL`, and removing the legacy `pocket_id IS NULL` fallback requires separate approval.
 
@@ -23,7 +23,7 @@ Pocket-aware n8n HTTP bodies (n8n still owns Telegram triggers, callbacks, and s
 ```json
 POST /api/veyra/budgets/status
 { "userId": "1", "pocketId": "42" }
-// { "budget_id":"42", "spent_amount":500000, "child_breakdown":[] }
+// { "budget_id":"42", "spent_amount":500000, "category_breakdown":[] }
 
 POST /api/veyra/budgets/overspending/handle
 { "userId":"1", "pocketId":"42" }
@@ -701,7 +701,7 @@ production executions, so the fixture alone does not authorize cutover.
 
 Looks up one existing budget and calculates current-cycle spending. The cycle uses `telegram_users.cycle_start_day`; spending includes only confirmed expense transactions where `transaction_date >= cycle_start` and `transaction_date < cycle_end`.
 
-Core API reads the production budget amount from `budgets.amount` and returns it as `budget_amount` in the response for n8n compatibility. Inactive budgets are excluded with `COALESCE(is_active, true) = true`. For a parent budget lookup with active children, top-line budget and spending totals are aggregated from the active child budgets. `child_breakdown` contains active child categories only so n8n can render parent details without re-running child budget SQL.
+Core API reads the pocket limit from `budgets.amount` and returns it as `budget_amount`. Inactive pockets are excluded with `COALESCE(is_active, true) = true`. A pocket total and `category_breakdown` both use the same confirmed expenses; legacy child amounts never become a pocket limit.
 
 Direct category request body:
 
@@ -715,12 +715,12 @@ Direct category request body:
 
 `userId` may be used instead of `telegramUserId` when n8n already has the internal `telegram_users.id`. `asOfDate` is optional and defaults to the current date.
 
-Parent category request body:
+Preferred pocket request body:
 
 ```json
 {
   "userId": "example-user-id",
-  "category": "Living",
+  "pocketId": "42",
   "asOfDate": "2026-06-17"
 }
 ```
@@ -736,31 +736,27 @@ Example response:
   "spent_amount": 375000,
   "remaining_amount": 1125000,
   "spent_percent": 25,
-  "child_breakdown": [],
+  "category_breakdown": [],
   "cycle_start": "2026-06-15",
   "cycle_end": "2026-07-15"
 }
 ```
 
-Parent category responses include child details when active children exist:
+Pocket responses include spending by every matching category, without category limits:
 
 ```json
 {
-  "budget_id": "example-parent-budget-id",
-  "category": "Living",
+  "budget_id": "example-pocket-id",
+  "category": "Monthly Allowance",
   "parent_budget_id": null,
   "budget_amount": 5000000,
   "spent_amount": 2250000,
   "remaining_amount": 2750000,
   "spent_percent": 45,
-  "child_breakdown": [
+  "category_breakdown": [
     {
-      "budget_id": "example-child-budget-id",
       "category": "Food",
-      "budget_amount": 2000000,
-      "spent_amount": 1250000,
-      "remaining_amount": 750000,
-      "spent_percent": 62.5
+      "spent_amount": 1250000
     }
   ],
   "cycle_start": "2026-06-01",
@@ -854,11 +850,11 @@ internal user before writing.
 
 ### `POST /api/veyra/budgets/upsert`
 
-Creates or updates one budget using exact-case category matching for the same user. Child budgets are matched by `parent_budget_id` and `category`, matching the production `budgets_parent_budget_category_unique` constraint. Top-level budgets are matched in code by user and category because PostgreSQL unique constraints allow multiple `NULL` parent values. `periodType` defaults to `monthly`; other period types are rejected until the database behavior is reviewed.
+Creates or updates one top-level pocket using exact-case category matching for the same user. `periodType` defaults to `monthly`; other period types are rejected until the database behavior is reviewed.
 
 Core API writes the production `budgets.amount` column. New budget rows are inserted with `is_active = true`.
 
-If `parentCategory` is provided, Core API resolves an exact-case parent budget for the same user or creates it as an active parent row with no amount, then stores its `id` as `parent_budget_id`. If `parentCategory` is omitted, new budgets are created with `parent_budget_id = null`; existing budgets keep their current `parent_budget_id` during amount-only updates.
+`parentCategory` is rejected. New and updated budgets are always top-level pockets (`parent_budget_id = null`).
 
 Example request body:
 
@@ -867,30 +863,6 @@ Example request body:
   "userId": "example-user-id",
   "category": "Food",
   "amount": 1500000,
-  "parentCategory": "Monthly Allowance",
-  "periodType": "monthly"
-}
-```
-
-Single budget request body:
-
-```json
-{
-  "userId": "example-user-id",
-  "category": "Food",
-  "amount": 1500000,
-  "periodType": "monthly"
-}
-```
-
-Child budget request body:
-
-```json
-{
-  "userId": "example-user-id",
-  "category": "Groceries",
-  "amount": 1000000,
-  "parentCategory": "Monthly Allowance",
   "periodType": "monthly"
 }
 ```
@@ -903,8 +875,8 @@ Example response:
   "user_id": "example-user-id",
   "category": "Food",
   "amount": 1500000,
-  "parent_budget_id": "example-parent-budget-id",
-  "parent_category": "Monthly Allowance",
+  "parent_budget_id": null,
+  "parent_category": null,
   "period_type": "monthly",
   "action": "created"
 }
@@ -996,9 +968,9 @@ Incomplete requests return a follow-up and persist a pending payload:
 }
 ```
 
-Supported intents are `budget_status`, `set_budget`, `set_sub_budget`, `delete_budget`, `delete_sub_budget`, `reset`, and `unknown`. `set_budget` requires `category` and `amount`; `set_sub_budget` requires `category`, `parent_category`, and `amount`; `budget_status` requires `category`. Delete intents currently return a not-wired message and reset state because no budget delete service method exists.
+Supported intents are `budget_status`, `set_budget`, `set_sub_budget`, `delete_budget`, `delete_sub_budget`, `reset`, and `unknown`. `set_budget` requires `category` and `amount`; `set_sub_budget` returns pocket-only guidance without writing a child row; `budget_status` requires `category`. Delete intents currently return a not-wired message and reset state because no budget delete service method exists.
 
-`budget_overview` returns all active budgets for the user. It includes parent budgets with active children grouped underneath, top-level budgets without children, and a short empty-state message when no active budgets exist. Each line shows used amount / total budget. Large overviews are split into `data.messages` chunks around 3500 characters so n8n can send each item as a separate Telegram bubble; `message.text` and `data.message` contain the first chunk for existing senders.
+`budget_overview` returns active top-level pockets only and a short empty-state message when no active pockets exist. Each line shows used amount / pocket limit. Large overviews are split into `data.messages` chunks around 3500 characters so n8n can send each item as a separate Telegram bubble; `message.text` and `data.message` contain the first chunk for existing senders.
 
 Overview request body:
 
@@ -1024,16 +996,16 @@ Overview response shape:
     "payload": {}
   },
   "message": {
-    "text": "📊 Budget Overview\n\nMonthly Allowance - Rp2.000.000 / Rp4.000.000\n├ Food — Rp1.000.000 / Rp2.000.000\n└ Transport — Rp1.000.000 / Rp2.000.000",
+    "text": "📊 Budget Overview\n\nMonthly Allowance - Rp2.000.000 / Rp4.000.000",
     "parse_mode": "HTML",
     "disable_web_page_preview": true
   },
   "data": {
     "intent": "budget_overview",
     "messages": [
-      "📊 Budget Overview\n\nMonthly Allowance - Rp2.000.000 / Rp4.000.000\n├ Food — Rp1.000.000 / Rp2.000.000\n└ Transport — Rp1.000.000 / Rp2.000.000"
+      "📊 Budget Overview\n\nMonthly Allowance - Rp2.000.000 / Rp4.000.000"
     ],
-    "message": "📊 Budget Overview\n\nMonthly Allowance - Rp2.000.000 / Rp4.000.000\n├ Food — Rp1.000.000 / Rp2.000.000\n└ Transport — Rp1.000.000 / Rp2.000.000"
+    "message": "📊 Budget Overview\n\nMonthly Allowance - Rp2.000.000 / Rp4.000.000"
   }
 }
 ```
@@ -1044,12 +1016,12 @@ Deprecated. Use `POST /api/veyra/budgets/overspending/handle` plus `POST /api/ve
 
 ### `POST /api/veyra/budgets/overspending/handle`
 
-Calculates direct-category current-cycle spending and classifies whether an overspending alert should be sent. When `transactionId` is provided, Core API fetches the transaction, skips pending/rejected/non-expense rows, inserts new `budget_alerts` rows for dedupe, and returns Telegram-ready warning text for n8n to send. Category-only calls remain available for manual/debug checks.
+Calculates pocket current-cycle spending and classifies whether an overspending alert should be sent. When `transactionId` is provided, Core API fetches the transaction, skips pending/rejected/non-expense rows, and returns Telegram-ready warning data for n8n to send. It does not insert `budget_alerts`; n8n records the returned `alertRecord` only after Telegram delivery succeeds. Category-only calls remain available for manual/debug checks.
 
 Alert thresholds:
 
 ```txt
-spent_percent >= 100 -> budget_100
+spent_percent >= 100 -> budget_over_100_daily (transaction path, once per local spending day)
 spent_percent >= 90  -> budget_90
 spent_percent >= 75  -> budget_75
 projected overrun    -> budget_forecast_overrun
@@ -1087,7 +1059,14 @@ Example `alert_required` response:
     "category": "Food",
     "alertType": "budget_75",
     "spentPercent": 85.4,
-    "remainingAmount": 146000
+    "remainingAmount": 146000,
+    "alertRecord": {
+      "userId": "1",
+      "budgetId": "12",
+      "alertType": "budget_75",
+      "thresholdPercent": 75,
+      "periodKey": "2026-06-25"
+    }
   }
 }
 ```
@@ -1128,13 +1107,13 @@ Example `already_alerted` response:
     "userId": "1",
     "budgetId": "12",
     "category": "Food",
-    "alertType": "overspend_80",
+    "alertType": "budget_75",
     "periodKey": "2026-06-25"
   }
 }
 ```
 
-`budget_alerts` dedupe uses `budget_id`, `alert_type`, and full cycle-start `period_key` (`YYYY-MM-DD`); Core API checks the budget's `user_id` through `budgets`. n8n should send `message` through Telegram Reliable Sender when `status` is `alert_required`; it no longer needs to call this endpoint after every transaction mutation.
+`budget_alerts` dedupe uses `budget_id`, `alert_type`, and `period_key` (`YYYY-MM-DD`); daily alerts use the local spending day and other alerts use cycle start. Core API checks the budget's `user_id` through `budgets`. n8n should send `message` through Telegram Reliable Sender when `status` is `alert_required`, then post the returned `alertRecord` to `/overspending/record` only after delivery succeeds.
 
 ### `POST /api/veyra/budgets/overspending/record`
 
@@ -1146,8 +1125,8 @@ Example request body:
 {
   "userId": 1,
   "budgetId": 12,
-  "alertType": "overspend_80",
-  "thresholdPercent": 80,
+  "alertType": "budget_75",
+  "thresholdPercent": 75,
   "periodKey": "2026-06-25"
 }
 ```
@@ -1161,8 +1140,8 @@ Example response:
   "data": {
     "userId": "1",
     "budgetId": "12",
-    "alertType": "overspend_80",
-    "thresholdPercent": 80,
+    "alertType": "budget_75",
+    "thresholdPercent": 75,
     "periodKey": "2026-06-25"
   }
 }
@@ -2549,7 +2528,7 @@ Unsupported for now returns `status: "unsupported_intent"`: `subscription_summar
 
 `renderInsight: true` is opt-in cutover. For supported non-weekly analytics, Core returns `status: "ok"`, rendered `message.text`, and `insight_payload: null`; n8n sends `message` directly through Telegram Reliable Sender. If Core rendering fails, response still returns the deterministic message with `status: "ok"`. Without this field, existing `needs_insight` and `insight_payload` behavior remains unchanged. Keep Telegram trigger, Master Intent Classifier LLM, reliable Telegram sender, and workflow orchestration in n8n.
 
-`burn_rate_forecast` is deterministic and returns a Telegram-ready HTML message from Core API. It counts only confirmed expense transactions in the user's current cycle from `telegram_users.cycle_start_day`; pending, rejected, deleted, income, transfer, and reversal rows are ignored by the existing analytics queries. When `category` is null, Core API compares total spending against the sum of active top-level budgets; parent budgets use active child budget amounts and child category spending. n8n should classify the intent, pass any explicit `category`, then send `message` directly.
+`burn_rate_forecast` is deterministic and returns a Telegram-ready HTML message from Core API. It counts only confirmed expense transactions in the user's current cycle from `telegram_users.cycle_start_day`; pending, rejected, deleted, income, transfer, and reversal rows are ignored by the existing analytics queries. When `category` is null, Core API compares total spending against the sum of active top-level pocket amounts. Legacy child names may match historical unassigned transactions, but their amounts never become a pocket limit. n8n should classify the intent, pass any explicit category, then send `message` directly.
 
 Scheduled spending reviews use the same endpoint. With `renderInsight: true`, Core adds the weekly insight and verdict using `gpt-5.4`; otherwise it preserves legacy `needs_insight` handoff. n8n keeps the Schedule Trigger, Telegram Reliable Sender, credentials, and workflow orchestration. Core API replaces the n8n SQL, deterministic text-formatting, and optional weekly AI nodes.
 
@@ -2843,20 +2822,12 @@ URL: http://core-api:3001/api/veyra/budgets/status
 Send Body: JSON
 Body:
 {
-  "telegramUserId": "={{$json.telegram_user_id}}",
-  "category": "={{$json.parsed.category}}"
-}
-```
-
-For parent budget lookup, send the parent category in the same field:
-
-```txt
-Body:
-{
   "userId": "={{$json.user_id}}",
-  "category": "={{$json.parsed.parentCategory || $json.parsed.category}}"
+  "pocketId": "={{$json.pocket_id}}"
 }
 ```
+
+For legacy unassigned expenses, call the transaction-ID watchdog path; Core resolves the active pocket from the legacy category before evaluating it.
 
 Map downstream n8n fields from the response:
 
@@ -2865,7 +2836,7 @@ Budget amount = {{$json.budget_amount}}
 Spent amount = {{$json.spent_amount}}
 Remaining amount = {{$json.remaining_amount}}
 Spent percent = {{$json.spent_percent}}
-Child breakdown = {{$json.child_breakdown}}
+Category breakdown = {{$json.category_breakdown}}
 Cycle start = {{$json.cycle_start}}
 Cycle end = {{$json.cycle_end}}
 ```
@@ -2901,18 +2872,7 @@ Body:
 }
 ```
 
-For child budget creation, include the exact parent category parsed by the existing budget agent. Core API creates the parent row when it does not exist:
-
-```txt
-Body:
-{
-  "userId": "={{$json.user_id}}",
-  "category": "={{$json.parsed.category}}",
-  "amount": "={{$json.parsed.amount}}",
-  "parentCategory": "={{$json.parsed.parentCategory}}",
-  "periodType": "monthly"
-}
-```
+Sub-budget requests are rejected. Keep category parsing for transaction classification, but set the amount on the target pocket without `parentCategory`.
 
 Map downstream n8n fields from the response:
 
@@ -3352,7 +3312,7 @@ Overspending record test:
 ```bash
 curl -X POST http://localhost:3001/api/veyra/budgets/overspending/record \
   -H 'content-type: application/json' \
-  -d '{"userId":"example-user-id","budgetId":"example-budget-id","alertType":"overspend_80","periodKey":"2026-06-25"}'
+  -d '{"userId":"example-user-id","budgetId":"example-budget-id","alertType":"budget_75","thresholdPercent":75,"periodKey":"2026-06-25"}'
 ```
 
 Transaction normalize test:

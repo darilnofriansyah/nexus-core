@@ -316,7 +316,7 @@ test("uses zero credit-card summary when cycle has no valid summary", async () =
   });
 });
 
-test("maps cashflow, daily spending, categories, recent transactions, and parent budgets", async () => {
+test("maps cashflow, categories, and pockets using only the pocket amount", async () => {
   const { repository, service } = createService();
   repository.transactions = [
     transaction("4", "2026-07-24", 25000, "expense", "Food", "TUKU"),
@@ -381,9 +381,9 @@ test("maps cashflow, daily spending, categories, recent transactions, and parent
   assert.deepEqual(result.current.budgets, [
     {
       category: "Living",
-      limit: 3500000,
+      limit: 0,
       spent: 1750000,
-      percent: 50,
+      percent: 0,
       status: "on-track",
     },
     {
@@ -496,7 +496,7 @@ test("applies budget status thresholds and returns four highest priorities", asy
   );
 });
 
-test("uses a positive parent amount before child budget totals", async () => {
+test("uses the pocket amount without adding child budget totals", async () => {
   const { repository, service } = createService();
   repository.budgets = [
     { id: "42", parentId: null, category: "Food", amount: 2_000_000 },
@@ -599,6 +599,7 @@ test("explicit pocket assignment wins before legacy category fallback", async ()
   repository.transactions = [
     transaction("1", "2026-08-20", 100, "expense", "Dining", "TUKU", "42"),
     transaction("2", "2026-08-20", 50, "expense", "Dining", "Legacy", null),
+    transaction("3", "2026-08-20", 25, "expense", "Transport", "MRT", "42"),
   ];
 
   const result = await service.getOverview({
@@ -609,10 +610,14 @@ test("explicit pocket assignment wins before legacy category fallback", async ()
   assert.deepEqual(
     result.current.budgets.map(({ category, spent }) => ({ category, spent })),
     [
-      { category: "Food Pocket", spent: 150 },
+      { category: "Food Pocket", spent: 175 },
       { category: "Travel Pocket", spent: 50 },
     ],
   );
+  assert.deepEqual(result.current.categories, [
+    { category: "Dining", amount: 150, percent: 86, transactionCount: 2 },
+    { category: "Transport", amount: 25, percent: 14, transactionCount: 1 },
+  ]);
 });
 
 test("returns complete zero and empty sections for a valid inactive user", async () => {

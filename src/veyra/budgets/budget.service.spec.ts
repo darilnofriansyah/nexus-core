@@ -43,6 +43,7 @@ function createService(input: unknown[][] | ServiceOptions = []) {
     ensureDefaultPocket: async () => {},
     findPocket: async () => null,
     findDefaultPocket: async () => null,
+    resolveLegacyPocketId: async () => "12",
     listPockets: async () => [],
     renamePocket: async () => null,
     setDefaultPocket: async () => null,
@@ -209,6 +210,7 @@ test("missing default returns awaiting_pocket with active choices", async () => 
     },
     repository: {
       findDefaultPocket: async () => null,
+    resolveLegacyPocketId: async () => "12",
       listPockets: async () => pockets,
     },
   });
@@ -306,6 +308,7 @@ test("maps budget status amounts and percentage", () => {
       parent_budget_id: null,
       budget_amount: "1500000",
       spent_amount: "375000",
+      category_breakdown: [],
     },
     {
       cycle_start: "2026-06-15",
@@ -321,7 +324,7 @@ test("maps budget status amounts and percentage", () => {
     spent_amount: 375000,
     remaining_amount: 1125000,
     spent_percent: 25,
-    child_breakdown: [],
+    category_breakdown: [],
     cycle_start: "2026-06-15",
     cycle_end: "2026-07-15",
   });
@@ -332,10 +335,8 @@ test("looks up user cycle then maps repository pocket status", async () => {
     [{ cycle_start_day: 15 }],
     [
       {
-        budget_id: "budget-1",
-        category: "Food",
-        parent_budget_id: "parent-1",
-        budget_amount: "1000000",
+        budget_id: "budget-1", category: "Food",
+        parent_budget_id: null, budget_amount: "1000000",
         spent_amount: "250000",
       },
     ],
@@ -360,12 +361,12 @@ test("looks up user cycle then maps repository pocket status", async () => {
   assert.deepEqual(status, {
     budget_id: "budget-1",
     category: "Food",
-    parent_budget_id: "parent-1",
+    parent_budget_id: null,
     budget_amount: 1000000,
     spent_amount: 250000,
     remaining_amount: 750000,
     spent_percent: 25,
-    child_breakdown: [],
+    category_breakdown: [],
     cycle_start: "2026-06-15",
     cycle_end: "2026-07-15",
   });
@@ -376,12 +377,10 @@ test("explicit pocket ID wins when category text collides with another pocket", 
     [{ cycle_start_day: 1 }],
     [
       {
-        budget_id: "42",
         category: "42",
         parent_budget_id: null,
-        budget_amount: "1000000",
         spent_amount: "500000",
-        child_breakdown: [],
+        category_breakdown: [],
       },
     ],
   ]);
@@ -404,7 +403,7 @@ test("explicit pocket ID wins when category text collides with another pocket", 
   ]);
 });
 
-test("returns direct category status without child breakdown", async () => {
+test("returns pocket status with an empty category breakdown", async () => {
   const { service } = createService([
     [{ cycle_start_day: 1 }],
     [
@@ -414,7 +413,7 @@ test("returns direct category status without child breakdown", async () => {
         parent_budget_id: null,
         budget_amount: "2000000",
         spent_amount: "500000",
-        child_breakdown: [],
+        category_breakdown: [],
       },
     ],
   ]);
@@ -433,33 +432,27 @@ test("returns direct category status without child breakdown", async () => {
     spent_amount: 500000,
     remaining_amount: 1500000,
     spent_percent: 25,
-    child_breakdown: [],
+    category_breakdown: [],
     cycle_start: "2026-06-01",
     cycle_end: "2026-07-01",
   });
 });
 
-test("returns parent budget status with child aggregate totals and breakdown", async () => {
+test("returns pocket status with all category spending", async () => {
   const { service } = createService([
     [{ cycle_start_day: 1 }],
     [
       {
-        budget_id: "budget-living",
-        category: "Living",
-        parent_budget_id: null,
-        budget_amount: "3000000",
+        budget_id: "budget-living", category: "Living",
+        parent_budget_id: null, budget_amount: "3000000",
         spent_amount: "1500000",
-        child_breakdown: [
+        category_breakdown: [
           {
-            budget_id: "budget-food",
             category: "Food",
-            budget_amount: "2000000",
             spent_amount: "1250000",
           },
           {
-            budget_id: "budget-transport",
             category: "Transport",
-            budget_amount: "1000000",
             spent_amount: "250000",
           },
         ],
@@ -481,22 +474,14 @@ test("returns parent budget status with child aggregate totals and breakdown", a
     spent_amount: 1500000,
     remaining_amount: 1500000,
     spent_percent: 50,
-    child_breakdown: [
+    category_breakdown: [
       {
-        budget_id: "budget-food",
         category: "Food",
-        budget_amount: 2000000,
         spent_amount: 1250000,
-        remaining_amount: 750000,
-        spent_percent: 62.5,
       },
       {
-        budget_id: "budget-transport",
         category: "Transport",
-        budget_amount: 1000000,
         spent_amount: 250000,
-        remaining_amount: 750000,
-        spent_percent: 25,
       },
     ],
     cycle_start: "2026-06-01",
@@ -541,7 +526,7 @@ test("uses custom cycle day for budget status lookup", async () => {
         parent_budget_id: null,
         budget_amount: "1000000",
         spent_amount: "100000",
-        child_breakdown: "[]",
+        category_breakdown: "[]",
       },
     ],
   ]);
@@ -861,15 +846,13 @@ test("creates a budget without parent", async () => {
     "user-1",
     "Food",
     1500000,
-    null,
     "monthly",
-    false,
   ]);
   assert.doesNotMatch(calls[0].text, /ON CONFLICT/);
   assert.match(calls[0].text, /WITH existing_budget AS/);
   assert.match(
     calls[0].text,
-    /SELECT \$1::bigint, \$2, \$3, \$4::bigint, \$5, true/,
+    /SELECT \$1::bigint, \$2, \$3, NULL, \$4, true/,
   );
   assert.match(calls[0].text, /\bamount,\s+parent_budget_id,/);
   assert.match(calls[0].text, /changed_budget\.amount/);
@@ -886,92 +869,9 @@ test("creates a budget without parent", async () => {
   });
 });
 
-test("creates a child budget with parent", async () => {
-  const { calls, service } = createService([
-    [{ id: "parent-1", category: "Monthly Allowance", inserted: false }],
-    [
-      {
-        budget_id: "budget-2",
-        user_id: "user-1",
-        category: "Food",
-        amount: "1000000",
-        parent_budget_id: "parent-1",
-        parent_category: "Monthly Allowance",
-        period_type: "monthly",
-        inserted: true,
-      },
-    ],
-  ]);
 
-  const result = await service.upsertBudget({
-    userId: "user-1",
-    category: "Food",
-    amount: 1000000,
-    parentCategory: "Monthly Allowance",
-  });
 
-  assert.equal(calls.length, 2);
-  assert.deepEqual(calls[0].values, ["user-1", "Monthly Allowance", "monthly"]);
-  assert.match(calls[0].text, /AND category = \$2/);
-  assert.match(
-    calls[0].text,
-    /WHERE NOT EXISTS \(SELECT 1 FROM existing_parent\)/,
-  );
-  assert.deepEqual(calls[1].values, [
-    "user-1",
-    "Food",
-    1000000,
-    "parent-1",
-    "monthly",
-    true,
-  ]);
-  assert.match(calls[1].text, /parent_budget_id::text = \$4/);
-  assert.doesNotMatch(calls[1].text, /ON CONFLICT/);
-  assert.equal(result.parent_budget_id, "parent-1");
-  assert.equal(result.parent_category, "Monthly Allowance");
-  assert.equal(result.action, "created");
-});
 
-test("creates a missing parent budget before child budget upsert", async () => {
-  const { calls, service } = createService([
-    [{ id: "parent-new", category: "Monthly Allowance", inserted: true }],
-    [
-      {
-        budget_id: "budget-child",
-        user_id: "user-1",
-        category: "Food",
-        amount: "1000000",
-        parent_budget_id: "parent-new",
-        parent_category: "Monthly Allowance",
-        period_type: "monthly",
-        inserted: true,
-      },
-    ],
-  ]);
-
-  const result = await service.upsertBudget({
-    userId: "user-1",
-    category: "Food",
-    amount: 1000000,
-    parentCategory: "Monthly Allowance",
-  });
-
-  assert.equal(calls.length, 2);
-  assert.deepEqual(calls[0].values, ["user-1", "Monthly Allowance", "monthly"]);
-  assert.match(calls[0].text, /INSERT INTO budgets/);
-  assert.match(calls[0].text, /SELECT \$1::bigint, \$2, NULL, NULL, \$3, true/);
-  assert.deepEqual(calls[1].values, [
-    "user-1",
-    "Food",
-    1000000,
-    "parent-new",
-    "monthly",
-    true,
-  ]);
-  assert.equal(result.parent_budget_id, "parent-new");
-  assert.equal(result.parent_category, "Monthly Allowance");
-  assert.equal(result.action, "created");
-});
 
 test("updates an existing budget", async () => {
   const { service } = createService([
@@ -1031,36 +931,15 @@ test("updates amount using the production budget amount column", async () => {
   assert.equal(result.amount, 1750000);
 });
 
-test("preserves parent_budget_id when parentCategory is missing", async () => {
-  const { calls, service } = createService([
-    [
-      {
-        budget_id: "budget-2",
-        user_id: "user-1",
-        category: "Food",
-        amount: "1250000",
-        parent_budget_id: "parent-1",
-        parent_category: "Monthly Allowance",
-        period_type: "monthly",
-        inserted: false,
-      },
-    ],
-  ]);
-
-  const result = await service.upsertBudget({
-    userId: "user-1",
-    category: "Food",
-    amount: 1250000,
-  });
-
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].values[3], null);
-  assert.equal(calls[0].values[5], false);
-  assert.match(calls[0].text, /ELSE budgets\.parent_budget_id/);
-  assert.doesNotMatch(calls[0].text, /ON CONFLICT/);
-  assert.equal(result.parent_budget_id, "parent-1");
-  assert.equal(result.parent_category, "Monthly Allowance");
-  assert.equal(result.action, "updated");
+test("budget updates select only pockets even when a legacy child has the same name", async () => {
+  const { calls, service } = createService([[{
+    budget_id: "42", user_id: "1", category: "Food", amount: "1250000",
+    parent_budget_id: null, parent_category: null, period_type: "monthly", inserted: false,
+  }]]);
+  const result = await service.upsertBudget({ userId: "1", category: "Food", amount: 1250000 });
+  assert.match(calls[0].text, /AND parent_budget_id IS NULL/);
+  assert.deepEqual(calls[0].values, ["1", "Food", 1250000, "monthly"]);
+  assert.equal(result.parent_budget_id, null);
 });
 
 test("rejects invalid budget amount", async () => {
@@ -1077,34 +956,7 @@ test("rejects invalid budget amount", async () => {
   );
 });
 
-test("uses case-sensitive parent category matching", async () => {
-  const { calls, service } = createService([
-    [{ id: "parent-new", category: "monthly allowance", inserted: true }],
-    [
-      {
-        budget_id: "budget-child",
-        user_id: "user-1",
-        category: "Food",
-        amount: "1000000",
-        parent_budget_id: "parent-new",
-        parent_category: "monthly allowance",
-        period_type: "monthly",
-        inserted: true,
-      },
-    ],
-  ]);
 
-  const result = await service.upsertBudget({
-    userId: "user-1",
-    category: "Food",
-    amount: 1000000,
-    parentCategory: "monthly allowance",
-  });
-
-  assert.match(calls[0].text, /AND category = \$2/);
-  assert.doesNotMatch(calls[0].text, /lower\(category\) = lower\(\$2\)/);
-  assert.equal(result.parent_category, "monthly allowance");
-});
 
 test("budget handle complete status resets state and returns status message", async () => {
   const { service } = createService([
@@ -1116,11 +968,9 @@ test("budget handle complete status resets state and returns status message", as
         parent_budget_id: null,
         budget_amount: "1000000",
         spent_amount: "250000",
-        child_breakdown: [
+        category_breakdown: [
           {
-            budget_id: "budget-snacks",
             category: "Snacks",
-            budget_amount: "200000",
             spent_amount: "50000",
           },
         ],
@@ -1154,7 +1004,7 @@ test("budget handle complete status resets state and returns status message", as
   assert.deepEqual(result.data.intent, "budget_status");
 });
 
-test("budget overview returns all active budgets with parent child grouping", async () => {
+test("budget overview lists only pocket limits and omits legacy children", async () => {
   const { calls, service } = createService([
     [{ cycle_start_day: 15 }],
     [
@@ -1245,13 +1095,10 @@ test("budget overview returns all active budgets with parent child grouping", as
     result.message.text,
     /Monthly Allowance - Rp2\.000\.000 \/ Rp4\.000\.000/,
   );
-  assert.match(result.message.text, /├ Food — Rp1\.000\.000 \/ Rp2\.000\.000/);
-  assert.match(
-    result.message.text,
-    /└ Transport — Rp1\.000\.000 \/ Rp2\.000\.000/,
-  );
+  assert.doesNotMatch(result.message.text, /├ Food — Rp1\.000\.000 \/ Rp2\.000\.000/);
+  assert.doesNotMatch(result.message.text, /Transport — Rp1\.000\.000 \/ Rp2\.000\.000/);
   assert.match(result.message.text, /Subscription - Rp37\.200 \/ Rp37\.200/);
-  assert.match(result.message.text, /└ Netflix — Rp37\.200 \/ Rp37\.200/);
+  assert.doesNotMatch(result.message.text, /└ Netflix — Rp37\.200 \/ Rp37\.200/);
   assert.match(result.message.text, /Health - Rp125\.000 \/ Rp500\.000/);
 });
 
@@ -1395,9 +1242,7 @@ test("budget handle follow-up amount merges pending state and calls upsert", asy
     "1",
     "Food",
     1000000,
-    null,
     "monthly",
-    false,
   ]);
   assert.equal(state.calls[0].method, "resetState");
   assert.equal(result.state.nextState, "idle");
@@ -1454,9 +1299,7 @@ test("budget handle parses a missing LLM result and merges the pending state", a
     "1",
     "Food",
     1000000,
-    null,
     "monthly",
-    false,
   ]);
   assert.equal(result.data.intent, "set_budget");
   assert.equal(state.calls[0].method, "resetState");
@@ -1516,82 +1359,26 @@ test("budget handle requires text when its LLM result is absent", async () => {
   assert.deepEqual(state.calls, []);
 });
 
-test("budget handle set sub budget without parent asks parent question", async () => {
-  const { service } = createService();
+test("budget handle set sub budget without parent explains pocket-only limits", async () => {
+  const { calls, service } = createService();
   const state = createStateStore();
-
-  const result = await service.handleBudgetRequest(
-    {
-      userId: 1,
-      text: "set Transport under parent",
-      statePayload: {},
-      llmResult: {
-        intent: "set_sub_budget",
-        category: "Transport",
-        amount: 500000,
-      },
-    },
-    state.store,
-  );
-
-  assert.equal(result.state.nextState, "budget_conversation_state");
-  assert.equal(
-    result.message.text,
-    "Under which parent budget should Transport sit?",
-  );
-  assert.deepEqual(result.data, {
-    intent: "set_sub_budget",
-    category: "Transport",
-    parent_category: null,
-    missing_field: "parent_category",
-  });
-  assert.equal(state.calls[0].method, "upsertState");
+  const result = await service.handleBudgetRequest({
+    userId: "1", llmResult: { intent: "set_sub_budget", category: "Food", amount: 1000000,  },
+  }, state.store);
+  assert.equal(result.state.nextState, "idle");
+  assert.match(result.message.text, /Set the budget on the pocket itself/);
+  assert.equal(calls.length, 0);
 });
 
-test("budget handle complete set sub budget calls upsert with parent category", async () => {
-  const { calls, service } = createService([
-    [{ id: "parent-1", category: "Living", inserted: false }],
-    [
-      {
-        budget_id: "budget-transport",
-        user_id: "1",
-        category: "Transport",
-        amount: "500000",
-        parent_budget_id: "parent-1",
-        parent_category: "Living",
-        period_type: "monthly",
-        inserted: true,
-      },
-    ],
-  ]);
+test("budget handle complete set sub budget does not create child rows", async () => {
+  const { calls, service } = createService();
   const state = createStateStore();
-
-  const result = await service.handleBudgetRequest(
-    {
-      userId: 1,
-      statePayload: {},
-      llmResult: {
-        intent: "set_sub_budget",
-        category: "Transport",
-        parent_category: "Living",
-        amount: 500000,
-      },
-    },
-    state.store,
-  );
-
-  assert.deepEqual(calls[0].values, ["1", "Living", "monthly"]);
-  assert.deepEqual(calls[1].values, [
-    "1",
-    "Transport",
-    500000,
-    "parent-1",
-    "monthly",
-    true,
-  ]);
+  const result = await service.handleBudgetRequest({
+    userId: "1", llmResult: { intent: "set_sub_budget", category: "Food", amount: 1000000, parent_category: "Living", },
+  }, state.store);
   assert.equal(result.state.nextState, "idle");
-  assert.match(result.message.text, /Parent: Living/);
-  assert.equal(result.data.intent, "set_sub_budget");
+  assert.match(result.message.text, /Set the budget on the pocket itself/);
+  assert.equal(calls.length, 0);
 });
 
 test("budget handle reset and cancel set idle", async () => {
@@ -1677,7 +1464,7 @@ test("budget handle unknown intent resets state with short clarification", async
   assert.deepEqual(result.data, { intent: "unknown" });
 });
 
-test("does not alert below 80 percent spending", async () => {
+test("does not alert below 75 percent spending", async () => {
   const { calls, service } = createService([
     [{ cycle_start_day: 15 }],
     [
@@ -1686,7 +1473,7 @@ test("does not alert below 80 percent spending", async () => {
         category: "Food",
         parent_budget_id: null,
         budget_amount: "1000000",
-        spent_amount: "790000",
+        spent_amount: "740000",
       },
     ],
   ]);
@@ -1703,14 +1490,14 @@ test("does not alert below 80 percent spending", async () => {
   assert.equal(result.alertType, null);
   assert.equal(result.telegramHtml, null);
   assert.equal(result.alertRecord, null);
-  assert.equal(result.spentPercent, 79);
+  assert.equal(result.spentPercent, 74);
   assert.equal(
     result.periodKey,
     service.periodKeyFromCycleStart(cycle.cycle_start),
   );
 });
 
-test("does not alert at 79.9 percent spending", async () => {
+test("does not alert at 74.9 percent spending", async () => {
   const { service } = createService([
     [{ cycle_start_day: 15 }],
     [
@@ -1719,7 +1506,7 @@ test("does not alert at 79.9 percent spending", async () => {
         category: "Food",
         parent_budget_id: null,
         budget_amount: "1000000",
-        spent_amount: "799000",
+        spent_amount: "749000",
       },
     ],
   ]);
@@ -1731,7 +1518,7 @@ test("does not alert at 79.9 percent spending", async () => {
 
   assert.equal(result.shouldAlert, false);
   assert.equal(result.alertType, null);
-  assert.equal(result.spentPercent, 79.9);
+  assert.equal(result.spentPercent, 74.9);
 });
 
 test("alerts at 80 percent spending", async () => {
@@ -1758,23 +1545,20 @@ test("alerts at 80 percent spending", async () => {
 
   assert.equal(calls.length, 3);
   assert.doesNotMatch(calls[1].text, /budget_scope/);
-  assert.match(calls[1].text, /JOIN selected_budget b ON t\.pocket_id IS NULL/);
-  assert.doesNotMatch(
-    calls[1].text,
-    /t\.pocket_id = b\.(?:id|parent_budget_id)/,
-  );
+  assert.equal(calls[1].text, "findPocketStatus");
+
   assert.deepEqual(calls[2].values, [
     "user-1",
     "budget-1",
-    "overspend_80",
+    "budget_75",
     periodKey,
   ]);
   assert.equal(result.shouldAlert, true);
   assert.equal(result.alreadyAlerted, false);
-  assert.equal(result.alertType, "overspend_80");
+  assert.equal(result.alertType, "budget_75");
   assert.deepEqual(result.alertRecord, {
     budgetId: "budget-1",
-    alertType: "overspend_80",
+    alertType: "budget_75",
     periodKey,
   });
   assert.match(result.telegramHtml ?? "", /<b>Budget warning<\/b>/);
@@ -1791,7 +1575,7 @@ test("overspending accepts pocketId and uses pocket-first status", async () => {
         parent_budget_id: null,
         budget_amount: "1000000",
         spent_amount: "100000",
-        child_breakdown: [],
+        category_breakdown: [],
       },
     ],
   ]);
@@ -1827,7 +1611,7 @@ test("alerts at 100 percent spending", async () => {
   });
 
   assert.equal(result.shouldAlert, true);
-  assert.equal(result.alertType, "overspend_100");
+  assert.equal(result.alertType, "budget_100");
   assert.equal(result.spentPercent, 100);
 });
 
@@ -1852,7 +1636,7 @@ test("alerts at 120 percent spending", async () => {
   });
 
   assert.equal(result.shouldAlert, true);
-  assert.equal(result.alertType, "overspend_120");
+  assert.equal(result.alertType, "budget_100");
   assert.equal(result.remainingAmount, -200000);
 });
 
@@ -1904,11 +1688,11 @@ test("does not alert again when duplicate budget alert exists", async () => {
   assert.deepEqual(result, {
     shouldAlert: false,
     alreadyAlerted: true,
-    alertType: "overspend_80",
+    alertType: "budget_75",
     telegramHtml: null,
     alertRecord: {
       budgetId: "budget-1",
-      alertType: "overspend_80",
+      alertType: "budget_75",
       periodKey,
     },
     budgetId: "budget-1",
@@ -1958,7 +1742,7 @@ test("overspending handle returns no_alert without checking alert records below 
   });
 
   assert.equal(calls.length, 2);
-  assert.deepEqual(calls[1].values, ["1", "Food", "2026-06-25", "2026-07-25"]);
+  assert.deepEqual(calls[1].values, ["1", null, "2026-06-25", "2026-07-25", "Food"]);
   assert.deepEqual(result, {
     ok: true,
     status: "no_alert",
@@ -1980,79 +1764,7 @@ test("overspending handle returns no_alert without checking alert records below 
   });
 });
 
-test("overspending handle records threshold alerts while returning forecast alerts", async () => {
-  mock.timers.enable({
-    apis: ["Date"],
-    now: new Date("2026-07-05T02:00:00.000Z"),
-  });
-  try {
-    const { calls, service } = createService([
-      [
-        {
-          id: 123,
-          user_id: 1,
-          transaction_type: "expense",
-          category: "Food",
-          status: "confirmed",
-          transaction_date: "2026-06-25",
-        },
-      ],
-      [{ cycle_start_day: 25 }],
-      [
-        {
-          budget_id: "12",
-          category: "Food",
-          parent_budget_id: null,
-          budget_amount: "1000000",
-          spent_amount: "854000",
-        },
-      ],
-      [{ exists: false }],
-      [
-        {
-          budget_id: 12,
-          alert_type: "budget_75",
-          threshold_percent: 75,
-          period_key: "2026-06-25",
-        },
-      ],
-    ]);
 
-    const result = await service.handleOverspending({
-      userId: 1,
-      category: "Food",
-      transactionId: 123,
-      asOfDate: "2026-06-25",
-    });
-
-    assert.equal(calls.length, 6);
-    assert.deepEqual(calls[0].values, ["123", "1"]);
-    assert.deepEqual(calls[3].values, ["1", "12", "budget_75", "2026-06-25"]);
-    assert.match(calls[4].text, /INSERT INTO budget_alerts/);
-    assert.doesNotMatch(
-      calls[4].text,
-      /INSERT INTO budget_alerts\s*\(\s*user_id/,
-    );
-    assert.equal(
-      calls.filter(({ text }) => /INSERT INTO budget_alerts/.test(text)).length,
-      1,
-    );
-    assert.equal(result.status, "alert_required");
-    assert.equal(result.shouldAlert, true);
-    assert.match(result.message?.text ?? "", /<b>Budget warning\.<\/b>/);
-    assert.deepEqual(result.data, {
-      transactionId: 123,
-      userId: "1",
-      budgetId: "12",
-      category: "Food",
-      alertType: "budget_75",
-      spentPercent: 85.4,
-      remainingAmount: 146000,
-    });
-  } finally {
-    mock.timers.reset();
-  }
-});
 
 test("watchdog returns forecast facts without recording before delivery", async () => {
   const previousUrl = process.env.VEYRA_MINI_APP_BASE_URL;
@@ -2079,11 +1791,9 @@ test("watchdog returns forecast facts without recording before delivery", async 
           parent_budget_id: null,
           budget_amount: "1500000",
           spent_amount: "1000000",
-          child_breakdown: [
+          category_breakdown: [
             {
-              budget_id: "84",
               category: "Dining",
-              budget_amount: "1000000",
               spent_amount: "600000",
             },
           ],
@@ -2156,7 +1866,7 @@ test("watchdog suppresses an already recorded forecast", async () => {
         parent_budget_id: null,
         budget_amount: "1500000",
         spent_amount: "1000000",
-        child_breakdown: [],
+        category_breakdown: [],
       },
     ],
     [{ exists: true }],
@@ -2197,7 +1907,7 @@ test("watchdog keeps forecast text when Mini App URL is missing", async () => {
           parent_budget_id: null,
           budget_amount: "1500000",
           spent_amount: "1000000",
-          child_breakdown: [],
+          category_breakdown: [],
         },
       ],
       [{ exists: false }],
@@ -2217,93 +1927,7 @@ test("watchdog keeps forecast text when Mini App URL is missing", async () => {
   }
 });
 
-test(
-  'watchdog renders one warning block when multiple alert thresholds are crossed',
-  async (t) => {
-    t.mock.timers.enable({
-      apis: ['Date'],
-      now: new Date('2026-07-05T02:00:00.000Z'),
-    });
 
-    try {
-      const { service } = createService([
-        [
-          {
-            id: 123,
-            user_id: 1,
-            transaction_type: 'expense',
-            category: 'Bibit',
-            status: 'confirmed',
-            transaction_date: '2026-06-25',
-          },
-        ],
-        [{ cycle_start_day: 25 }],
-        [
-          {
-            budget_id: '12',
-            category: 'Bibit',
-            parent_budget_id: null,
-            budget_amount: '1000000',
-            spent_amount: '2005500',
-          },
-        ],
-        [{ exists: false }],
-        [
-          {
-            budget_id: 12,
-            alert_type: 'budget_75',
-            threshold_percent: 75,
-            period_key: '2026-06-25',
-          },
-        ],
-        [{ exists: false }],
-        [
-          {
-            budget_id: 12,
-            alert_type: 'budget_90',
-            threshold_percent: 90,
-            period_key: '2026-06-25',
-          },
-        ],
-        [{ exists: false }],
-        [
-          {
-            budget_id: 12,
-            alert_type: 'budget_100',
-            threshold_percent: 100,
-            period_key: '2026-06-25',
-          },
-        ],
-        [{ exists: false }],
-        [
-          {
-            budget_id: 12,
-            alert_type: 'budget_forecast_overrun',
-            threshold_percent: 0,
-            period_key: '2026-06-25',
-          },
-        ],
-      ]);
-
-      const result = await service.evaluateTransaction({
-        userId: 1,
-        transactionId: 123,
-      });
-
-      const text = result.message?.text ?? '';
-
-      assert.equal(result.alerts.length, 4);
-      assert.equal(
-        text.match(/<b>Budget warning\.<\/b>/g)?.length,
-        1,
-      );
-      assert.match(text, /Remaining: -Rp1\.005\.500\./);
-      assert.doesNotMatch(text, /Rp-/);
-    } finally {
-      t.mock.timers.reset();
-    }
-  },
-);
 
 test("watchdog skips zero amount budgets", async () => {
   const { calls, service } = createService([
@@ -2376,7 +2000,7 @@ function pocketWatchdogRows(input: {
         parent_budget_id: null,
         budget_amount: "1000000",
         spent_amount: "750000",
-        child_breakdown: childBreakdown,
+        category_breakdown: childBreakdown,
       },
     ],
     [{ exists: input.parentAlertExists ?? false }],
@@ -2429,7 +2053,7 @@ test("watchdog evaluates Toys against its assigned parent pocket only", async (t
   );
 });
 
-test("watchdog evaluates Dining against parent then matching child", async (t) => {
+test("watchdog evaluates Dining only against its pocket", async (t) => {
   t.mock.timers.enable({
     apis: ["Date"],
     now: new Date("2026-08-30T12:00:00.000Z"),
@@ -2445,112 +2069,13 @@ test("watchdog evaluates Dining against parent then matching child", async (t) =
 
   assert.deepEqual(
     result.alerts.map(({ budgetId }) => budgetId),
-    ["42", "84"],
+    ["42"],
   );
 });
 
-test("watchdog keeps explicit-pocket child thresholds without a child forecast", async () => {
-  const { service } = createService([
-    [
-      {
-        id: 123,
-        user_id: 1,
-        transaction_type: "expense",
-        category: "Dining",
-        status: "confirmed",
-        transaction_date: "2026-08-20T12:00:00.000Z",
-        pocket_id: "42",
-      },
-    ],
-    [{ cycle_start_day: 1 }],
-    [
-      {
-        budget_id: "42",
-        category: "Food",
-        parent_budget_id: null,
-        budget_amount: "2000000",
-        spent_amount: "100000",
-        child_breakdown: [
-          {
-            budget_id: "84",
-            category: "Dining",
-            budget_amount: "1000000",
-            spent_amount: "750000",
-          },
-        ],
-      },
-    ],
-    [{ exists: false }],
-    [
-      {
-        budget_id: "84",
-        alert_type: "budget_75",
-        threshold_percent: 75,
-        period_key: "2026-08-01",
-      },
-    ],
-    [{ exists: false }],
-  ]);
 
-  const result = await service.evaluateTransaction({
-    userId: 1,
-    transactionId: 123,
-    timezone: "Asia/Jakarta",
-  });
 
-  assert.deepEqual(
-    result.alerts.map(({ type, budgetId }) => ({ type, budgetId })),
-    [{ type: "budget_75", budgetId: "84" }],
-  );
-});
 
-test("watchdog keeps legacy child-category thresholds without a child forecast", async () => {
-  const { service } = createService([
-    [
-      {
-        id: 123,
-        user_id: 1,
-        transaction_type: "expense",
-        category: "Dining",
-        status: "confirmed",
-        transaction_date: "2026-08-20T12:00:00.000Z",
-        pocket_id: null,
-      },
-    ],
-    [{ cycle_start_day: 1 }],
-    [
-      {
-        budget_id: "84",
-        category: "Dining",
-        parent_budget_id: "42",
-        budget_amount: "1000000",
-        spent_amount: "750000",
-        child_breakdown: [],
-      },
-    ],
-    [{ exists: false }],
-    [
-      {
-        budget_id: "84",
-        alert_type: "budget_75",
-        threshold_percent: 75,
-        period_key: "2026-08-01",
-      },
-    ],
-    [{ exists: false }],
-  ]);
-
-  const result = await service.evaluateTransaction({
-    userId: 1,
-    transactionId: 123,
-    timezone: "Asia/Jakarta",
-  });
-
-  assert.deepEqual(
-    result.alerts.map(({ type, budgetId }) => ({ type, budgetId })),
-    [{ type: "budget_75", budgetId: "84" }],
-  );
-});
 
 test("watchdog evaluates Uncategorized against its assigned parent only", async (t) => {
   t.mock.timers.enable({
@@ -2572,7 +2097,7 @@ test("watchdog evaluates Uncategorized against its assigned parent only", async 
   );
 });
 
-test("watchdog reclassification skips existing parent alert and emits child only", async (t) => {
+test("watchdog reclassification never emits a child alert", async (t) => {
   t.mock.timers.enable({
     apis: ["Date"],
     now: new Date("2026-08-30T12:00:00.000Z"),
@@ -2592,31 +2117,11 @@ test("watchdog reclassification skips existing parent alert and emits child only
 
   assert.deepEqual(
     result.alerts.map(({ budgetId }) => budgetId),
-    ["84"],
+    [],
   );
 });
 
-test("watchdog emits no alert when a concurrent insert wins dedupe", async (t) => {
-  t.mock.timers.enable({
-    apis: ["Date"],
-    now: new Date("2026-08-30T12:00:00.000Z"),
-  });
-  const { service } = createService(
-    pocketWatchdogRows({
-      category: "Toys",
-      parentInsertWins: false,
-    }),
-  );
 
-  const result = await service.evaluateTransaction({
-    userId: 1,
-    transactionId: 123,
-  });
-
-  assert.equal(result.hasAlert, false);
-  assert.deepEqual(result.alerts, []);
-  assert.equal(result.message, null);
-});
 
 test("overspending handle skips pending transaction alerts", async () => {
   const { service } = createService([

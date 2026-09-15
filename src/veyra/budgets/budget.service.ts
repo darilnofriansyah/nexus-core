@@ -37,7 +37,7 @@ import {
 } from "./dto/budget-upsert.dto";
 import {
   BudgetCycle,
-  BudgetStatusChildBreakdownDto,
+  BudgetStatusCategoryBreakdownDto,
   BudgetStatusRequestDto,
   BudgetStatusResponseDto,
 } from "./dto/budget-status.dto";
@@ -66,12 +66,6 @@ import {
 
 interface CycleStartRow extends QueryResultRow {
   cycle_start_day: number | string;
-}
-
-interface ParentBudgetRow extends QueryResultRow {
-  id: string | number;
-  category: string;
-  inserted?: boolean;
 }
 
 interface BudgetUpsertRow extends QueryResultRow {
@@ -110,6 +104,7 @@ interface WatchdogTransactionRow extends QueryResultRow {
   status: string | null;
   transaction_date: string | Date | null;
   pocket_id: string | number | null;
+  timezone?: string | null;
 }
 
 type BudgetHandleIntent =
@@ -366,7 +361,8 @@ export class BudgetService {
         JOIN matched_user u ON u.id = b.user_id
         LEFT JOIN budgets parent ON parent.id = b.parent_budget_id
         WHERE COALESCE(b.is_active, true) = true
-        ORDER BY lower(COALESCE(parent.category, b.category)), lower(b.category)
+          AND b.parent_budget_id IS NULL
+        ORDER BY lower(b.category)
       `,
       [userId],
     );
@@ -402,10 +398,9 @@ export class BudgetService {
       throw new BadRequestException("periodType must be monthly");
     }
 
-    const parentBudget = parentCategory
-      ? await this.findOrCreateParentBudget(userId, parentCategory, periodType)
-      : null;
-    const parentBudgetId = parentBudget ? String(parentBudget.id) : null;
+    if (parentCategory) {
+      throw new BadRequestException("Child budgets are no longer supported; set a pocket budget instead");
+    }
 
     const result = await this.database.query<BudgetUpsertRow>(
       `
@@ -414,22 +409,15 @@ export class BudgetService {
           FROM budgets
           WHERE user_id::text = $1
             AND category = $2
-            AND (
-              $6::boolean = false
-              OR parent_budget_id::text = $4
-            )
-          ORDER BY parent_budget_id NULLS FIRST, id
+            AND parent_budget_id IS NULL
+          ORDER BY id
           LIMIT 1
         ),
         updated_budget AS (
           UPDATE budgets
           SET
             amount = $3,
-            period_type = $5,
-            parent_budget_id = CASE
-              WHEN $6::boolean THEN $4::bigint
-              ELSE budgets.parent_budget_id
-            END
+            period_type = $4
           WHERE id = (SELECT id FROM existing_budget)
           RETURNING
             id AS budget_id,
@@ -449,7 +437,7 @@ export class BudgetService {
             period_type,
             is_active
           )
-          SELECT $1::bigint, $2, $3, $4::bigint, $5, true
+          SELECT $1::bigint, $2, $3, NULL, $4, true
           WHERE NOT EXISTS (SELECT 1 FROM updated_budget)
           RETURNING
             id AS budget_id,
@@ -479,14 +467,7 @@ export class BudgetService {
           ON parent.id = changed_budget.parent_budget_id
         LIMIT 1
       `,
-      [
-        userId,
-        category,
-        amount,
-        parentBudgetId,
-        periodType,
-        Boolean(parentCategory),
-      ],
+      [userId, category, amount, periodType],
     );
 
     const row = result.rows[0];
@@ -595,6 +576,7 @@ export class BudgetService {
                 budgetId: alert.budgetId,
                 category: alert.category,
                 alertType: alert.type,
+                alertRecord: alert.alertRecord,
                 spentPercent: alert.usedPercent,
                 remainingAmount: alert.remainingAmount,
               }
@@ -748,96 +730,46 @@ export class BudgetService {
       return this.skippedWatchdog("transaction_not_expense");
     }
 
-    if (!transaction.category) {
+    if (!transaction.category && !transaction.pocket_id) {
       return this.skippedWatchdog("transaction_category_missing");
     }
 
-    const referenceDateString = this.transactionLocalDate(
-      transaction.transaction_date,
-      request.timezone,
-    );
-    let statuses: BudgetStatusResponseDto[];
-
+    const timezone = transaction.timezone ?? request.timezone;
+    const referenceDateString = this.transactionLocalDate(transaction.transaction_date, timezone);
+    const today = this.transactionLocalDate(new Date(), timezone);
+    let status: BudgetStatusResponseDto;
     try {
-      if (transaction.pocket_id) {
-        const parent = await this.getBudgetStatus({
-          userId,
-          pocketId: String(transaction.pocket_id),
-          asOfDate: referenceDateString,
-        });
-        const child = parent.child_breakdown.find(
-          (item) =>
-            item.category.toLowerCase() === transaction.category?.toLowerCase(),
-        );
-        statuses = [parent];
-        if (child)
-          statuses.push({
-            ...parent,
-            budget_id: child.budget_id,
-            category: child.category,
-            parent_budget_id: parent.budget_id,
-            budget_amount: child.budget_amount,
-            spent_amount: child.spent_amount,
-            remaining_amount: child.remaining_amount,
-            spent_percent: child.spent_percent,
-            child_breakdown: [],
-          });
-      } else {
-        statuses = [
-          await this.getDirectBudgetStatus(
-            userId,
-            transaction.category,
-            this.parseReferenceDate(referenceDateString),
-          ),
-        ];
-      }
+      const pocketId = transaction.pocket_id == null
+        ? await this.repository.resolveLegacyPocketId(userId, transaction.category as string)
+        : String(transaction.pocket_id);
+      if (!pocketId) return this.skippedWatchdog("budget_not_found");
+      status = await this.getBudgetStatus({ userId, pocketId, asOfDate: referenceDateString });
     } catch (error) {
-      if (error instanceof NotFoundException) {
-        return this.skippedWatchdog("budget_not_found");
-      }
-
+      if (error instanceof NotFoundException) return this.skippedWatchdog("budget_not_found");
       throw error;
     }
 
+    const forecast = calculateBudgetForecast({
+      spentAmount: status.spent_amount,
+      budgetAmount: status.budget_amount,
+      cycleStart: status.cycle_start,
+      cycleEnd: status.cycle_end,
+      asOfDate: referenceDateString,
+    });
+    const alertType = this.resolvePocketAlertType(status, forecast);
     const alerts: BudgetWatchdogAlertDto[] = [];
-
-    for (const status of statuses) {
-      const forecast = calculateBudgetForecast({
-        spentAmount: status.spent_amount,
-        budgetAmount: status.budget_amount,
-        cycleStart: status.cycle_start,
-        cycleEnd: status.cycle_end,
-        asOfDate: referenceDateString,
+    const isDaily = alertType === "budget_over_100_daily";
+    // Replaying an older expense is not continued spending today.
+    if (alertType && (!isDaily || referenceDateString === today)) {
+      const alertRecord = this.buildOverspendingAlertRecord({
+        userId,
+        budgetId: status.budget_id,
+        alertType,
+        thresholdPercent: this.thresholdPercentForAlertType(alertType),
+        periodKey: isDaily ? today : status.cycle_start,
       });
-
-      for (const alertType of this.resolveBudgetWatchdogAlertTypes(
-        status,
-        forecast,
-      )) {
-        const periodKey = this.periodKeyFromCycleStart(status.cycle_start);
-        const alertRecord = this.buildOverspendingAlertRecord({
-          userId,
-          budgetId: status.budget_id,
-          alertType,
-          thresholdPercent: this.thresholdPercentForAlertType(alertType),
-          periodKey,
-        });
-
-        if (await this.hasBudgetAlert(alertRecord)) continue;
-
-        const alert = this.buildWatchdogAlert(
-          status,
-          alertType,
-          forecast,
-          alertRecord,
-        );
-        if (alertType === "budget_forecast_overrun") {
-          alerts.push(alert);
-          continue;
-        }
-
-        const inserted = await this.insertBudgetAlert(alertRecord);
-        if (inserted) alerts.push(alert);
+      if (!(await this.hasBudgetAlert(alertRecord))) {
+        alerts.push(this.buildWatchdogAlert(status, alertType, forecast, alertRecord));
       }
     }
 
@@ -848,7 +780,7 @@ export class BudgetService {
       message:
         alerts.length > 0
           ? {
-              text: this.buildWatchdogTelegramText(alerts),
+              text: alerts[0].telegramText ?? "",
               parse_mode: "HTML",
               disable_web_page_preview: true,
             }
@@ -896,6 +828,15 @@ export class BudgetService {
         nextState: "idle",
         payload: {},
         text: "What do you want to do: show or set a budget?",
+        data: { intent },
+      });
+    }
+
+    if (intent === "set_sub_budget") {
+      await stateStore.resetState({ userId });
+      return this.buildHandleResponse({
+        nextState: "idle", payload: {},
+        text: "Categories track spending inside a pocket. Set the budget on the pocket itself.",
         data: { intent },
       });
     }
@@ -981,8 +922,6 @@ export class BudgetService {
       userId: String(userId),
       category: payload.category as string,
       amount: payload.amount as number,
-      parentCategory:
-        intent === "set_sub_budget" ? payload.parent_category : undefined,
       periodType: "monthly",
     });
     await stateStore.resetState({ userId });
@@ -1052,7 +991,7 @@ export class BudgetService {
       spent_amount: spentAmount,
       remaining_amount: budgetAmount - spentAmount,
       spent_percent: spentPercent,
-      child_breakdown: this.mapChildBreakdown(row.child_breakdown),
+      category_breakdown: this.mapCategoryBreakdown(row.category_breakdown),
       cycle_start: cycle.cycle_start,
       cycle_end: cycle.cycle_end,
     };
@@ -1082,21 +1021,10 @@ export class BudgetService {
     };
   }
 
-  resolveOverspendingAlertType(
-    spentPercent: number,
-  ): OverspendingAlertType | null {
-    if (spentPercent >= 120) {
-      return "overspend_120";
-    }
-
-    if (spentPercent >= 100) {
-      return "overspend_100";
-    }
-
-    if (spentPercent >= 80) {
-      return "overspend_80";
-    }
-
+  resolveOverspendingAlertType(spentPercent: number): OverspendingAlertType | null {
+    if (spentPercent >= 100) return "budget_100";
+    if (spentPercent >= 90) return "budget_90";
+    if (spentPercent >= 75) return "budget_75";
     return null;
   }
 
@@ -1107,16 +1035,18 @@ export class BudgetService {
     const result = await this.database.query<WatchdogTransactionRow>(
       `
         SELECT
-          id,
-          user_id,
+          t.id,
+          t.user_id,
           transaction_type,
           category,
           status,
           transaction_date,
-          pocket_id
-        FROM transactions
-        WHERE id::text = $1
-          AND user_id::text = $2
+          pocket_id,
+          u.timezone
+        FROM transactions t
+        JOIN telegram_users u ON u.id = t.user_id
+        WHERE t.id::text = $1
+          AND t.user_id::text = $2
         LIMIT 1
       `,
       [transactionId, userId],
@@ -1148,36 +1078,15 @@ export class BudgetService {
     };
   }
 
-  private resolveBudgetWatchdogAlertTypes(
+  private resolvePocketAlertType(
     status: BudgetStatusResponseDto,
     forecast: BudgetForecastResult | null,
-  ): OverspendingAlertType[] {
-    if (status.budget_amount <= 0) {
-      return [];
-    }
-
-    const alerts: OverspendingAlertType[] = [];
-
-    if (status.spent_percent >= 75) {
-      alerts.push("budget_75");
-    }
-
-    if (status.spent_percent >= 90) {
-      alerts.push("budget_90");
-    }
-
-    if (status.spent_percent >= 100) {
-      alerts.push("budget_100");
-    }
-
-    if (
-      status.parent_budget_id === null &&
-      (forecast?.projectedOverrun ?? 0) > 0
-    ) {
-      alerts.push("budget_forecast_overrun");
-    }
-
-    return alerts;
+  ): OverspendingAlertType | null {
+    if (status.budget_amount <= 0) return null;
+    if (status.spent_amount >= status.budget_amount) return "budget_over_100_daily";
+    if (status.spent_percent >= 90) return "budget_90";
+    if (status.spent_percent >= 75) return "budget_75";
+    return (forecast?.projectedOverrun ?? 0) > 0 ? "budget_forecast_overrun" : null;
   }
 
   private buildWatchdogAlert(
@@ -1197,42 +1106,28 @@ export class BudgetService {
       projectedOverrun: forecast?.projectedOverrun ?? 0,
     };
 
-    if (type !== "budget_forecast_overrun" || !forecast) return base;
-
     const topDriver = this.forecastTopDriver(status);
     return {
       ...base,
       topDriver,
-      telegramText: this.buildForecastTelegramText(status, forecast, topDriver),
+      telegramText: type === "budget_forecast_overrun" && forecast
+        ? this.buildForecastTelegramText(status, forecast, topDriver)
+        : this.buildOverspendingTelegramText({
+            category: status.category,
+            spentPercent: status.spent_percent,
+            spentAmount: status.spent_amount,
+            budgetAmount: status.budget_amount,
+            remainingAmount: status.remaining_amount,
+          }),
       miniAppUrl: this.forecastMiniAppUrl(status.budget_id),
       alertRecord,
     };
   }
 
-  private buildWatchdogTelegramText(alerts: BudgetWatchdogAlertDto[]): string {
-    const alert = alerts[0];
-
-    if (!alert) {
-      return "";
-    }
-
-    return [
-      "<b>Budget warning.</b>",
-      `${this.escapeTelegramHtml(alert.category)} is now ${alert.usedPercent}% used.`,
-      `Remaining: ${this.formatTelegramCurrency(alert.remainingAmount)}.`,
-      `Safe daily spend: ${this.formatTelegramCurrency(alert.safeDailySpend)}.`,
-      alert.projectedOverrun > 0
-        ? `Projected overrun: ${this.formatTelegramCurrency(alert.projectedOverrun)}.`
-        : null,
-    ]
-      .filter((line): line is string => Boolean(line))
-      .join("\n");
-  }
-
   private forecastTopDriver(
     status: BudgetStatusResponseDto,
   ): BudgetWatchdogTopDriverDto {
-    const child = [...status.child_breakdown].sort(
+    const child = [...status.category_breakdown].sort(
       (left, right) =>
         right.spent_amount - left.spent_amount ||
         left.category.localeCompare(right.category),
@@ -1299,60 +1194,7 @@ export class BudgetService {
     category: string,
     referenceDate = new Date(),
   ): Promise<BudgetStatusResponseDto> {
-    const cycleStartDay = await this.getCycleStartDay(userId);
-    const cycle = this.calculateCurrentCycle(referenceDate, cycleStartDay);
-    const result = await this.database.query<PocketStatusRow>(
-      `
-        WITH matched_user AS (
-          SELECT id
-          FROM telegram_users
-          WHERE id::text = $1 OR telegram_id::text = $1
-          LIMIT 1
-        ),
-        selected_budget AS (
-          SELECT b.id, b.category, b.parent_budget_id, b.amount AS budget_amount
-          FROM budgets b
-          JOIN matched_user u ON u.id = b.user_id
-          WHERE lower(b.category) = lower($2)
-            AND COALESCE(b.is_active, true) = true
-          LIMIT 1
-        ),
-        spending AS (
-          SELECT COALESCE(SUM(t.amount), 0) AS spent_amount
-          FROM transactions t
-          JOIN matched_user u ON u.id = t.user_id
-          JOIN selected_budget b ON t.pocket_id IS NULL
-            AND (
-              (b.parent_budget_id IS NULL AND lower(t.category) IN (
-                SELECT lower(legacy.category) FROM budgets legacy
-                WHERE legacy.id = b.id OR (legacy.parent_budget_id = b.id AND legacy.is_active = true)
-              ))
-              OR (b.parent_budget_id IS NOT NULL AND lower(t.category) = lower(b.category))
-            )
-          WHERE t.status = 'confirmed'
-            AND t.transaction_type = 'expense'
-            AND t.transaction_date >= $3::date
-            AND t.transaction_date < $4::date
-        )
-        SELECT
-          sb.id AS budget_id,
-          sb.category,
-          sb.parent_budget_id,
-          sb.budget_amount,
-          spending.spent_amount,
-          '[]'::json AS child_breakdown
-        FROM selected_budget sb
-        CROSS JOIN spending
-      `,
-      [userId, category, cycle.cycle_start, cycle.cycle_end],
-    );
-    const row = result.rows[0];
-
-    if (!row) {
-      throw new NotFoundException("Budget not found for user and category");
-    }
-
-    return this.mapBudgetStatusRow(row, cycle);
+    return this.getBudgetStatus({ userId, category, asOfDate: this.toDateString(referenceDate) });
   }
 
   private buildOverspendingTelegramHtml(input: {
@@ -1367,6 +1209,7 @@ export class BudgetService {
       budget_75: "Budget warning",
       budget_90: "Budget warning",
       budget_100: "Budget reached",
+      budget_over_100_daily: "Budget exceeded",
       budget_forecast_overrun: "Budget forecast warning",
       overspend_80: "Budget warning",
       overspend_100: "Budget reached",
@@ -1629,52 +1472,8 @@ export class BudgetService {
   }
 
   private buildBudgetOverviewGroups(budgets: BudgetOverviewItem[]): string[] {
-    const childBudgetsByParentId = new Map<string, BudgetOverviewItem[]>();
-    const parentBudgetIds = new Set(
-      budgets
-        .filter((budget) => budget.parent_budget_id === null)
-        .map((budget) => budget.budget_id),
-    );
-    const parentBudgets = budgets.filter(
-      (budget) =>
-        budget.parent_budget_id === null ||
-        !parentBudgetIds.has(budget.parent_budget_id),
-    );
-
-    budgets
-      .filter(
-        (budget) =>
-          budget.parent_budget_id !== null &&
-          parentBudgetIds.has(budget.parent_budget_id),
-      )
-      .forEach((budget) => {
-        const parentId = budget.parent_budget_id as string;
-        const children = childBudgetsByParentId.get(parentId) ?? [];
-        children.push(budget);
-        childBudgetsByParentId.set(parentId, children);
-      });
-
-    return parentBudgets.map((budget) => {
-      const children = childBudgetsByParentId
-        .get(budget.budget_id)
-        ?.sort((left, right) => left.category.localeCompare(right.category));
-
-      if (!children || children.length === 0) {
-        return this.formatBudgetOverviewLine(budget);
-      }
-
-      const parentLine = this.formatBudgetOverviewLine({
-        category: budget.category,
-        amount: budget.amount,
-        spent_amount: budget.spent_amount,
-      });
-      const childLines = children.map((child, index) => {
-        const prefix = index === children.length - 1 ? "└" : "├";
-        return `${prefix} ${this.formatBudgetOverviewLine(child, "—")}`;
-      });
-
-      return [parentLine, ...childLines].join("\n");
-    });
+    return budgets.filter((budget) => budget.parent_budget_id === null)
+      .map((budget) => this.formatBudgetOverviewLine(budget));
   }
 
   private formatBudgetOverviewLine(
@@ -1789,14 +1588,10 @@ export class BudgetService {
       `Used: ${status.spent_percent}%`,
     ];
 
-    if (status.child_breakdown.length > 0) {
-      lines.push("", "Children:");
-      status.child_breakdown.forEach((child) => {
-        lines.push(
-          `- ${this.escapeTelegramHtml(child.category)}: ${this.formatTelegramCurrency(
-            child.spent_amount,
-          )}/${this.formatTelegramCurrency(child.budget_amount)} (${child.spent_percent}%)`,
-        );
+    if (status.category_breakdown.length > 0) {
+      lines.push("", "Categories:");
+      status.category_breakdown.forEach((category) => {
+        lines.push(`- ${this.escapeTelegramHtml(category.category)}: ${this.formatTelegramCurrency(category.spent_amount)}`);
       });
     }
 
@@ -1912,7 +1707,7 @@ export class BudgetService {
 
     if (!this.isOverspendingAlertType(alertType)) {
       throw new BadRequestException(
-        "alertType must be overspend_80, overspend_100, or overspend_120",
+        "alertType must be a supported budget alert type",
       );
     }
 
@@ -1982,6 +1777,7 @@ export class BudgetService {
       alertType === "budget_75" ||
       alertType === "budget_90" ||
       alertType === "budget_100" ||
+      alertType === "budget_over_100_daily" ||
       alertType === "budget_forecast_overrun" ||
       alertType === "overspend_80" ||
       alertType === "overspend_100" ||
@@ -1996,6 +1792,7 @@ export class BudgetService {
       budget_75: 75,
       budget_90: 90,
       budget_100: 100,
+      budget_over_100_daily: 100,
       budget_forecast_overrun: 0,
       overspend_80: 80,
       overspend_100: 100,
@@ -2016,50 +1813,6 @@ export class BudgetService {
       .replaceAll("&", "&amp;")
       .replaceAll("<", "&lt;")
       .replaceAll(">", "&gt;");
-  }
-
-  private async findOrCreateParentBudget(
-    userId: string,
-    parentCategory: string,
-    periodType: BudgetPeriodType,
-  ): Promise<ParentBudgetRow> {
-    const result = await this.database.query<ParentBudgetRow>(
-      `
-        WITH existing_parent AS (
-          SELECT id, category, false AS inserted
-          FROM budgets
-          WHERE user_id::text = $1
-            AND category = $2
-          LIMIT 1
-        ),
-        inserted_parent AS (
-          INSERT INTO budgets (
-            user_id,
-            category,
-            amount,
-            parent_budget_id,
-            period_type,
-            is_active
-          )
-          SELECT $1::bigint, $2, NULL, NULL, $3, true
-          WHERE NOT EXISTS (SELECT 1 FROM existing_parent)
-          RETURNING id, category, true AS inserted
-        )
-        SELECT id, category, inserted FROM existing_parent
-        UNION ALL
-        SELECT id, category, inserted FROM inserted_parent
-        LIMIT 1
-      `,
-      [userId, parentCategory, periodType],
-    );
-
-    const parentBudget = result.rows[0];
-
-    if (!parentBudget) {
-      throw new Error("Parent budget upsert did not return a row");
-    }
-
-    return parentBudget;
   }
 
   private async getCycleStartDay(userId: string): Promise<number> {
@@ -2143,25 +1896,14 @@ export class BudgetService {
       : 0;
   }
 
-  private mapChildBreakdown(value: unknown): BudgetStatusChildBreakdownDto[] {
-    const items = this.parseChildBreakdown(value);
-
-    return items.map((item) => {
-      const budgetAmount = this.toNumber(item.budget_amount);
-      const spentAmount = this.toNumber(item.spent_amount);
-
-      return {
-        budget_id: String(item.budget_id),
-        category: String(item.category),
-        budget_amount: budgetAmount,
-        spent_amount: spentAmount,
-        remaining_amount: budgetAmount - spentAmount,
-        spent_percent: this.calculateSpentPercent(spentAmount, budgetAmount),
-      };
-    });
+  private mapCategoryBreakdown(value: unknown): BudgetStatusCategoryBreakdownDto[] {
+    return this.parseCategoryBreakdown(value).map((item) => ({
+      category: String(item.category),
+      spent_amount: this.toNumber(item.spent_amount),
+    }));
   }
 
-  private parseChildBreakdown(value: unknown): Array<Record<string, unknown>> {
+  private parseCategoryBreakdown(value: unknown): Array<Record<string, unknown>> {
     if (Array.isArray(value)) {
       return value.filter(this.isRecord);
     }

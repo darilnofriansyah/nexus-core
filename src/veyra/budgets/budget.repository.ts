@@ -14,6 +14,15 @@ interface UserRow extends QueryResultRow {
   id: string | number;
 }
 
+interface PocketIdRow extends QueryResultRow {
+  id: string | number;
+}
+
+interface PocketCategoryBreakdownRow {
+  category: string;
+  spent_amount: string | number;
+}
+
 export interface PocketStatusQuery {
   userId: string;
   pocketId?: string;
@@ -28,7 +37,7 @@ export interface PocketStatusRow extends QueryResultRow {
   parent_budget_id: string | number | null;
   budget_amount: string | number;
   spent_amount: string | number | null;
-  child_breakdown?: unknown;
+  category_breakdown: PocketCategoryBreakdownRow[];
 }
 
 export interface PocketOverviewQuery {
@@ -110,6 +119,38 @@ export class BudgetRepository {
     return result.rows[0] ? this.toDto(result.rows[0]) : null;
   }
 
+  async resolveLegacyPocketId(
+    userId: string,
+    category: string,
+  ): Promise<string | null> {
+    const result = await this.database.query<PocketIdRow>(
+      `
+        SELECT pocket.id
+        FROM budgets pocket
+        WHERE pocket.user_id = $1::bigint
+          AND pocket.parent_budget_id IS NULL
+          AND pocket.is_active = true
+          AND (
+            lower(pocket.category) = lower($2)
+            OR EXISTS (
+              SELECT 1
+              FROM budgets child
+              WHERE child.user_id = pocket.user_id
+                AND child.parent_budget_id = pocket.id
+                AND child.is_active = true
+                AND lower(child.category) = lower($2)
+            )
+          )
+        ORDER BY
+          CASE WHEN lower(pocket.category) = lower($2) THEN 0 ELSE 1 END,
+          pocket.id
+        LIMIT 1
+      `,
+      [userId, category],
+    );
+    return result.rows[0] ? String(result.rows[0].id) : null;
+  }
+
   async findDefaultPocket(userId: string): Promise<PocketDto | null> {
     const result = await this.database.query<PocketRow>(
       this.pocketSelect('is_default = true'),
@@ -186,13 +227,17 @@ export class BudgetRepository {
     const result = await this.database.query<PocketStatusRow>(
       `
         WITH matched_user AS (
-          SELECT id
+          SELECT id, COALESCE(timezone, 'Asia/Jakarta') AS timezone
           FROM telegram_users
           WHERE id::text = $1 OR telegram_id::text = $1
           LIMIT 1
         ),
         pocket AS (
-          SELECT b.id, b.category, b.parent_budget_id, b.amount AS budget_amount
+          SELECT
+            b.id,
+            b.category,
+            b.parent_budget_id,
+            COALESCE(b.amount, 0) AS budget_amount
           FROM budgets b
           JOIN matched_user u ON u.id = b.user_id
           WHERE CASE
@@ -211,77 +256,53 @@ export class BudgetRepository {
           JOIN pocket ON child.parent_budget_id = pocket.id
           WHERE COALESCE(child.is_active, true) = true
         ),
-        child_spending AS (
+        matched_transactions AS (
           SELECT
-            child.id AS budget_id,
-            child.category,
-            child.amount AS budget_amount,
-            COALESCE(SUM(t.amount), 0) AS spent_amount
-          FROM budgets child
-          JOIN pocket parent ON child.parent_budget_id = parent.id
-          LEFT JOIN matched_user u ON true
-          LEFT JOIN transactions t ON t.user_id = u.id
-            AND t.status = 'confirmed'
-            AND t.transaction_type = 'expense'
-            AND t.transaction_date >= $3::date
-            AND t.transaction_date < $4::date
-            AND (
-              t.pocket_id = child.parent_budget_id
-              OR (t.pocket_id IS NULL AND lower(t.category) = lower(child.category))
-            )
-            AND lower(t.category) = lower(child.category)
-          WHERE COALESCE(child.is_active, true) = true
-          GROUP BY child.id, child.category, child.amount
-        ),
-        pocket_spending AS (
-          SELECT COALESCE(SUM(t.amount), 0) AS spent_amount
+            COALESCE(NULLIF(BTRIM(t.category), ''), 'Uncategorized') AS category,
+            t.amount
           FROM transactions t
           JOIN matched_user u ON u.id = t.user_id
           JOIN pocket ON true
           WHERE t.status = 'confirmed'
             AND t.transaction_type = 'expense'
-            AND t.transaction_date >= $3::date
-            AND t.transaction_date < $4::date
+            AND t.transaction_date >= ($3::date::timestamp AT TIME ZONE u.timezone)
+            AND t.transaction_date < ($4::date::timestamp AT TIME ZONE u.timezone)
             AND (
               t.pocket_id = pocket.id
               OR (t.pocket_id IS NULL AND lower(t.category) IN (SELECT lower(category) FROM legacy_pocket_categories))
             )
         ),
         totals AS (
-          SELECT
-            CASE
-              WHEN (SELECT budget_amount FROM pocket) IS NOT NULL
-              THEN (SELECT budget_amount FROM pocket)
-              ELSE COALESCE(SUM(child_spending.budget_amount), 0)
-            END AS budget_amount,
-            (SELECT spent_amount FROM pocket_spending) AS spent_amount
-          FROM child_spending
+          SELECT COALESCE(SUM(amount), 0) AS spent_amount
+          FROM matched_transactions
         ),
-        child_breakdown AS (
+        category_breakdown AS (
           SELECT COALESCE(
             json_agg(
               json_build_object(
-                'budget_id', budget_id::text,
                 'category', category,
-                'budget_amount', budget_amount,
                 'spent_amount', spent_amount
               )
               ORDER BY category
             ),
             '[]'::json
-          ) AS child_breakdown
-          FROM child_spending
+          ) AS category_breakdown
+          FROM (
+            SELECT category, SUM(amount) AS spent_amount
+            FROM matched_transactions
+            GROUP BY category
+          ) categories
         )
         SELECT
           pocket.id AS budget_id,
           pocket.category,
           pocket.parent_budget_id,
-          totals.budget_amount,
+          pocket.budget_amount,
           totals.spent_amount,
-          child_breakdown.child_breakdown
+          category_breakdown.category_breakdown
         FROM pocket
         CROSS JOIN totals
-        CROSS JOIN child_breakdown
+        CROSS JOIN category_breakdown
       `,
       [
         query.userId,
@@ -301,7 +322,7 @@ export class BudgetRepository {
     const result = await this.database.query<PocketOverviewRow>(
       `
         WITH matched_user AS (
-          SELECT id
+          SELECT id, COALESCE(timezone, 'Asia/Jakarta') AS timezone
           FROM telegram_users
           WHERE id::text = $1 OR telegram_id::text = $1
           LIMIT 1
@@ -311,7 +332,7 @@ export class BudgetRepository {
             b.id,
             b.category,
             b.parent_budget_id,
-            COALESCE(b.amount, SUM(child.amount)) AS amount,
+            COALESCE(b.amount, 0) AS amount,
             parent.category AS parent_category,
             COUNT(child.id) AS child_count
           FROM budgets b
@@ -332,8 +353,8 @@ export class BudgetRepository {
           LEFT JOIN transactions t ON t.user_id = u.id
             AND t.status = 'confirmed'
             AND t.transaction_type = 'expense'
-            AND t.transaction_date >= $2::date
-            AND t.transaction_date < $3::date
+            AND t.transaction_date >= ($2::date::timestamp AT TIME ZONE u.timezone)
+            AND t.transaction_date < ($3::date::timestamp AT TIME ZONE u.timezone)
             AND (
               (b.parent_budget_id IS NULL AND (t.pocket_id = b.id OR (t.pocket_id IS NULL AND lower(t.category) IN (SELECT lower(legacy.category) FROM budgets legacy WHERE legacy.id = b.id OR (legacy.parent_budget_id = b.id AND legacy.is_active = true)))))
               OR (b.parent_budget_id IS NOT NULL AND ((t.pocket_id = b.parent_budget_id AND lower(t.category) = lower(b.category)) OR (t.pocket_id IS NULL AND lower(t.category) = lower(b.category))))

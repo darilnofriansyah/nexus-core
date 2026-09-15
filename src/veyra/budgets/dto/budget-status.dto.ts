@@ -6,13 +6,9 @@ export interface BudgetStatusRequestDto {
   asOfDate?: string;
 }
 
-export interface BudgetStatusChildBreakdownDto {
-  budget_id: string;
+export interface BudgetStatusCategoryBreakdownDto {
   category: string;
-  budget_amount: number;
   spent_amount: number;
-  remaining_amount: number;
-  spent_percent: number;
 }
 
 export interface BudgetStatusResponseDto {
@@ -23,7 +19,7 @@ export interface BudgetStatusResponseDto {
   spent_amount: number;
   remaining_amount: number;
   spent_percent: number;
-  child_breakdown: BudgetStatusChildBreakdownDto[];
+  category_breakdown: BudgetStatusCategoryBreakdownDto[];
   cycle_start: string;
   cycle_end: string;
 }
