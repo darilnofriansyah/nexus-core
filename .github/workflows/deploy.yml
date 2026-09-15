@@ -60,6 +60,9 @@ jobs:
       - name: Test
         run: npm run test:ci
 
+      - name: Verify Codex worker isolation manifest
+        run: npm run test:codex-worker:isolation
+
       - name: Build
         run: npm run build
 

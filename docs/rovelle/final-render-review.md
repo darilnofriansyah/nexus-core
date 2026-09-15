@@ -147,7 +147,7 @@ The render-create request is:
 }
 ```
 
-When the Phase 5B worker completes the new master, the episode returns to
+When the render worker completes the new master, the episode returns to
 `FINAL_REVIEW`. The old completed Render and its review history remain
 available.
 

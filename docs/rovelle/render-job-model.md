@@ -1,7 +1,9 @@
 # Rovelle render queue model
 
-Phase 5A creates durable render queue state. It does not claim a job, resolve
-signed URLs, process media, or write an output object.
+The render queue and its separate worker are implemented. Core atomically
+queues a render; `render-worker` claims eligible jobs, reads signed source
+URLs only at execution time, renders with ffmpeg, uploads the master, and
+records the terminal state.
 
 ## Render and RenderJob
 
@@ -87,7 +89,7 @@ token, secret, or authorization value.
 
 Core validates that source assets are episode-correct and `AVAILABLE` at
 enqueue time. The signed R2 URLs needed to read those frozen assets are
-resolved only by the future Phase 5B worker; they are never persisted in the
+resolved only by the render worker; they are never persisted in the
 spec or returned by the render API.
 
 ## Core API requests
@@ -130,10 +132,9 @@ wait for media work. The reserved output asset has no required R2 object at
 enqueue time. Render reads expose queue state but omit the lease token and
 internal storage key.
 
-## Phase 5B claim contract (not implemented in 5A)
+## Worker claim and completion
 
-The Phase 5A schema includes fields needed for leasing, but no Phase 5A code
-claims or executes a job. Phase 5B will atomically select one eligible job:
+The worker atomically selects eligible jobs using `FOR UPDATE SKIP LOCKED`:
 
 ```sql
 SELECT id
@@ -145,9 +146,13 @@ FOR UPDATE SKIP LOCKED
 LIMIT 1;
 ```
 
-Within that same Phase 5B transaction, the worker will set the job and Render
-to `RUNNING`, and set `worker_id`, a random `lease_token`, `claimed_at`,
-`heartbeat_at`, `lease_expires_at`, and `started_at`. Phase 5B must enforce
-lease ownership when heartbeating, completing, or failing a job.
+The claim sets the job and Render to `RUNNING`, records a random lease token,
+and assigns lease timestamps. Completion requires that token, marks the output
+asset `AVAILABLE`, marks the Render `COMPLETED`, and moves the episode to
+`FINAL_REVIEW`. Failure and expired leases mark the job and Render `FAILED`.
+Retries create a new queued job for the same immutable render spec.
 
-These worker methods are deliberately not implemented in Phase 5A.
+The worker validates ffmpeg/ffprobe at startup, recovers expired leases, uses
+temporary job workspaces, and is deployed with `npm run start:render-worker`.
+Its deployment still requires current operational evidence; source presence is
+not production deployment proof.

@@ -4,6 +4,15 @@ NestJS API for gradually moving reusable Veyra and Aegis business logic out of n
 
 This app is intentionally small. It is a service layer pilot, not a replacement for existing production workflows.
 
+## Rovelle worker status
+
+Rovelle includes source-level creative and render workers. Creative work is
+disabled by default and requires separate deployment, private network
+isolation, configured credentials, a reviewed n8n adapter, and a staging
+acceptance run before enablement. See
+[`docs/rovelle/codex-runtime-verification.md`](docs/rovelle/codex-runtime-verification.md)
+and [`docs/rovelle/n8n-codex-storyboard.md`](docs/rovelle/n8n-codex-storyboard.md).
+
 `/veyra/budgets/status` accepts `{ "userId": "1", "pocketId": "42" }`. Category lookup remains compatible for rows with `pocket_id IS NULL`; n8n still triggers watchdogs and sends Telegram messages.
 
 `docs/migration/2026-08-20-budget-categories-pockets-backfill.sql` remains unapplied. It assigns only unambiguous historical expense rows; ambiguous rows stay `NULL`, and removing the legacy `pocket_id IS NULL` fallback requires separate approval.

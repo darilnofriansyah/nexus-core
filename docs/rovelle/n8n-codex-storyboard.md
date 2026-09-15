@@ -11,7 +11,7 @@ Keep the existing Telegram Trigger, private-operator allowlist, `/rv` routes,
 callback routing and acknowledgement, Telegram send node, and legacy provider
 routes. Do not add a Telegram Trigger.
 
-The creator request remains `POST /rovelle/creator/telegram` with the existing
+The creator request is `POST /api/rovelle/creator/telegram` with the existing
 Core API credential and base URL. Pass Telegram IDs as decimal strings. Read
 `update_id` from the update root for both message and callback updates. A
 creator body has exactly one input field:
@@ -50,8 +50,8 @@ The worker calls two existing n8n webhooks using
 
 | n8n webhook | Input | Forward to Core |
 | --- | --- | --- |
-| `POST /webhook/rovelle-codex-claim` | `{"jobId":"<UUID>"}` | `POST /rovelle/creative-jobs/<UUID>/claim`, body `{}` |
-| `POST /webhook/rovelle-codex-result` | `{"jobId":"<UUID>","completion":{...}}` | `POST /rovelle/creative-jobs/<UUID>/result`, body is `completion` |
+| `POST /webhook/rovelle-codex-claim` | `{"jobId":"<UUID>"}` | `POST /api/rovelle/creative-jobs/<UUID>/claim`, body `{}` |
+| `POST /webhook/rovelle-codex-result` | `{"jobId":"<UUID>","completion":{...}}` | `POST /api/rovelle/creative-jobs/<UUID>/result`, body is `completion` |
 
 Use the dedicated `ROVELLE_CREATIVE_WORKER_KEY` credential reference in
 `x-rovelle-worker-key` for Core list/claim/result requests. These endpoints
@@ -77,7 +77,7 @@ replays may redeliver text, but they must not call Codex again or run approval.
 
 The claim/result Core routes and recovery GET use
 `x-rovelle-worker-key`. Recovery runs every minute: GET
-`/rovelle/creative-jobs?status=QUEUED` with no request body, then dispatch only
+`/api/rovelle/creative-jobs?status=QUEUED` with no request body, then dispatch only
 the returned `jobs` IDs (Core returns at most 20). Do not derive retries from
 message text or recompute eligibility in n8n.
 
