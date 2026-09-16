@@ -2522,7 +2522,7 @@ Response shape:
 }
 ```
 
-Supported MVP intents: `spending_summary`, `category_spending`, `merchant_spending`, `top_merchants`, `top_categories`, `largest_transactions`, `recent_transactions`, `transaction_count`, `spending_by_day`, `daily_average_spending`, `spending_trend`, `cashflow_summary`, `burn_rate_forecast`, `daily_spending_review`, `weekly_spending_review`.
+Supported MVP intents: `spending_summary`, `category_spending`, `merchant_spending`, `top_merchants`, `top_categories`, `largest_transactions`, `recent_transactions`, `transaction_count`, `spending_by_day`, `daily_average_spending`, `spending_trend`, `cashflow_summary`, `burn_rate_forecast`, `daily_spending_review`, `weekly_spending_review`, `risk_review_summary`.
 
 Unsupported for now returns `status: "unsupported_intent"`: `subscription_summary`, `subscription_detail`, `spending_comparison`, `merchant_comparison`, `category_comparison`, `weekday_analysis`, `most_frequent_merchant`, `unknown`.
 
@@ -2569,6 +2569,24 @@ Weekly scheduled request:
 ```
 
 Weekly with `renderInsight: true` returns `status: "ok"`, a Telegram-ready `message.text` containing deterministic totals plus three insights and Veyra's verdict, and `insight_payload: null`. If rendering fails, it returns deterministic total/category/merchant sections with `status: "ok"`. Omit or set `renderInsight: false` to preserve `needs_insight` and `insight_payload` for rollback.
+
+Risk-review summary scheduled request:
+
+```json
+{
+  "telegramUserId": "976684739",
+  "userId": 1,
+  "timezone": "Asia/Jakarta",
+  "text": "monthly risk review",
+  "llmResult": {
+    "intent": "risk_review_summary",
+    "period": "current_cycle",
+    "needs_insight": false
+  }
+}
+```
+
+`risk_review_summary` reads existing high/critical `large_transaction` reviews and their responses. It returns `status: "empty_result"` until three answers exist in the cycle; n8n must send to Telegram only when `ok` is true. It reports regret totals plus category/merchant patterns only when a pattern has at least two regrets. n8n keeps the Schedule Trigger and Telegram sender. On a new high-risk expense, Core also adds a factual 90-day same-category regret reminder only after two prior regrets; it never blocks spending or changes risk thresholds.
 
 Example burn-rate request:
 

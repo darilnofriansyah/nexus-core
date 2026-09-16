@@ -14,6 +14,7 @@ export type ConversationalIntent =
   | 'burn_rate_forecast'
   | 'daily_spending_review'
   | 'weekly_spending_review'
+  | 'risk_review_summary'
   | 'subscription_summary'
   | 'subscription_detail'
   | 'spending_comparison'

@@ -134,3 +134,40 @@ test('pocket totals exclude assigned rows from another pocket', async () => {
   assert.match(calls[0].text, /t\.pocket_id IS NULL/);
   assert.deepEqual(calls[0].values, ['1', '2026-06-25', '2026-07-25', '42', ['Food']]);
 });
+
+test('risk review summary uses answered high-risk expense reviews in the period', async () => {
+  const { calls, repository } = createRepository([
+    [
+      {
+        flagged_count: '5',
+        answered_count: '3',
+        regret_count: '2',
+        regret_amount: '450000',
+        top_regret_category: 'Shopping',
+        top_regret_category_count: '2',
+        top_regret_merchant: 'Shopee',
+        top_regret_merchant_count: '2',
+      },
+    ],
+  ]);
+
+  const summary = await repository.riskReviewSummary(
+    '1',
+    '2026-06-25',
+    '2026-07-25',
+  );
+
+  assert.match(calls[0].text, /r\.risk_level IN \('high', 'critical'\)/);
+  assert.match(calls[0].text, /t\.user_id = r\.user_id/);
+  assert.match(calls[0].text, /user_response = 'regret'/);
+  assert.match(calls[0].text, /t\.status = 'confirmed'/);
+  assert.deepEqual(calls[0].values, ['1', '2026-06-25', '2026-07-25']);
+  assert.deepEqual(summary, {
+    flaggedCount: 5,
+    answeredCount: 3,
+    regretCount: 2,
+    regretAmount: 450000,
+    topRegretCategory: { name: 'Shopping', count: 2 },
+    topRegretMerchant: { name: 'Shopee', count: 2 },
+  });
+});

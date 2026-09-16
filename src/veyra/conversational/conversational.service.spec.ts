@@ -52,6 +52,14 @@ class FakeRepository {
     incomeCount: 1,
     expenseCount: 1,
   };
+  riskReview = {
+    flaggedCount: 5,
+    answeredCount: 3,
+    regretCount: 2,
+    regretAmount: 450000,
+    topRegretCategory: { name: 'Shopping', count: 2 },
+    topRegretMerchant: { name: 'Shopee', count: 2 },
+  };
 
   async findUser(userId: string | null, telegramUserId: string | null) {
     this.lastFindUser = { userId, telegramUserId };
@@ -129,6 +137,10 @@ class FakeRepository {
           (budget) => budget.category.toLowerCase() === category.toLowerCase(),
         )
       : this.budgets;
+  }
+
+  async riskReviewSummary() {
+    return this.riskReview;
   }
 }
 
@@ -564,6 +576,48 @@ test('weekly_spending_review returns deterministic facts for n8n insight LLM', a
   } finally {
     mock.timers.reset();
   }
+});
+
+test('risk_review_summary returns answered-review regrets and repeat patterns', async () => {
+  mock.timers.enable({
+    apis: ['Date'],
+    now: new Date('2026-07-05T02:00:00.000Z'),
+  });
+  try {
+    const { service } = createService();
+
+    const result = await service.handle({
+      userId: 1,
+      timezone: 'Asia/Jakarta',
+      llmResult: { intent: 'risk_review_summary' as never },
+    });
+
+    assert.equal(result.status, 'ok');
+    assert.equal(result.data.answered_count, 3);
+    assert.equal(result.data.regret_amount, 450000);
+    assert.deepEqual(result.data.top_regret_category, {
+      name: 'Shopping',
+      count: 2,
+    });
+    assert.match(result.message.text, /Regretted: 2 purchases \(Rp450\.000\)/);
+    assert.match(result.message.text, /Shopping \(2 regrets\)/);
+    assert.match(result.message.text, /Shopee \(2 regrets\)/);
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test('risk_review_summary stays empty until three reviews are answered', async () => {
+  const { repo, service } = createService();
+  repo.riskReview.answeredCount = 2;
+
+  const result = await service.handle({
+    userId: 1,
+    llmResult: { intent: 'risk_review_summary' as never },
+  });
+
+  assert.equal(result.status, 'empty_result');
+  assert.equal(result.ok, false);
 });
 
 test('weekly_spending_review renders insight when renderInsight is true', async () => {

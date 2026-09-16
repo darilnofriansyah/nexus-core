@@ -114,3 +114,30 @@ test('resolve stores response, status, optional note, and resolved_at', async ()
   assert.equal(review?.status, 'resolved');
   assert.equal(review?.note, 'Planned sale');
 });
+
+test('counts prior regretted purchases in the same category', async () => {
+  const { calls, repository } = createRepository([[{ count: '2' }]]);
+
+  const count = await repository.countRecentCategoryRegrets({
+    userId: 1,
+    transactionId: 123,
+    category: 'Food',
+    start: '2026-04-07T00:00:00.000Z',
+    end: '2026-07-06T00:00:00.000Z',
+  });
+
+  assert.match(calls[0].text, /r\.user_response = 'regret'/);
+  assert.match(calls[0].text, /r\.risk_level IN \('high', 'critical'\)/);
+  assert.match(calls[0].text, /t\.user_id = r\.user_id/);
+  assert.match(calls[0].text, /lower\(t\.category\) = lower\(\$4\)/);
+  assert.match(calls[0].text, /r\.transaction_id::text <> \$2/);
+  assert.deepEqual(calls[0].values, [
+    '1',
+    '123',
+    'large_transaction',
+    'Food',
+    '2026-04-07T00:00:00.000Z',
+    '2026-07-06T00:00:00.000Z',
+  ]);
+  assert.equal(count, 2);
+});

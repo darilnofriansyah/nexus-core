@@ -54,6 +54,20 @@ export interface BudgetItem {
   categories: string[];
 }
 
+export interface RiskReviewPattern {
+  name: string;
+  count: number;
+}
+
+export interface RiskReviewSummary {
+  flaggedCount: number;
+  answeredCount: number;
+  regretCount: number;
+  regretAmount: number;
+  topRegretCategory: RiskReviewPattern | null;
+  topRegretMerchant: RiskReviewPattern | null;
+}
+
 interface UserRow extends QueryResultRow {
   id: string | number;
   telegram_id: string | number | null;
@@ -103,6 +117,17 @@ interface BudgetRow extends QueryResultRow {
   category: string;
   amount: string | number;
   categories: string[] | string;
+}
+
+interface RiskReviewSummaryRow extends QueryResultRow {
+  flagged_count: string | number;
+  answered_count: string | number;
+  regret_count: string | number;
+  regret_amount: string | number | null;
+  top_regret_category: string | null;
+  top_regret_category_count: string | number | null;
+  top_regret_merchant: string | null;
+  top_regret_merchant_count: string | number | null;
 }
 
 @Injectable()
@@ -402,6 +427,92 @@ export class ConversationalRepository {
     };
   }
 
+  async riskReviewSummary(
+    userId: string,
+    start: string,
+    end: string,
+  ): Promise<RiskReviewSummary> {
+    const result = await this.database.query<RiskReviewSummaryRow>(
+      `
+        WITH reviewed AS (
+          SELECT
+            r.user_response,
+            t.amount,
+            t.category,
+            COALESCE(t.merchant_normalized, t.merchant) AS merchant
+          FROM transaction_risk_reviews r
+          JOIN transactions t
+            ON t.id = r.transaction_id
+            AND t.user_id = r.user_id
+          WHERE r.user_id::text = $1
+            AND r.risk_type = 'large_transaction'
+            AND r.risk_level IN ('high', 'critical')
+            AND t.status = 'confirmed'
+            AND t.transaction_type = 'expense'
+            AND t.transaction_date >= $2::date
+            AND t.transaction_date < $3::date
+        ),
+        summary AS (
+          SELECT
+            COUNT(*) AS flagged_count,
+            COUNT(*) FILTER (WHERE user_response IS NOT NULL) AS answered_count,
+            COUNT(*) FILTER (WHERE user_response = 'regret') AS regret_count,
+            COALESCE(SUM(amount) FILTER (WHERE user_response = 'regret'), 0) AS regret_amount
+          FROM reviewed
+        ),
+        top_category AS (
+          SELECT category AS name, COUNT(*) AS count
+          FROM reviewed
+          WHERE user_response = 'regret'
+            AND category IS NOT NULL
+          GROUP BY category
+          HAVING COUNT(*) >= 2
+          ORDER BY count DESC, category
+          LIMIT 1
+        ),
+        top_merchant AS (
+          SELECT merchant AS name, COUNT(*) AS count
+          FROM reviewed
+          WHERE user_response = 'regret'
+            AND merchant IS NOT NULL
+          GROUP BY merchant
+          HAVING COUNT(*) >= 2
+          ORDER BY count DESC, merchant
+          LIMIT 1
+        )
+        SELECT
+          s.flagged_count,
+          s.answered_count,
+          s.regret_count,
+          s.regret_amount,
+          tc.name AS top_regret_category,
+          tc.count AS top_regret_category_count,
+          tm.name AS top_regret_merchant,
+          tm.count AS top_regret_merchant_count
+        FROM summary s
+        LEFT JOIN top_category tc ON true
+        LEFT JOIN top_merchant tm ON true
+      `,
+      [userId, start, end],
+    );
+    const row = result.rows[0];
+
+    return {
+      flaggedCount: Number(row?.flagged_count ?? 0),
+      answeredCount: Number(row?.answered_count ?? 0),
+      regretCount: Number(row?.regret_count ?? 0),
+      regretAmount: Number(row?.regret_amount ?? 0),
+      topRegretCategory: this.mapRiskReviewPattern(
+        row?.top_regret_category,
+        row?.top_regret_category_count,
+      ),
+      topRegretMerchant: this.mapRiskReviewPattern(
+        row?.top_regret_merchant,
+        row?.top_regret_merchant_count,
+      ),
+    };
+  }
+
   async activeBudgets(
     userId: string,
     category: string | null = null,
@@ -469,6 +580,13 @@ export class ConversationalRepository {
       total: Number(row?.total ?? 0),
       count: Number(row?.count ?? 0),
     };
+  }
+
+  private mapRiskReviewPattern(
+    name: string | null | undefined,
+    count: string | number | null | undefined,
+  ): RiskReviewPattern | null {
+    return name && count ? { name, count: Number(count) } : null;
   }
 
   private mapTransaction(row: TransactionRow): TransactionItem {

@@ -5673,6 +5673,19 @@ export class TransactionService {
     const riskLevel = this.riskLevel(score);
     const status =
       riskLevel === "high" || riskLevel === "critical" ? "pending" : "resolved";
+    const transactionDate =
+      this.formatNullableTimestamp(transaction.transaction_date) ??
+      new Date().toISOString();
+    const repeatCategoryRegretCount =
+      status === "pending" && transaction.category
+        ? await this.riskReviewRepository.countRecentCategoryRegrets({
+            userId: transaction.user_id,
+            transactionId: transaction.id,
+            category: transaction.category,
+            start: this.riskHistoryStart(transactionDate),
+            end: transactionDate,
+          })
+        : 0;
     const result =
       await this.riskReviewRepository.saveLargeTransactionEvaluation({
         userId: transaction.user_id,
@@ -5687,6 +5700,7 @@ export class TransactionService {
           transactionDate: this.formatNullableTimestamp(
             transaction.transaction_date,
           ),
+          transactionCategory: transaction.category ?? null,
           merchant: transaction.merchant ?? null,
           merchantNormalized,
           merchantPriorCount: history.merchantPriorCount,
@@ -5701,6 +5715,7 @@ export class TransactionService {
           cycleStart: cycle.cycle_start,
           cycleEnd: cycle.cycle_end,
           riskType: LARGE_TRANSACTION_RISK_TYPE,
+          repeatCategoryRegretCount,
         },
         status,
       });
@@ -5909,10 +5924,7 @@ export class TransactionService {
     const transactionDate =
       this.formatNullableTimestamp(transaction.transaction_date) ??
       new Date().toISOString();
-    const since = new Date(
-      new Date(transactionDate).getTime() -
-        RISK_HISTORY_WINDOW_DAYS * 86_400_000,
-    ).toISOString();
+    const since = this.riskHistoryStart(transactionDate);
     const amounts = await this.database.query<RiskAmountRow>(
       `
         SELECT amount
@@ -5963,6 +5975,13 @@ export class TransactionService {
         ? this.normalizeAmount(merchantCount.rows[0]?.count ?? 0)
         : null,
     };
+  }
+
+  private riskHistoryStart(transactionDate: string): string {
+    return new Date(
+      new Date(transactionDate).getTime() -
+        RISK_HISTORY_WINDOW_DAYS * 86_400_000,
+    ).toISOString();
   }
 
   private largeTransactionReasons(input: {
@@ -6119,12 +6138,21 @@ export class TransactionService {
     const reasonLines = this.topRiskReasons(review.riskReasons).map(
       (reason) => `• ${this.humanRiskReason(reason, metrics)}`,
     );
+    const repeatCategoryRegretCount = this.numberMetric(
+      metrics.repeatCategoryRegretCount,
+    );
+    const category = this.cleanString(metrics.transactionCategory);
+    const regretPattern =
+      category && repeatCategoryRegretCount >= 2
+        ? `You regretted ${repeatCategoryRegretCount} ${this.escapeTelegramHtml(category)} purchases in the last ${RISK_HISTORY_WINDOW_DAYS} days`
+        : null;
 
     return [
       "<b>⚠️ Large transaction detected</b>",
       "",
       `${amount} at ${this.escapeTelegramHtml(this.titleCaseWords(merchant))}`,
       ...reasonLines,
+      ...(regretPattern ? [`• ${regretPattern}`] : []),
       "",
       "Was this purchase planned?",
     ].join("\n");

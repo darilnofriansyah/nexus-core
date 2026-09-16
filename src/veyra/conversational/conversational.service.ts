@@ -7,6 +7,7 @@ import {
   ConversationalRepository,
   ConversationalUser,
   DailyItem,
+  RiskReviewSummary,
   TransactionItem,
 } from './conversational.repository';
 import {
@@ -35,6 +36,7 @@ const SUPPORTED = new Set<ConversationalIntent>([
   'burn_rate_forecast',
   'daily_spending_review',
   'weekly_spending_review',
+  'risk_review_summary',
 ]);
 
 const OPTIONAL_INSIGHT = new Set<ConversationalIntent>([
@@ -59,6 +61,7 @@ const NEVER_INSIGHT = new Set<ConversationalIntent>([
   'transaction_count',
   'burn_rate_forecast',
   'daily_spending_review',
+  'risk_review_summary',
 ]);
 
 const DEFAULT_PERIODS: Partial<
@@ -75,6 +78,7 @@ const DEFAULT_PERIODS: Partial<
   burn_rate_forecast: 'current_cycle',
   daily_spending_review: 'today',
   weekly_spending_review: 'this_week',
+  risk_review_summary: 'current_cycle',
 };
 
 const INSIGHT_RULES = [
@@ -329,6 +333,10 @@ export class ConversationalService {
 
     if (intent === 'weekly_spending_review') {
       return this.weeklySpendingReview(request, user, period, timezone, now);
+    }
+
+    if (intent === 'risk_review_summary') {
+      return this.riskReviewSummary(user, period);
     }
 
     if (intent === 'merchant_spending') {
@@ -693,6 +701,55 @@ export class ConversationalService {
       hasData: cashflow.incomeCount > 0 || cashflow.expenseCount > 0,
       message: `Income ${this.formatRupiah(cashflow.incomeTotal)}, spending ${this.formatRupiah(cashflow.expenseTotal)}, net <b>${this.formatRupiah(cashflow.net)}</b>.`,
     };
+  }
+
+  private async riskReviewSummary(
+    user: ConversationalUser,
+    period: ConversationalPeriodDto,
+  ): Promise<IntentResult> {
+    const summary = await this.repository.riskReviewSummary(
+      user.id,
+      period.start,
+      period.end,
+    );
+    const facts = {
+      flagged_count: summary.flaggedCount,
+      answered_count: summary.answeredCount,
+      regret_count: summary.regretCount,
+      regret_amount: summary.regretAmount,
+      top_regret_category: summary.topRegretCategory,
+      top_regret_merchant: summary.topRegretMerchant,
+    };
+    const hasEnoughAnswers = summary.answeredCount >= 3;
+
+    return {
+      data: { period, ...facts },
+      facts,
+      hasData: hasEnoughAnswers,
+      message:
+        hasEnoughAnswers
+          ? this.riskReviewMessage(summary)
+          : 'Answer at least 3 risk reviews to see a pattern.',
+      status: hasEnoughAnswers ? 'ok' : 'empty_result',
+    };
+  }
+
+  private riskReviewMessage(summary: RiskReviewSummary): string {
+    const patterns = [summary.topRegretCategory, summary.topRegretMerchant]
+      .filter((pattern): pattern is NonNullable<typeof pattern> =>
+        Boolean(pattern),
+      )
+      .map(
+        (pattern) => `${this.escape(pattern.name)} (${pattern.count} regrets)`,
+      );
+
+    return [
+      '<b>Risk review</b>',
+      '',
+      `You answered ${summary.answeredCount} of ${summary.flaggedCount} large-purchase checks.`,
+      `Regretted: ${summary.regretCount} purchases (${this.formatRupiah(summary.regretAmount)}).`,
+      ...(patterns.length ? [`Repeat regrets: ${patterns.join('; ')}.`] : []),
+    ].join('\n');
   }
 
   private async burnRateForecast(

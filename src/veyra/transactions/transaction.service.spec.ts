@@ -838,7 +838,11 @@ const riskReview = {
   resolvedAt: null,
 };
 
-function createRiskReviewRepository(review = riskReview) {
+function createRiskReviewRepository(
+  review = riskReview,
+  categoryRegretCount = 0,
+  mergeEvaluationMetrics = false,
+) {
   const calls: Array<{ method: string; args: unknown[] }> = [];
 
   return {
@@ -846,7 +850,19 @@ function createRiskReviewRepository(review = riskReview) {
     repository: {
       saveLargeTransactionEvaluation: async (...args: unknown[]) => {
         calls.push({ method: "saveLargeTransactionEvaluation", args });
-        return { review, shouldNotify: true };
+        return {
+          review: mergeEvaluationMetrics
+            ? {
+                ...review,
+                riskMetrics: {
+                  ...review.riskMetrics,
+                  ...((args[0] as { riskMetrics?: Record<string, unknown> })
+                    .riskMetrics ?? {}),
+                },
+              }
+            : review,
+          shouldNotify: true,
+        };
       },
       cancelPendingLargeTransactionReview: async (...args: unknown[]) => {
         calls.push({ method: "cancelPendingLargeTransactionReview", args });
@@ -859,6 +875,7 @@ function createRiskReviewRepository(review = riskReview) {
         calls.push({ method: "resolve", args });
         return { ...review, status: args[3], userResponse: args[2] };
       },
+      countRecentCategoryRegrets: async () => categoryRegretCount,
     } as unknown as TransactionRiskReviewRepository,
   };
 }
@@ -8967,11 +8984,15 @@ test("risk review ignores legacy child budget limits for an assigned pocket", as
     total_budget_amount: "1000000",
     total_spend_before: "0",
   };
-  const riskReviews = createRiskReviewRepository({
-    ...riskReview,
-    id: "55",
-    transactionId: "101",
-  });
+  const riskReviews = createRiskReviewRepository(
+    {
+      ...riskReview,
+      id: "55",
+      transactionId: "101",
+    },
+    2,
+    true,
+  );
   const { calls, service } = createService(
     [
       [assignedTransaction],
@@ -9030,6 +9051,10 @@ test("risk review ignores legacy child budget limits for an assigned pocket", as
   assert.deepEqual(
     result.notifications.map(({ type, priority }) => ({ type, priority })),
     [{ type: "risk_review", priority: 1 }],
+  );
+  assert.match(
+    result.notifications[0]?.message ?? "",
+    /You regretted 2 Food purchases in the last 90 days/,
   );
 });
 

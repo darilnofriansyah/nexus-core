@@ -47,6 +47,14 @@ export interface SaveRiskEvaluationResult {
   shouldNotify: boolean;
 }
 
+export interface RecentCategoryRegretInput {
+  userId: string | number;
+  transactionId: string | number;
+  category: string;
+  start: string;
+  end: string;
+}
+
 interface TransactionRiskReviewRow extends QueryResultRow {
   id: string | number;
   user_id: string | number;
@@ -62,6 +70,10 @@ interface TransactionRiskReviewRow extends QueryResultRow {
   created_at: string | Date;
   updated_at: string | Date;
   resolved_at: string | Date | null;
+}
+
+interface RiskCountRow extends QueryResultRow {
+  count: string | number;
 }
 
 @Injectable()
@@ -205,6 +217,40 @@ export class TransactionRiskReviewRepository {
     );
 
     return result.rows[0] ? this.mapRow(result.rows[0]) : null;
+  }
+
+  async countRecentCategoryRegrets(
+    input: RecentCategoryRegretInput,
+  ): Promise<number> {
+    const result = await this.database.query<RiskCountRow>(
+      `
+        SELECT COUNT(*) AS count
+        FROM transaction_risk_reviews r
+        JOIN transactions t
+          ON t.id = r.transaction_id
+          AND t.user_id = r.user_id
+        WHERE r.user_id::text = $1
+          AND r.transaction_id::text <> $2
+          AND r.risk_type = $3
+          AND r.risk_level IN ('high', 'critical')
+          AND r.user_response = 'regret'
+          AND t.status = 'confirmed'
+          AND t.transaction_type = 'expense'
+          AND lower(t.category) = lower($4)
+          AND t.transaction_date >= $5::timestamptz
+          AND t.transaction_date < $6::timestamptz
+      `,
+      [
+        String(input.userId),
+        String(input.transactionId),
+        LARGE_TRANSACTION_RISK_TYPE,
+        input.category,
+        input.start,
+        input.end,
+      ],
+    );
+
+    return Number(result.rows[0]?.count ?? 0);
   }
 
   private async findByFingerprint(
