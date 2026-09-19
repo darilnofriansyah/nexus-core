@@ -1,5 +1,5 @@
 import * as assert from "node:assert/strict";
-import { mock, test } from "node:test";
+import { test } from "node:test";
 import { BadRequestException, NotFoundException } from "@nestjs/common";
 import { DatabaseService } from "../../database/database.service";
 import { VeyraAiService } from "../../ai/veyra-ai.service";
