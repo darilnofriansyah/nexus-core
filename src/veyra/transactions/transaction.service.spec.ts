@@ -8647,6 +8647,32 @@ test("catid callback rejects a linked-interest category edit", async () => {
   );
 });
 
+test("catid callback returns a linked-interest conflict as a Telegram error", async () => {
+  const dependencies = createCategoryServiceWithCategories([
+    { id: "10", name: "Food" },
+  ]);
+  const { service } = createService(
+    [[{ ...transaction, status: "confirmed", transaction_type: "expense" }]],
+    dependencies.budgetService,
+    undefined,
+    undefined,
+    "1",
+    undefined,
+    dependencies.categoryService,
+    { is_purchase: false, is_interest: true },
+  );
+
+  const result = await service.handleTransactionCallback({
+    telegramUserId: "976684739",
+    userId: 1,
+    callbackData: "catid:10:101",
+  });
+
+  assert.equal(result.status, "error");
+  assert.equal(result.action, "catid");
+  assert.match(result.telegram.text, /installment interest/i);
+});
+
 for (const [status, text] of [
   ["not_found", "Transaction was not found."],
   ["already_resolved", "This transaction was already handled."],

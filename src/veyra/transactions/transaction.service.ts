@@ -4799,11 +4799,24 @@ export class TransactionService {
       parsed.transactionId &&
       parsed.categoryId
     ) {
-      const result = await this.setPendingTransactionCategory({
-        transactionId: String(parsed.transactionId),
-        categoryId: String(parsed.categoryId),
-        userId: String(userId),
-      });
+      let result: TransactionSetCategoryResponseDto;
+      try {
+        result = await this.setPendingTransactionCategory({
+          transactionId: String(parsed.transactionId),
+          categoryId: String(parsed.categoryId),
+          userId: String(userId),
+        });
+      } catch (error) {
+        if (error instanceof ConflictException) {
+          return this.transactionCallbackError({
+            action: parsed.action,
+            text: error.message,
+            request,
+            transactionId: parsed.transactionId,
+          });
+        }
+        throw error;
+      }
 
       if (result.status === "updated") {
         if (parsed.reviewId) {

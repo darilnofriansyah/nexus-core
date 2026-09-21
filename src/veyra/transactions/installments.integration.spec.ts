@@ -158,19 +158,44 @@ test('installments integration: a schedule insert failure rolls back its plan', 
 test('installments integration: concurrent material edit cannot leave a plan with an obsolete principal', { skip: skipReason }, async () => {
   await withFixture(async ({ database, pool, service, transactionId }) => {
     const repository = new WebTransactionsRepository(database);
-    const edit = repository.updateTransaction({
-      userId: '1',
-      transactionId,
-      expectedUpdatedAt: request.expectedUpdatedAt,
-      changes: { amount: 6_500_000 },
-    });
-    const create = service.create(transactionId, request);
+    const blocker = await pool.connect();
+    await blocker.query('SELECT pg_advisory_lock(918273)');
+    await pool.query(`
+      CREATE FUNCTION public.installments_test_pause_plan_insert()
+      RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        PERFORM pg_advisory_xact_lock(918273);
+        RETURN NEW;
+      END;
+      $$;
+      CREATE TRIGGER installments_test_pause_plan_insert
+      BEFORE INSERT ON public.credit_card_installment_plans
+      FOR EACH ROW EXECUTE FUNCTION public.installments_test_pause_plan_insert();
+    `);
 
-    const outcomes = await Promise.allSettled([edit, create]);
-    assert.equal(
-      outcomes.filter((outcome) => outcome.status === 'fulfilled').length,
-      1,
-    );
+    let create: Promise<unknown> | undefined;
+    try {
+      create = service.create(transactionId, request);
+      await waitForPlanInsertBlock(pool);
+      const edit = repository.updateTransaction({
+        userId: '1',
+        transactionId,
+        expectedUpdatedAt: request.expectedUpdatedAt,
+        changes: { amount: 6_500_000 },
+      });
+
+      await blocker.query('SELECT pg_advisory_unlock(918273)');
+      const [created, edited] = await Promise.allSettled([create, edit]);
+
+      assert.equal(created.status, 'fulfilled');
+      assert.ok(edited.status === 'rejected' && edited.reason instanceof ConflictException);
+    } finally {
+      await blocker.query('SELECT pg_advisory_unlock(918273)');
+      if (create) await Promise.allSettled([create]);
+      await pool.query('DROP TRIGGER IF EXISTS installments_test_pause_plan_insert ON public.credit_card_installment_plans');
+      await pool.query('DROP FUNCTION IF EXISTS public.installments_test_pause_plan_insert()');
+      blocker.release();
+    }
 
     const result = await pool.query<{ amount: string; principal: string | null }>(
       `
@@ -185,9 +210,30 @@ test('installments integration: concurrent material edit cannot leave a plan wit
     const row = result.rows[0];
 
     assert.ok(row);
-    assert.ok(row.principal === null || row.principal === row.amount);
+    assert.equal(row.principal, row.amount);
   });
 });
+
+async function waitForPlanInsertBlock(pool: Pool): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const result = await pool.query<{ waiting: boolean }>(
+      `
+        SELECT EXISTS (
+          SELECT 1
+          FROM pg_locks
+          WHERE locktype = 'advisory'
+            AND classid = 0
+            AND objid = 918273
+            AND objsubid = 1
+            AND granted = false
+        ) AS waiting
+      `,
+    );
+    if (result.rows[0]?.waiting) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error('plan creation did not reach the advisory lock');
+}
 
 async function withFixture(
   run: (fixture: {

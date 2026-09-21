@@ -36,3 +36,8 @@ Before the production guard existed, the new web planned-purchase amount test co
 
 - Added a disposable-PostgreSQL concurrent `InstallmentsService.create` / `WebTransactionsRepository.updateTransaction` regression. It uses each repository's real transaction client and asserts exactly one operation wins; if a plan exists, its `principal` equals the locked purchase amount. The test is skipped without `INSTALLMENTS_TEST_DATABASE_URL`.
 - Confirmed `catid` reaches `setTransactionCategory` and updates confirmed expenses, so it can reach linked generated interest. The confirmed-category write now locks, checks the shared guard, and rejects a linked-interest category change; a focused regression covers that route.
+
+## Review fix 2
+
+- The disposable-DB race now holds an advisory lock in a temporary plan-insert trigger. It waits until plan creation is blocked after taking the original row lock, starts the material edit, then releases the trigger and asserts create succeeds, edit conflicts, and `plan.principal = transactions.amount`.
+- `handleTransactionCallback` is the `catid` Telegram entry point. It now converts the shared `ConflictException` into the established callback error response; the callback-level regression asserts the user sees the installment-interest explanation.
