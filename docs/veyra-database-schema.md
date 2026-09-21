@@ -610,6 +610,51 @@ Important:
 
 ---
 
+## public.credit_card_installment_plans and public.credit_card_installments
+
+```sql
+CREATE TABLE public.credit_card_installment_plans (
+  id bigserial PRIMARY KEY,
+  transaction_id bigint NOT NULL UNIQUE REFERENCES public.transactions(id) ON DELETE RESTRICT,
+  principal bigint NOT NULL CHECK (principal BETWEEN 1 AND 9999999999999),
+  tenor_months integer NOT NULL CHECK (tenor_months BETWEEN 1 AND 120),
+  monthly_rate_units integer NOT NULL CHECK (monthly_rate_units BETWEEN 0 AND 1000000),
+  first_due_date date NOT NULL,
+  timezone text NOT NULL,
+  merchant text NOT NULL,
+  category text NOT NULL,
+  pocket_id bigint REFERENCES public.budgets(id) ON DELETE SET NULL,
+  original_updated_at timestamptz NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE public.credit_card_installments (
+  id bigserial PRIMARY KEY,
+  plan_id bigint NOT NULL REFERENCES public.credit_card_installment_plans(id) ON DELETE RESTRICT,
+  sequence integer NOT NULL CHECK (sequence BETWEEN 1 AND 120),
+  due_date date NOT NULL,
+  principal bigint NOT NULL CHECK (principal BETWEEN 1 AND 9999999999999),
+  interest bigint NOT NULL CHECK (interest BETWEEN 0 AND 9999999999999),
+  interest_transaction_id bigint UNIQUE REFERENCES public.transactions(id) ON DELETE RESTRICT,
+  UNIQUE (plan_id, sequence)
+);
+
+CREATE INDEX credit_card_installments_unposted_due
+  ON public.credit_card_installments (due_date, id)
+  WHERE interest_transaction_id IS NULL AND interest > 0;
+```
+
+Important:
+
+* A plan belongs to the owner of its original transaction: join `credit_card_installment_plans.transaction_id` to `transactions.id`, then use `transactions.user_id`. These tables deliberately have no duplicate `user_id`.
+* Schedule ownership follows `credit_card_installments.plan_id` to its plan, then the original transaction. Every query must scope through that join.
+* One original transaction has at most one immutable plan. One schedule row exists for each `(plan_id, sequence)`, and a posted interest transaction can be linked only once.
+* `principal` is informational; only the separately linked confirmed interest transaction may count as spending. `interest_transaction_id` is null until posting.
+* `merchant`, `category`, `pocket_id`, and `timezone` snapshot the original at creation. Validate a non-null `pocket_id` belongs to the original owner before inserting a plan.
+* Original and linked-interest transactions are restrict-deleted while referenced. A deleted budget nulls the plan snapshot's `pocket_id`.
+
+---
+
 # Common Hallucination Traps
 
 Do not use these unless they are added to the actual schema later:

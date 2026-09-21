@@ -9,6 +9,9 @@ import { IntentsModule } from './intents/intents.module';
 import { VeyraMessagesModule } from './messages/messages.module';
 import { TelegramResponseFormatterService } from './telegram/telegram-response-formatter.service';
 import { EmailParserTemplateRepository } from './transactions/email-parser-template.repository';
+import { InstallmentsController } from './transactions/installments.controller';
+import { InstallmentsRepository } from './transactions/installments.repository';
+import { InstallmentsService } from './transactions/installments.service';
 import { TransactionRiskReviewRepository } from './transactions/transaction-risk-review.repository';
 import { TransactionService } from './transactions/transaction.service';
 import { WebTransactionsController } from './transactions/web-transactions.controller';
@@ -26,11 +29,13 @@ import { VeyraController } from './veyra.controller';
     IntentsModule,
     VeyraMessagesModule,
   ],
-  controllers: [VeyraController, WebTransactionsController],
+  controllers: [VeyraController, WebTransactionsController, InstallmentsController],
   providers: [
     IntentService,
     TelegramResponseFormatterService,
     EmailParserTemplateRepository,
+    InstallmentsRepository,
+    InstallmentsService,
     TransactionRiskReviewRepository,
     TransactionService,
     WebTransactionsRepository,
