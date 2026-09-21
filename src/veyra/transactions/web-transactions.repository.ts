@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { PoolClient, QueryResultRow } from 'pg';
 import { DatabaseService } from '../../database/database.service';
 import { applyCreditCardCycleUsageDelta } from './credit-card-cycle-usage';
+import { assertInstallmentMutationAllowed } from './installment-transaction-guard';
 import {
   WebTransactionChanges,
   WebTransactionRow,
@@ -219,6 +220,11 @@ export class WebTransactionsRepository {
       if (!this.hasChanges(locked, changes)) {
         return { kind: 'no_change' };
       }
+      await assertInstallmentMutationAllowed(
+        client,
+        transactionId,
+        this.changedFields(locked, changes),
+      );
       toPublicWebTransaction({
         ...currentTransaction,
         amount: changes.amount ?? currentTransaction.amount,
@@ -380,15 +386,28 @@ export class WebTransactionsRepository {
     locked: LockedTransactionRow,
     changes: WebTransactionChanges,
   ): boolean {
-    return (
-      (this.supplied(changes, 'amount') &&
-        changes.amount !== Number(locked.amount)) ||
-      this.hasMerchantChanged(locked, changes) ||
-      (this.supplied(changes, 'category') &&
-        changes.category !== locked.category) ||
-      (this.supplied(changes, 'pocketId') &&
-        changes.pocketId !== this.pocketId(locked.pocket_id))
-    );
+    return this.changedFields(locked, changes).length > 0;
+  }
+
+  private changedFields(
+    locked: LockedTransactionRow,
+    changes: WebTransactionChanges,
+  ): string[] {
+    const fields: string[] = [];
+    if (this.supplied(changes, 'amount') && changes.amount !== Number(locked.amount)) {
+      fields.push('amount');
+    }
+    if (this.hasMerchantChanged(locked, changes)) fields.push('merchant');
+    if (this.supplied(changes, 'category') && changes.category !== locked.category) {
+      fields.push('category');
+    }
+    if (
+      this.supplied(changes, 'pocketId') &&
+      changes.pocketId !== this.pocketId(locked.pocket_id)
+    ) {
+      fields.push('pocket_id');
+    }
+    return fields;
   }
 
   private hasMerchantChanged(

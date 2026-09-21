@@ -31,6 +31,7 @@ interface TransactionLifecycle {
 function createUpdateRepository(
   rowsByCall: unknown[][],
   failSummary = false,
+  links?: { is_purchase: boolean; is_interest: boolean },
 ) {
   const calls: Array<{ text: string; values: unknown[] }> = [];
   const lifecycle: TransactionLifecycle = {
@@ -40,6 +41,11 @@ function createUpdateRepository(
   let transactionCount = 0;
   const client = {
     query: async (text: string, values: unknown[] = []) => {
+      if (/credit_card_installment_plans/.test(text)) {
+        return {
+          rows: [links ?? { is_purchase: false, is_interest: false }],
+        };
+      }
       calls.push({ text, values });
       if (failSummary && /INSERT INTO credit_card_cycle_summaries/.test(text)) {
         throw new Error('summary write failed');
@@ -390,6 +396,19 @@ test('web transactions repository update locks owned finalized row and atomicall
   assert.equal(lifecycle.committed, true);
   assert.equal(lifecycle.rolledBack, false);
   assert.equal(transactionCount(), 1);
+});
+
+test('web transactions repository rejects a planned purchase amount edit', async () => {
+  const { repository } = createUpdateRepository(
+    [[lockedRow()], [returnedRow()]],
+    false,
+    { is_purchase: true, is_interest: false },
+  );
+
+  await assert.rejects(
+    () => repository.updateTransaction(updateInput({ amount: 30000 })),
+    /installment schedule/i,
+  );
 });
 
 test('web transactions repository changes or clears only an owned active top-level pocket', async () => {

@@ -87,12 +87,22 @@ function createService(
   resolvedEmailUserId: string | null = "1",
   veyraAiService?: VeyraAiService,
   categoryService?: CategoryService,
+  installmentLinks = { is_purchase: false, is_interest: false },
 ) {
   const calls: Array<{ text: string; values: unknown[] }> = [];
   let lastTransaction: Record<string, unknown> | undefined;
   const transactionCalls: Array<{ text: string; values: unknown[] }> = [];
   const transactionEvents: Array<"begin" | "commit" | "rollback"> = [];
   const query = async (text: string, values: unknown[] = []) => {
+    if (/credit_card_installment_plans/.test(text)) {
+      return { rows: [installmentLinks] };
+    }
+    if (
+      /SELECT id, user_id, transaction_type, amount, merchant,/.test(text) &&
+      /FOR UPDATE/.test(text)
+    ) {
+      return { rows: lastTransaction ? [lastTransaction] : [] };
+    }
     if (/resolve_email_caller/.test(text)) {
       return {
         rows:
@@ -199,6 +209,22 @@ function createService(
       resolvedCategoryService,
     ),
   };
+}
+
+function createInstallmentService(
+  rowsByCall: Array<unknown[] | Error>,
+  installmentLinks: { is_purchase: boolean; is_interest: boolean },
+) {
+  return createService(
+    rowsByCall,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    installmentLinks,
+  );
 }
 
 const TRANSACTION_TEST_CATEGORIES = [
@@ -3885,6 +3911,95 @@ test("manage confirmed delete sets rejected and clears state", async () => {
   assert.match(calls[2].text, /status = 'rejected'/);
   assert.deepEqual(calls[2].values, ["101", "1"]);
   assert.equal(state.state.stateName, "idle");
+});
+
+test("manage returns a safe conflict reply for a planned purchase edit", async () => {
+  const state = createManageStateStore({
+    stateName: "confirm_action",
+    stateData: {
+      action: "edit",
+      transaction_id: "101",
+      before: manageTransaction,
+      changes: { amount: 30000 },
+    },
+  });
+  const { service } = createInstallmentService(
+    [[{ id: "1", telegram_id: "976684739" }], [manageTransaction]],
+    { is_purchase: true, is_interest: false },
+  );
+
+  const result = await service.handleManagedTransaction(
+    {
+      telegramUserId: "976684739",
+      text: "veyra_tx_manage:confirm",
+      llmResult: null,
+    },
+    state.store,
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.status, "invalid");
+  assert.match(result.message, /installment schedule/i);
+  assert.equal(state.state.stateName, "confirm_action");
+});
+
+test("manage returns a safe conflict reply for planned purchase rejection", async () => {
+  const state = createManageStateStore({
+    stateName: "confirm_action",
+    stateData: {
+      action: "delete",
+      transaction_id: "101",
+      before: manageTransaction,
+    },
+  });
+  const { service } = createInstallmentService(
+    [[{ id: "1", telegram_id: "976684739" }], [manageTransaction]],
+    { is_purchase: true, is_interest: false },
+  );
+
+  const result = await service.handleManagedTransaction(
+    {
+      telegramUserId: "976684739",
+      text: "veyra_tx_manage:confirm",
+      llmResult: null,
+    },
+    state.store,
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.status, "invalid");
+  assert.match(result.message, /installment schedule/i);
+  assert.equal(state.state.stateName, "confirm_action");
+});
+
+test("manage returns a safe conflict reply for a linked interest edit", async () => {
+  const state = createManageStateStore({
+    stateName: "confirm_action",
+    stateData: {
+      action: "edit",
+      transaction_id: "101",
+      before: manageTransaction,
+      changes: { category: "Food" },
+    },
+  });
+  const { service } = createInstallmentService(
+    [[{ id: "1", telegram_id: "976684739" }], [manageTransaction]],
+    { is_purchase: false, is_interest: true },
+  );
+
+  const result = await service.handleManagedTransaction(
+    {
+      telegramUserId: "976684739",
+      text: "veyra_tx_manage:confirm",
+      llmResult: null,
+    },
+    state.store,
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.status, "invalid");
+  assert.match(result.message, /installment interest/i);
+  assert.equal(state.state.stateName, "confirm_action");
 });
 
 test("manage request statePayload alone cannot trigger mutation", async () => {
@@ -8372,9 +8487,7 @@ test("production category options use active user categories", async () => {
   });
 
   assert.deepEqual(
-    result.replyMarkup?.inline_keyboard
-      .flat()
-      .map(({ text }) => text),
+    result.replyMarkup?.inline_keyboard.flat().map(({ text }) => text),
     ["Shopping", "Groceries", "Food"],
   );
 });

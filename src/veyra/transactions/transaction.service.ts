@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   Logger,
   NotFoundException,
@@ -8,7 +9,7 @@ import {
 } from "@nestjs/common";
 import { createHash } from "node:crypto";
 import { convert } from "html-to-text";
-import { QueryResultRow } from "pg";
+import { PoolClient, QueryResultRow } from "pg";
 import { VeyraAiService } from "../../ai/veyra-ai.service";
 import { DatabaseService } from "../../database/database.service";
 import { BudgetService } from "../budgets/budget.service";
@@ -100,6 +101,7 @@ import {
   EmailTemplateQuery,
 } from "./email-parser-template.repository";
 import { applyCreditCardCycleUsageDelta } from "./credit-card-cycle-usage";
+import { assertInstallmentMutationAllowed } from "./installment-transaction-guard";
 import {
   hasAlignedSenderAuthentication,
   isLikelyTransactionEmail,
@@ -1453,7 +1455,14 @@ export class TransactionService {
     }
 
     if (stateData.action === "edit") {
-      await this.applyManageEdit(transaction, stateData.changes ?? {});
+      try {
+        await this.applyManageEdit(transaction, stateData.changes ?? {});
+      } catch (error) {
+        if (error instanceof ConflictException) {
+          return this.manageInvalid(error.message);
+        }
+        throw error;
+      }
       await stateStore.resetState({ userId });
       const updated = this.applyManageChangesToSnapshot(
         this.snapshotManageTransaction(transaction),
@@ -1473,7 +1482,14 @@ export class TransactionService {
       });
     }
 
-    await this.rejectManageTransaction(transactionId, userId);
+    try {
+      await this.rejectManageTransaction(transactionId, userId);
+    } catch (error) {
+      if (error instanceof ConflictException) {
+        return this.manageInvalid(error.message);
+      }
+      throw error;
+    }
     await this.updateEmailImportStatus(transaction, "rejected");
     await stateStore.resetState({ userId });
     const deleted = this.snapshotManageTransaction({
@@ -1699,6 +1715,21 @@ export class TransactionService {
     values.push(String(transaction.id), String(transaction.user_id));
 
     await this.database.withTransaction(async (client) => {
+      const locked = await this.lockTransactionForMutation(
+        client,
+        String(transaction.id),
+        String(transaction.user_id),
+      );
+      if (!locked) {
+        throw new BadRequestException(
+          "transaction changed before the edit completed",
+        );
+      }
+      await assertInstallmentMutationAllowed(
+        client,
+        String(locked.id),
+        this.manageChangedFields(locked, entries),
+      );
       const edit = await client.query<{ id: string | number }>(
         `
           UPDATE transactions
@@ -1735,16 +1766,67 @@ export class TransactionService {
     transactionId: string,
     userId: string,
   ): Promise<void> {
-    await this.database.query(
+    await this.database.withTransaction(async (client) => {
+      const locked = await this.lockTransactionForMutation(
+        client,
+        transactionId,
+        userId,
+      );
+      if (!locked) return;
+      await assertInstallmentMutationAllowed(client, String(locked.id), [
+        "delete",
+      ]);
+      await client.query(
+        `
+          UPDATE transactions
+          SET status = 'rejected',
+              updated_at = now()
+          WHERE id::text = $1
+            AND user_id::text = $2
+        `,
+        [transactionId, userId],
+      );
+    });
+  }
+
+  private async lockTransactionForMutation(
+    client: Pick<PoolClient, "query">,
+    transactionId: string,
+    userId: string,
+  ): Promise<TransactionRow | undefined> {
+    const result = await client.query<TransactionRow>(
       `
-        UPDATE transactions
-        SET status = 'rejected',
-            updated_at = now()
+        SELECT id, user_id, transaction_type, amount, merchant,
+               merchant_normalized, category, transaction_date, notes,
+               status, source, raw_payload
+        FROM transactions
         WHERE id::text = $1
           AND user_id::text = $2
+        FOR UPDATE
       `,
       [transactionId, userId],
     );
+    return result.rows[0];
+  }
+
+  private manageChangedFields(
+    transaction: TransactionRow,
+    entries: Array<[string, unknown]>,
+  ): string[] {
+    return entries.flatMap(([field, value]) => {
+      if (field === "amount") {
+        return Number(transaction.amount) === Number(value) ? [] : [field];
+      }
+      if (field === "transaction_date") {
+        return new Date(String(transaction.transaction_date)).getTime() ===
+          new Date(String(value)).getTime()
+          ? []
+          : [field];
+      }
+      return transaction[field as keyof TransactionRow] === value
+        ? []
+        : [field];
+    });
   }
 
   private async readManageState(
