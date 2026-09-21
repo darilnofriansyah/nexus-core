@@ -5,6 +5,7 @@ import { test } from "node:test";
 import { join } from "node:path";
 import {
   BadRequestException,
+  ConflictException,
   NotFoundException,
   ServiceUnavailableException,
 } from "@nestjs/common";
@@ -8618,6 +8619,32 @@ test("catid callback updates confirmed expense category without changing status"
   assert.doesNotMatch(update?.text ?? "", /status = 'confirmed'/);
   assert.doesNotMatch(update?.text ?? "", /status = 'pending'/);
   assert.deepEqual(watchdogCalls, ["101"]);
+});
+
+test("catid callback rejects a linked-interest category edit", async () => {
+  const dependencies = createCategoryServiceWithCategories([
+    { id: "10", name: "Food" },
+  ]);
+  const { service } = createService(
+    [[{ ...transaction, status: "confirmed", transaction_type: "expense" }]],
+    dependencies.budgetService,
+    undefined,
+    undefined,
+    "1",
+    undefined,
+    dependencies.categoryService,
+    { is_purchase: false, is_interest: true },
+  );
+
+  await assert.rejects(
+    () =>
+      service.setPendingTransactionCategory({
+        transactionId: "101",
+        categoryId: "10",
+        userId: "1",
+      }),
+    ConflictException,
+  );
 });
 
 for (const [status, text] of [

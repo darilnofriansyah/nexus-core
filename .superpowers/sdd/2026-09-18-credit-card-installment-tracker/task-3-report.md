@@ -31,3 +31,8 @@ Before the production guard existed, the new web planned-purchase amount test co
 
 - No migration, deployment, n8n action, or generated-interest posting path was changed.
 - The no-op path skips the link query because `changedFields` is empty; this is intentional and preserves optimistic-update behavior without treating only `updated_at` as an edit.
+
+## Review fix 1
+
+- Added a disposable-PostgreSQL concurrent `InstallmentsService.create` / `WebTransactionsRepository.updateTransaction` regression. It uses each repository's real transaction client and asserts exactly one operation wins; if a plan exists, its `principal` equals the locked purchase amount. The test is skipped without `INSTALLMENTS_TEST_DATABASE_URL`.
+- Confirmed `catid` reaches `setTransactionCategory` and updates confirmed expenses, so it can reach linked generated interest. The confirmed-category write now locks, checks the shared guard, and rejects a linked-interest category change; a focused regression covers that route.

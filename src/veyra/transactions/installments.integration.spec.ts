@@ -7,6 +7,7 @@ import { Pool, PoolClient, QueryResultRow } from 'pg';
 import { DatabaseService } from '../../database/database.service';
 import { InstallmentsRepository } from './installments.repository';
 import { InstallmentsService } from './installments.service';
+import { WebTransactionsRepository } from './web-transactions.repository';
 
 const testUrl = process.env.INSTALLMENTS_TEST_DATABASE_URL;
 const skipReason = dedicatedTestUrl(testUrl)
@@ -154,8 +155,43 @@ test('installments integration: a schedule insert failure rolls back its plan', 
   });
 });
 
+test('installments integration: concurrent material edit cannot leave a plan with an obsolete principal', { skip: skipReason }, async () => {
+  await withFixture(async ({ database, pool, service, transactionId }) => {
+    const repository = new WebTransactionsRepository(database);
+    const edit = repository.updateTransaction({
+      userId: '1',
+      transactionId,
+      expectedUpdatedAt: request.expectedUpdatedAt,
+      changes: { amount: 6_500_000 },
+    });
+    const create = service.create(transactionId, request);
+
+    const outcomes = await Promise.allSettled([edit, create]);
+    assert.equal(
+      outcomes.filter((outcome) => outcome.status === 'fulfilled').length,
+      1,
+    );
+
+    const result = await pool.query<{ amount: string; principal: string | null }>(
+      `
+        SELECT transaction.amount::text AS amount, plan.principal::text AS principal
+        FROM transactions AS transaction
+        LEFT JOIN credit_card_installment_plans AS plan
+          ON plan.transaction_id = transaction.id
+        WHERE transaction.id = $1::bigint
+      `,
+      [transactionId],
+    );
+    const row = result.rows[0];
+
+    assert.ok(row);
+    assert.ok(row.principal === null || row.principal === row.amount);
+  });
+});
+
 async function withFixture(
   run: (fixture: {
+    database: DatabaseService;
     pool: Pool;
     service: InstallmentsService;
     transactionId: string;
@@ -168,7 +204,7 @@ async function withFixture(
     fixture = await createFixture(pool);
     const database = databaseFor(pool);
     const service = new InstallmentsService(new InstallmentsRepository(database));
-    await run({ pool, service, transactionId: await insertOriginal(pool) });
+    await run({ database, pool, service, transactionId: await insertOriginal(pool) });
   } finally {
     if (fixture) await cleanupFixture(pool, fixture);
     await pool.end();

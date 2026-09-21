@@ -7886,16 +7886,31 @@ export class TransactionService {
     }
 
     if (this.cleanString(transaction.status)?.toLowerCase() === "confirmed") {
-      await this.database.query(
-        `
-          UPDATE transactions
-          SET category = $1,
-              updated_at = now()
-          WHERE id::text = $2
-            AND user_id::text = $3
-        `,
-        [category.name, String(transaction.id), String(transaction.user_id)],
-      );
+      await this.database.withTransaction(async (client) => {
+        const locked = await this.lockTransactionForMutation(
+          client,
+          String(transaction.id),
+          String(transaction.user_id),
+        );
+        if (!locked) {
+          throw new BadRequestException("transaction changed before the category update");
+        }
+        await assertInstallmentMutationAllowed(
+          client,
+          String(locked.id),
+          locked.category === category.name ? [] : ["category"],
+        );
+        await client.query(
+          `
+            UPDATE transactions
+            SET category = $1,
+                updated_at = now()
+            WHERE id::text = $2
+              AND user_id::text = $3
+          `,
+          [category.name, String(locked.id), String(locked.user_id)],
+        );
+      });
       const confirmedTransaction = { ...transaction, category: category.name };
       const watchdog = await this.evaluateTransactionWatchdog(
         String(transaction.id),
