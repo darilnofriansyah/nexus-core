@@ -523,6 +523,36 @@ interpret it. Both directions always return rows in UI-descending order.
 }
 ```
 
+### Installment preview and create
+
+For an eligible confirmed credit-card email expense, the Veyra server may
+preview and then create one immutable installment plan. The browser never
+sends `telegramUserId` directly to Core; the trusted server supplies it and
+the existing `x-core-api-key` header protects both routes.
+
+```http
+POST /api/veyra/transactions/123456/installments/preview
+Content-Type: application/json
+x-core-api-key: <CORE_API_KEY>
+```
+
+```json
+{
+  "telegramUserId": "123456789",
+  "expectedUpdatedAt": "2026-09-18T04:00:00.000000Z",
+  "tenorMonths": 6,
+  "monthlyRatePercent": "1",
+  "firstDueDate": "2026-10-18"
+}
+```
+
+Use the same body with `POST /api/veyra/transactions/123456/installments`
+after displaying the server-calculated preview. The example ID is illustrative,
+not production data. Preview is read-only; create is idempotent for identical
+canonical terms and rejects conflicting terms or a stale `expectedUpdatedAt`.
+The original purchase remains the only principal spending row; scheduled
+interest is informational until the separate due-interest operation posts it.
+
 ### `POST /api/veyra/transactions/timeline/query`
 
 Returns the active user's combined transaction and installment timeline (`200`),
