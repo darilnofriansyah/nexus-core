@@ -68,12 +68,27 @@ export class TransactionTimelineService {
     const user = await this.users.findActiveUserByTelegramId(telegramUserId);
     if (!user) throw new NotFoundException("Telegram user not found");
     addTransactionCycleBounds(filter, user.cycleStartDay);
-    const categoryFilter = { ...filter };
-    delete categoryFilter.category;
-    delete categoryFilter.cursor;
-    delete categoryFilter.direction;
-    delete categoryFilter.limit;
-    const { cursor, direction, limit } = filter;
+    const {
+      cursor,
+      direction,
+      limit,
+      type,
+      merchantQuery,
+      cycle,
+      asOfDate,
+      startDate,
+      endDate,
+      timezone,
+    } = filter;
+    const categoryFilter = {
+      type,
+      merchantQuery,
+      cycle,
+      asOfDate,
+      startDate,
+      endDate,
+      timezone,
+    };
     const [rows, categories] = await Promise.all([
       this.repository.findEntries(user.id, filter),
       this.repository.findCategories(user.id, categoryFilter),
