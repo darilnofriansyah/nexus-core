@@ -41,6 +41,8 @@ class RepositoryFake {
   original: ReturnType<typeof original> | null = original();
   createResult: unknown = null;
   createCalls: unknown[] = [];
+  postDueInterestCalls: Date[] = [];
+  dueInterestResult = { postedCount: 0, hasMore: false };
   userLookups = 0;
   originalLookups = 0;
 
@@ -57,6 +59,11 @@ class RepositoryFake {
   async create(input: unknown) {
     this.createCalls.push(input);
     return this.createResult;
+  }
+
+  async postDueInterest(now: Date) {
+    this.postDueInterestCalls.push(now);
+    return this.dueInterestResult;
   }
 }
 
@@ -187,4 +194,17 @@ test('installments preview returns canonical server-calculated terms', async () 
       { sequence: 6, dueDate: '2027-03-18', principal: 1_000_000, interest: 60_000, total: 1_060_000 },
     ],
   });
+});
+
+test('installments posts due interest using its internal clock', async () => {
+  const { repository } = createService();
+  const service = new (class extends InstallmentsService {
+    protected currentTime(): Date {
+      return new Date('2026-10-18T00:00:00.000Z');
+    }
+  })(repository as unknown as InstallmentsRepository);
+  repository.dueInterestResult = { postedCount: 1, hasMore: true };
+
+  assert.deepEqual(await service.postDueInterest(), { postedCount: 1, hasMore: true });
+  assert.deepEqual(repository.postDueInterestCalls, [new Date('2026-10-18T00:00:00.000Z')]);
 });

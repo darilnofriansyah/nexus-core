@@ -62,3 +62,14 @@ test('installment controller delegates preview and create with the route transac
     ['create', '123', request],
   ]);
 });
+
+test('installment controller posts due interest without accepting a caller date or user', async () => {
+  const service = {
+    postDueInterest: async () => ({ postedCount: 1, hasMore: false }),
+  };
+  const controller = new InstallmentsController(
+    service as unknown as InstallmentsService,
+  );
+
+  assert.deepEqual(await controller.postDueInterest(), { postedCount: 1, hasMore: false });
+});

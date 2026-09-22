@@ -15,7 +15,11 @@ import {
   InstallmentSchedule,
   InstallmentTerms,
 } from './dto/installments.dto';
-import { InstallmentOriginal, InstallmentsRepository } from './installments.repository';
+import {
+  DueInterestResult,
+  InstallmentOriginal,
+  InstallmentsRepository,
+} from './installments.repository';
 import {
   isPositivePostgresBigint,
   isValidMicrosecondUtcTimestamp,
@@ -39,6 +43,10 @@ interface PreparedRequest {
 @Injectable()
 export class InstallmentsService {
   constructor(private readonly repository: InstallmentsRepository) {}
+
+  async postDueInterest(): Promise<DueInterestResult> {
+    return this.repository.postDueInterest(this.currentTime());
+  }
 
   async preview(
     transactionId: string,
@@ -109,6 +117,10 @@ export class InstallmentsService {
     }
     canonicalizeInstallmentTerms(request);
     return { transactionId: id, telegramUserId, expectedUpdatedAt: request.expectedUpdatedAt, terms: request };
+  }
+
+  protected currentTime(): Date {
+    return new Date();
   }
 
   private buildPreview(

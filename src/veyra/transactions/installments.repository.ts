@@ -46,6 +46,11 @@ export type CreateInstallmentResult =
   | { kind: 'invalid' }
   | { kind: 'conflict' };
 
+export interface DueInterestResult {
+  postedCount: number;
+  hasMore: boolean;
+}
+
 interface ActiveUserRow extends QueryResultRow {
   id: string | number;
   timezone: string;
@@ -94,6 +99,23 @@ interface StoredPlanRow extends QueryResultRow {
   original_updated_at: string;
   total_interest: string | number;
   items: unknown;
+}
+
+interface DueInterestRow extends QueryResultRow {
+  installment_id: string | number;
+  interest: string | number;
+  due_date: string;
+  sequence: string | number;
+  tenor_months: string | number;
+  timezone: string;
+  merchant: string;
+  category: string;
+  pocket_id: string | number | null;
+  user_id: string | number;
+}
+
+interface DueInterestMoreRow extends QueryResultRow {
+  has_more: boolean;
 }
 
 type QueryClient = {
@@ -209,6 +231,93 @@ export class InstallmentsRepository {
       return {
         kind: 'created',
         plan: this.createdPlan(planId, original, input, rows.rows),
+      };
+    });
+  }
+
+  async postDueInterest(now: Date): Promise<DueInterestResult> {
+    return this.database.withTransaction(async (client) => {
+      const due = await client.query<DueInterestRow>(
+        `
+          SELECT
+            installment.id AS installment_id,
+            installment.interest,
+            installment.due_date::text,
+            installment.sequence,
+            plan.tenor_months,
+            plan.timezone,
+            plan.merchant,
+            plan.category,
+            plan.pocket_id,
+            original.user_id
+          FROM credit_card_installments installment
+          JOIN credit_card_installment_plans plan ON plan.id = installment.plan_id
+          JOIN transactions original ON original.id = plan.transaction_id
+          WHERE installment.interest > 0
+            AND installment.interest_transaction_id IS NULL
+            AND installment.due_date <= ($1::timestamptz AT TIME ZONE plan.timezone)::date
+          ORDER BY installment.due_date, installment.id
+          LIMIT 100
+          FOR UPDATE OF installment SKIP LOCKED
+        `,
+        [now.toISOString()],
+      );
+
+      for (const row of due.rows) {
+        const linked = await client.query(
+          `
+            WITH interest_transaction AS (
+              INSERT INTO transactions (
+                user_id, transaction_type, amount, merchant, category,
+                transaction_date, source, notes, status, pocket_id
+              )
+              VALUES (
+                $2::bigint, 'expense', $3::bigint, $4, $5,
+                $8::date::timestamp AT TIME ZONE $9,
+                'manual', $7, 'confirmed', $6::bigint
+              )
+              RETURNING id
+            )
+            UPDATE credit_card_installments installment
+            SET interest_transaction_id = interest_transaction.id
+            FROM interest_transaction
+            WHERE installment.id = $1::bigint
+              AND installment.interest_transaction_id IS NULL
+            RETURNING installment.id
+          `,
+          [
+            row.installment_id,
+            row.user_id,
+            row.interest,
+            row.merchant,
+            row.category,
+            row.pocket_id,
+            `Installment interest ${row.sequence}/${row.tenor_months}`,
+            row.due_date,
+            row.timezone,
+          ],
+        );
+        if (linked.rows.length !== 1) {
+          throw new Error('Installment interest could not be linked');
+        }
+      }
+
+      const remaining = await client.query<DueInterestMoreRow>(
+        `
+          SELECT EXISTS (
+            SELECT 1
+            FROM credit_card_installments installment
+            JOIN credit_card_installment_plans plan ON plan.id = installment.plan_id
+            WHERE installment.interest > 0
+              AND installment.interest_transaction_id IS NULL
+              AND installment.due_date <= ($1::timestamptz AT TIME ZONE plan.timezone)::date
+          ) AS has_more
+        `,
+        [now.toISOString()],
+      );
+      return {
+        postedCount: due.rows.length,
+        hasMore: remaining.rows[0]?.has_more ?? false,
       };
     });
   }

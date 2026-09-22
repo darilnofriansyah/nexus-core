@@ -141,3 +141,30 @@ test('installments repository returns a matching locked plan before building a n
   assert.equal(result.kind, 'existing');
   assert.equal(scheduleBuilt, false);
 });
+
+test('installments repository posts a locked batch of due schedule interest only once', async () => {
+  const { calls, repository } = createRepository([
+    [{
+      installment_id: '8', interest: '60000', due_date: '2026-10-18', sequence: 1,
+      tenor_months: 6, timezone: 'Asia/Jakarta', merchant: 'Electronics',
+      category: 'Shopping', pocket_id: '9', user_id: '1',
+    }],
+    [{ id: '19' }],
+    [{ has_more: false }],
+  ]);
+
+  const result = await repository.postDueInterest(new Date('2026-10-18T00:00:00.000Z'));
+
+  assert.deepEqual(result, { postedCount: 1, hasMore: false });
+  assert.match(calls[0]?.text ?? '', /FOR UPDATE OF installment SKIP LOCKED/);
+  assert.match(calls[0]?.text ?? '', /ORDER BY installment\.due_date, installment\.id/);
+  assert.match(calls[0]?.text ?? '', /LIMIT 100/);
+  assert.match(calls[0]?.text ?? '', /installment\.interest > 0/);
+  assert.match(calls[0]?.text ?? '', /interest_transaction_id IS NULL/);
+  assert.match(calls[1]?.text ?? '', /INSERT INTO transactions/);
+  assert.deepEqual(calls[1]?.values?.slice(1, 8), [
+    '1', '60000', 'Electronics', 'Shopping', '9', 'Installment interest 1/6', '2026-10-18',
+  ]);
+  assert.match(calls[1]?.text ?? '', /UPDATE credit_card_installments/);
+  assert.match(calls[2]?.text ?? '', /interest_transaction_id IS NULL/);
+});

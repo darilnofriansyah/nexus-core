@@ -6,11 +6,11 @@ import {
 } from './dto/installments.dto';
 import { InstallmentsService } from './installments.service';
 
-@Controller('veyra/transactions')
+@Controller('veyra')
 export class InstallmentsController {
   constructor(private readonly service: InstallmentsService) {}
 
-  @Post(':id/installments/preview')
+  @Post('transactions/:id/installments/preview')
   @HttpCode(HttpStatus.OK)
   preview(
     @Param('id') transactionId: string,
@@ -19,12 +19,18 @@ export class InstallmentsController {
     return this.service.preview(transactionId, request);
   }
 
-  @Post(':id/installments')
+  @Post('transactions/:id/installments')
   @HttpCode(HttpStatus.OK)
   create(
     @Param('id') transactionId: string,
     @Body() request: InstallmentRequest,
   ): Promise<InstallmentPlan> {
     return this.service.create(transactionId, request);
+  }
+
+  @Post('installments/post-due-interest')
+  @HttpCode(HttpStatus.OK)
+  postDueInterest(): Promise<{ postedCount: number; hasMore: boolean }> {
+    return this.service.postDueInterest();
   }
 }

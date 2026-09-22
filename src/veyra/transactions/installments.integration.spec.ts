@@ -5,6 +5,8 @@ import { test } from 'node:test';
 import { ConflictException } from '@nestjs/common';
 import { Pool, PoolClient, QueryResultRow } from 'pg';
 import { DatabaseService } from '../../database/database.service';
+import { BudgetRepository } from '../budgets/budget.repository';
+import { DashboardOverviewRepository } from '../dashboard/dashboard-overview.repository';
 import { InstallmentsRepository } from './installments.repository';
 import { InstallmentsService } from './installments.service';
 import { WebTransactionsRepository } from './web-transactions.repository';
@@ -214,6 +216,148 @@ test('installments integration: concurrent material edit cannot leave a plan wit
   });
 });
 
+class ClockedInstallmentsService extends InstallmentsService {
+  constructor(
+    repository: InstallmentsRepository,
+    private readonly clock: Date,
+  ) {
+    super(repository);
+  }
+
+  protected currentTime(): Date {
+    return this.clock;
+  }
+}
+
+function dueService(database: DatabaseService, clock: string): InstallmentsService {
+  return new ClockedInstallmentsService(
+    new InstallmentsRepository(database),
+    new Date(clock),
+  );
+}
+
+test('installments integration: due posting is idempotent, skips zero and future rows, and keeps inactive obligations accruing', { skip: skipReason }, async () => {
+  await withFixture(async ({ database, pool, service, transactionId }) => {
+    await service.create(transactionId, {
+      ...request,
+      tenorMonths: 6,
+      firstDueDate: '2026-10-18',
+    });
+    const october = dueService(database, '2026-10-18T00:00:00.000Z');
+    const november = dueService(database, '2026-11-18T00:00:00.000Z');
+
+    assert.deepEqual(await october.postDueInterest(), { postedCount: 1, hasMore: false });
+    assert.deepEqual(await october.postDueInterest(), { postedCount: 0, hasMore: false });
+
+    const zeroRateOriginal = await insertOriginal(pool);
+    await service.create(zeroRateOriginal, {
+      ...request,
+      tenorMonths: 1,
+      monthlyRatePercent: '0',
+      firstDueDate: '2026-10-18',
+    });
+    assert.deepEqual(await october.postDueInterest(), { postedCount: 0, hasMore: false });
+    assert.equal(await generatedInterestCount(pool), 1);
+
+    await pool.query('UPDATE telegram_users SET is_active = false WHERE id = 1');
+    assert.deepEqual(await november.postDueInterest(), { postedCount: 1, hasMore: false });
+    assert.deepEqual(await generatedInterestAmounts(pool), ['60000', '60000']);
+    assert.equal(await unpostedInterestCount(pool), 4);
+  });
+});
+
+test('installments integration: a batch catches up at most 100 due rows and reports remaining work', { skip: skipReason }, async () => {
+  await withFixture(async ({ database, pool, service, transactionId }) => {
+    await service.create(transactionId, {
+      ...request,
+      tenorMonths: 120,
+      firstDueDate: '2026-09-18',
+    });
+    const due = dueService(database, '2036-09-18T00:00:00.000Z');
+
+    assert.deepEqual(await due.postDueInterest(), { postedCount: 100, hasMore: true });
+    assert.deepEqual(await due.postDueInterest(), { postedCount: 20, hasMore: false });
+    assert.equal(await generatedInterestCount(pool), 120);
+  });
+});
+
+test('installments integration: concurrent due posters create each interest transaction once', { skip: skipReason }, async () => {
+  await withFixture(async ({ database, pool, service, transactionId }) => {
+    await service.create(transactionId, {
+      ...request,
+      tenorMonths: 6,
+      firstDueDate: '2026-10-18',
+    });
+    const first = dueService(database, '2027-03-18T00:00:00.000Z');
+    const second = dueService(database, '2027-03-18T00:00:00.000Z');
+
+    const results = await Promise.all([first.postDueInterest(), second.postDueInterest()]);
+    assert.equal(results[0].postedCount + results[1].postedCount, 6);
+    assert.equal(await generatedInterestCount(pool), 6);
+    assert.equal(await unpostedInterestCount(pool), 0);
+  });
+});
+
+test('installments integration: a link failure rolls back its inserted interest transaction', { skip: skipReason }, async () => {
+  await withFixture(async ({ database, pool, service, transactionId }) => {
+    await service.create(transactionId, {
+      ...request,
+      tenorMonths: 1,
+      firstDueDate: '2026-10-18',
+    });
+    await pool.query(`
+      CREATE FUNCTION public.installments_test_reject_interest_link()
+      RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        RAISE EXCEPTION 'force interest link failure';
+      END;
+      $$;
+      CREATE TRIGGER installments_test_reject_interest_link
+      BEFORE UPDATE OF interest_transaction_id ON public.credit_card_installments
+      FOR EACH ROW EXECUTE FUNCTION public.installments_test_reject_interest_link();
+    `);
+
+    try {
+      await assert.rejects(() => dueService(database, '2026-10-18T00:00:00.000Z').postDueInterest());
+    } finally {
+      await pool.query('DROP TRIGGER IF EXISTS installments_test_reject_interest_link ON public.credit_card_installments');
+      await pool.query('DROP FUNCTION IF EXISTS public.installments_test_reject_interest_link()');
+    }
+    assert.equal(await generatedInterestCount(pool), 0);
+    assert.equal(await unpostedInterestCount(pool), 1);
+  });
+});
+
+test('installments integration: stored timezone midnight posts on the schedule date and accounting counts only purchase plus interest', { skip: skipReason }, async () => {
+  await withFixture(async ({ database, pool, service, transactionId }) => {
+    await pool.query("UPDATE telegram_users SET timezone = 'Pacific/Kiritimati' WHERE id = 1");
+    await service.create(transactionId, {
+      ...request,
+      tenorMonths: 1,
+      firstDueDate: '2026-10-18',
+    });
+
+    assert.deepEqual(
+      await dueService(database, '2026-10-17T10:00:00.000Z').postDueInterest(),
+      { postedCount: 1, hasMore: false },
+    );
+    const budget = await new BudgetRepository(database).findPocketStatus({
+      userId: '1', pocketId: '9', cycleStart: '2026-09-01', cycleEnd: '2026-11-01',
+    });
+    const transactions = await new DashboardOverviewRepository(database).findTransactions(
+      '1', '2026-09-01', '2026-11-01', 'Pacific/Kiritimati',
+    );
+
+    assert.equal(budget?.spent_amount, '6060000');
+    assert.equal(transactions.reduce((total, transaction) => total + transaction.amount, 0), 6_060_000);
+    assert.deepEqual(await generatedInterestAmounts(pool), ['60000']);
+    const date = await pool.query<{ date: string }>(
+      "SELECT to_char(transaction_date AT TIME ZONE 'Pacific/Kiritimati', 'YYYY-MM-DD') AS date FROM transactions WHERE source = 'manual'",
+    );
+    assert.equal(date.rows[0]?.date, '2026-10-18');
+  });
+});
+
 async function waitForPlanInsertBlock(pool: Pool): Promise<void> {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const result = await pool.query<{ waiting: boolean }>(
@@ -370,6 +514,27 @@ async function cleanupFixture(pool: Pool, fixture: Fixture): Promise<void> {
 
 async function count(pool: Pool, table: string): Promise<number> {
   const result = await pool.query<{ count: string }>(`SELECT COUNT(*)::text AS count FROM public.${table}`);
+  return Number(result.rows[0]?.count);
+}
+
+async function generatedInterestCount(pool: Pool): Promise<number> {
+  const result = await pool.query<{ count: string }>(
+    "SELECT COUNT(*)::text AS count FROM transactions WHERE source = 'manual' AND notes LIKE 'Installment interest %'",
+  );
+  return Number(result.rows[0]?.count);
+}
+
+async function generatedInterestAmounts(pool: Pool): Promise<string[]> {
+  const result = await pool.query<{ amount: string }>(
+    "SELECT amount::text AS amount FROM transactions WHERE source = 'manual' AND notes LIKE 'Installment interest %' ORDER BY transaction_date, id",
+  );
+  return result.rows.map((row) => row.amount);
+}
+
+async function unpostedInterestCount(pool: Pool): Promise<number> {
+  const result = await pool.query<{ count: string }>(
+    'SELECT COUNT(*)::text AS count FROM credit_card_installments WHERE interest > 0 AND interest_transaction_id IS NULL',
+  );
   return Number(result.rows[0]?.count);
 }
 
