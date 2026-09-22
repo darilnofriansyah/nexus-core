@@ -180,7 +180,11 @@ test("timeline schedule distinguishes due, pending, posted and projected interes
 
 test("timeline categories use both branches and other filters without page/category restrictions", async () => {
   const f = fixture([{ category: "Shopping" }]);
-  const { cursor, direction, limit, category, ...categoryFilter } = filter;
+  const categoryFilter = { ...filter };
+  delete categoryFilter.cursor;
+  delete categoryFilter.direction;
+  delete categoryFilter.limit;
+  delete categoryFilter.category;
   assert.deepEqual(
     await f.repository.findCategories("7", {
       ...categoryFilter,
