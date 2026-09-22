@@ -14,10 +14,21 @@ import {
   WebTransactionsQueryResponseDto,
 } from './dto/web-transactions.dto';
 import { WebTransactionsService } from './web-transactions.service';
+import { TimelinePage, TimelineQueryRequest } from './dto/transaction-timeline.dto';
+import { TransactionTimelineService } from './transaction-timeline.service';
 
 @Controller('veyra/transactions')
 export class WebTransactionsController {
-  constructor(private readonly service: WebTransactionsService) {}
+  constructor(
+    private readonly service: WebTransactionsService,
+    private readonly timelineService: TransactionTimelineService,
+  ) {}
+
+  @Post('timeline/query')
+  @HttpCode(HttpStatus.OK)
+  timeline(@Body() body: TimelineQueryRequest): Promise<TimelinePage> {
+    return this.timelineService.query(body);
+  }
 
   @Post('query')
   @HttpCode(HttpStatus.OK)

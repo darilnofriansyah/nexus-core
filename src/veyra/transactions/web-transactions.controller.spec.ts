@@ -14,6 +14,7 @@ import {
 } from './dto/web-transactions.dto';
 import { WebTransactionsController } from './web-transactions.controller';
 import { WebTransactionsService } from './web-transactions.service';
+import { TransactionTimelineService } from './transaction-timeline.service';
 
 test('web transaction routes are registered under the globally API-key-guarded app', () => {
   const appImports = Reflect.getMetadata(
@@ -69,6 +70,7 @@ test('web transactions controller delegates query to the service', async () => {
   };
   const controller = new WebTransactionsController(
     service as unknown as WebTransactionsService,
+    {} as TransactionTimelineService,
   );
 
   const result = await controller.query(request);
@@ -106,6 +108,7 @@ test('web transactions controller delegates update to the real service method', 
   };
   const controller = new WebTransactionsController(
     service as unknown as WebTransactionsService,
+    {} as TransactionTimelineService,
   );
 
   const result = await controller.update('123', request);

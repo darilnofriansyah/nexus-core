@@ -24,11 +24,7 @@ import {
   toPublicWebTransactionCategories,
 } from './web-transaction-public-contract';
 import { WebTransactionsRepository } from './web-transactions.repository';
-
-interface Month {
-  year: number;
-  month: number;
-}
+import { addTransactionCycleBounds } from './transaction-cycle-filter';
 
 const QUERY_KEYS = new Set([
   'telegramUserId',
@@ -69,7 +65,7 @@ export class WebTransactionsService {
       throw new NotFoundException('Telegram user not found');
     }
 
-    this.addCycleBounds(filter, user.cycleStartDay);
+    addTransactionCycleBounds(filter, user.cycleStartDay);
     const categoryFilter = this.categoryFilter(filter);
     const [rows, categories] = await Promise.all([
       this.repository.findTransactions(user.id, filter),
@@ -241,45 +237,6 @@ export class WebTransactionsService {
       typeof cursor.transactionDate === 'string' &&
       isValidMicrosecondUtcTimestamp(cursor.transactionDate)
     );
-  }
-
-  private addCycleBounds(
-    filter: WebTransactionsFilter,
-    cycleStartDay: number,
-  ): void {
-    if (filter.cycle === null) {
-      return;
-    }
-    const [year, month] = filter.asOfDate.split('-').map(Number);
-    const thisMonth = { year, month };
-    const day = Math.min(Math.max(Math.trunc(cycleStartDay), 1), 31);
-    const currentMonth =
-      filter.asOfDate >= this.monthBoundary(thisMonth, day)
-        ? thisMonth
-        : this.shiftMonth(thisMonth, -1);
-    const startMonth =
-      filter.cycle === 'previous'
-        ? this.shiftMonth(currentMonth, -1)
-        : currentMonth;
-
-    filter.startDate = this.monthBoundary(startMonth, day);
-    filter.endDate = this.monthBoundary(this.shiftMonth(startMonth, 1), day);
-  }
-
-  private monthBoundary(month: Month, cycleStartDay: number): string {
-    const day = Math.min(
-      cycleStartDay,
-      this.daysInMonth(month.year, month.month),
-    );
-    return `${String(month.year).padStart(4, '0')}-${String(month.month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-  }
-
-  private shiftMonth(month: Month, offset: number): Month {
-    const index = month.year * 12 + month.month - 1 + offset;
-    return {
-      year: Math.floor(index / 12),
-      month: (((index % 12) + 12) % 12) + 1,
-    };
   }
 
   private rejectUnknownKeys(request: WebTransactionsQueryRequestDto): void {

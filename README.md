@@ -523,6 +523,57 @@ interpret it. Both directions always return rows in UI-descending order.
 }
 ```
 
+### `POST /api/veyra/transactions/timeline/query`
+
+Returns the active user's combined transaction and installment timeline (`200`),
+using the same API-key protection and trusted server-side identity as `/query`:
+
+```json
+{
+  "telegramUserId": "976684739",
+  "month": "2026-10",
+  "timezone": "Asia/Jakarta",
+  "type": "expense",
+  "limit": 50,
+  "direction": "next",
+  "cursor": null
+}
+```
+
+Accepts the `/query` filters plus `month: "YYYY-MM"`. Month and financial `cycle`
+cannot be combined. Without either, entries stop at the actual current local day;
+a future month exposes projected installments. `asOfDate` selects financial-cycle
+context and cannot advance due state or posting. Schedule month/cycle membership
+uses the stored plan's due-date calendar; ordinary timestamps use the requested
+timezone. Period starts are inclusive and ends exclusive.
+
+The response is `{ items, previousCursor, nextCursor, categories }`. Each item is
+either `{ kind: "transaction", entryId: "transaction:<id>", transaction,
+hasInstallmentPlan, budgetAmount }` (the unchanged public transaction nested in
+`transaction`), or `{ kind: "installment", entryId: "installment:<schedule-id>",
+planId, originalTransactionId, sequence, tenorMonths, dueDate, merchant, category,
+pocketId, principal, interest, total, budgetAmount, scheduledBudgetAmount, state,
+interestPostingPending }`.
+
+Installment `principal` and `total` are informational, never spending.
+`scheduledBudgetAmount` is projected interest; `budgetAmount` contributes only a
+due row's linked confirmed interest expense (zero while awaiting posting).
+`state` is `scheduled` or `due`, never an assertion of payment.
+`interestPostingPending` identifies positive, due, unposted interest; zero-rate
+rows never wait for posting. An original purchase stays in its purchase period
+at its full expense amount. Income contributes zero to `budgetAmount`.
+
+Rows use one descending timestamp/kind/ID order across both kinds. Both pagination
+directions preserve that display order. Return cursors unchanged; timeline and
+legacy cursors are incompatible. Clear the cursor when changing any filter.
+Category choices cover both kinds under the other active filters, across all
+pages. This endpoint folds posted interest into its installment row; legacy
+`/query` and dashboard lists continue exposing the interest transaction.
+
+Core owns timeline reads and installment state. Existing n8n triggers, scheduling,
+credentials and notification delivery remain in n8n; this endpoint does not post
+interest or change workflows.
+
 ### `PATCH /api/veyra/transactions/:id`
 
 Updates only `amount`, `merchant`, `category`, and `pocketId` on one finalized income or

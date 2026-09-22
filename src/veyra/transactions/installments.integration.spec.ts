@@ -10,6 +10,9 @@ import { DashboardOverviewRepository } from '../dashboard/dashboard-overview.rep
 import { InstallmentsRepository } from './installments.repository';
 import { InstallmentsService } from './installments.service';
 import { WebTransactionsRepository } from './web-transactions.repository';
+import { TransactionTimelineRepository } from './transaction-timeline.repository';
+import { TransactionTimelineService } from './transaction-timeline.service';
+import { WebTransactionsService } from './web-transactions.service';
 
 const testUrl = process.env.INSTALLMENTS_TEST_DATABASE_URL;
 const skipReason = dedicatedTestUrl(testUrl)
@@ -357,6 +360,107 @@ test('installments integration: stored timezone midnight posts on the schedule d
     assert.equal(date.rows[0]?.date, '2026-10-18');
   });
 });
+
+test('timeline integration: 58 mixed entries traverse tied timestamps forward and backward without gaps', { skip: skipReason }, async () => {
+  await withFixture(async ({ database, pool, service, transactionId }) => {
+    await pool.query(`
+      INSERT INTO transactions (user_id, transaction_type, amount, merchant, category, transaction_date, source)
+      SELECT 1, 'expense', 100, 'Coffee', 'Dining',
+        '2026-10-17T17:00:00.000000Z'::timestamptz + CASE WHEN n <= 2 THEN n ELSE 0 END * interval '1 microsecond', 'manual'
+      FROM generate_series(1, 55) n
+    `);
+    for (const originalId of [transactionId, await insertOriginal(pool), await insertOriginal(pool)]) {
+      await service.create(originalId, { ...request, tenorMonths: 1 });
+    }
+    const timeline = timelineService(database);
+    const first = await timeline.query({ telegramUserId: request.telegramUserId, month: '2026-10', limit: 50 });
+    assert.equal(first.items.length, 50);
+    assert.equal(first.previousCursor, null);
+    assert.deepEqual(first.items.slice(0, 6).map(item => item.entryId), [
+      'transaction:3', 'transaction:2', 'installment:3', 'installment:2', 'installment:1', 'transaction:56',
+    ]);
+    const last = await timeline.query({ telegramUserId: request.telegramUserId, month: '2026-10', cursor: first.nextCursor });
+    assert.deepEqual(last.items.map(item => item.entryId), ['transaction:11', 'transaction:10', 'transaction:9', 'transaction:8', 'transaction:7', 'transaction:6', 'transaction:5', 'transaction:4']);
+    assert.equal(last.nextCursor, null);
+    assert.equal(new Set([...first.items, ...last.items].map(item => item.entryId)).size, 58);
+    const back = await timeline.query({ telegramUserId: request.telegramUserId, month: '2026-10', cursor: last.previousCursor, direction: 'previous' });
+    assert.deepEqual(back, first);
+    const categories = await timeline.query({ telegramUserId: request.telegramUserId, month: '2026-10', category: 'Dining', limit: 1 });
+    assert.deepEqual(categories.categories, ['Dining', 'Shopping']);
+  });
+});
+
+test('timeline integration: filters scope both kinds, preserve stored calendar dates and exclude foreign plans', { skip: skipReason }, async () => {
+  await withFixture(async ({ database, pool, service, transactionId }) => {
+    await pool.query("UPDATE telegram_users SET timezone = 'Pacific/Kiritimati', cycle_start_day = 31 WHERE id = 1");
+    await service.create(transactionId, { ...request, tenorMonths: 1, firstDueDate: '2090-10-01' });
+    await pool.query(`
+      UPDATE credit_card_installment_plans SET category = E'\\tShopping\\n';
+      INSERT INTO transactions (user_id, transaction_type, amount, merchant, merchant_normalized, category, transaction_date, source)
+      VALUES (1, 'expense', 100, 'Electronics', 'Electronics', E'\\tShopping\\n', '2090-10-01T10:00:00Z', 'manual'),
+             (1, 'income', 200, 'Employer', NULL, 'Salary', '2090-10-05T10:00:00Z', 'manual'),
+             (1, 'transfer', 300, 'Electronics', NULL, 'Hidden', '2090-10-05T10:00:00Z', 'manual');
+      INSERT INTO telegram_users (id, telegram_id) VALUES (2, 123456);
+      INSERT INTO transactions (user_id, transaction_type, amount, merchant, category, transaction_date, source, raw_payload)
+      VALUES (2, 'expense', 500, 'Foreign', 'Foreign', '2090-10-01T10:00:00Z', 'email', '{"parsed":{"paymentType":"credit card"}}');
+      INSERT INTO credit_card_installment_plans (transaction_id, principal, tenor_months, monthly_rate_units, first_due_date, timezone, merchant, category, original_updated_at)
+      SELECT id, 500, 1, 0, '2090-10-01', 'Asia/Jakarta', 'Foreign', 'Foreign', updated_at FROM transactions WHERE user_id = 2;
+      INSERT INTO credit_card_installments (plan_id, sequence, due_date, principal, interest)
+      SELECT id, 1, '2090-10-01', 500, 0 FROM credit_card_installment_plans WHERE merchant = 'Foreign';
+    `);
+    const timeline = timelineService(database);
+    const october = { telegramUserId: request.telegramUserId, month: '2090-10', timezone: 'America/Los_Angeles' };
+    const page = await timeline.query(october);
+    assert.equal(page.items.length, 3);
+    assert.deepEqual(page.categories, ['Salary', 'Shopping']);
+    const income = await timeline.query({ ...october, type: 'income' });
+    assert.equal(income.items.length, 1);
+    assert.equal(income.items[0].kind, 'transaction');
+    assert.equal(income.items[0].budgetAmount, 0);
+    assert.deepEqual(income.categories, ['Salary']);
+    const shopping = await timeline.query({ ...october, category: ' Shopping ', merchantQuery: 'electronics' });
+    assert.equal(shopping.items.length, 2);
+    assert.ok(shopping.items.some(item => item.kind === 'installment' && item.dueDate === '2090-10-01' && item.state === 'scheduled'));
+    const september = await timeline.query({ ...october, month: '2090-09' });
+    assert.equal(september.items.length, 0);
+    const cycle = await timeline.query({ telegramUserId: request.telegramUserId, cycle: 'current', asOfDate: '2090-10-01', timezone: october.timezone });
+    assert.equal(cycle.items.length, 3);
+    const unbounded = await timeline.query({ telegramUserId: request.telegramUserId, asOfDate: '2090-10-01' });
+    assert.equal(unbounded.items.some(item => item.kind === 'installment'), false);
+  });
+});
+
+test('timeline integration: folds posted interest only here, keeps original purchase and zero-rate due state', { skip: skipReason }, async () => {
+  await withFixture(async ({ database, pool, service, transactionId }) => {
+    await pool.query("UPDATE transactions SET transaction_date = '1999-12-01T00:00:00Z' WHERE id = $1", [transactionId]);
+    await service.create(transactionId, { ...request, tenorMonths: 1, firstDueDate: '2000-01-01' });
+    const zeroOriginal = await insertOriginal(pool);
+    await pool.query("UPDATE transactions SET transaction_date = '1999-12-01T00:00:00Z' WHERE id = $1", [zeroOriginal]);
+    await service.create(zeroOriginal, { ...request, tenorMonths: 1, monthlyRatePercent: '0', firstDueDate: '2000-01-01' });
+    const timeline = timelineService(database);
+    const january = { telegramUserId: request.telegramUserId, month: '2000-01', asOfDate: '1900-01-01' };
+    const pending = await timeline.query(january);
+    assert.deepEqual(pending.items.map(item => item.kind === 'installment' && [item.state, item.budgetAmount, item.scheduledBudgetAmount, item.interestPostingPending]), [
+      ['due', 0, 0, false], ['due', 0, 60000, true],
+    ]);
+    await dueService(database, '2000-01-01T00:00:00Z').postDueInterest();
+    const posted = await timeline.query(january);
+    assert.equal(posted.items.length, 2);
+    assert.equal(posted.items.reduce((sum, item) => sum + item.budgetAmount, 0), 60000);
+    const legacy = await new WebTransactionsService(new WebTransactionsRepository(database)).queryTransactions({
+      telegramUserId: request.telegramUserId, cycle: 'current', asOfDate: '2000-01-15',
+    });
+    assert.equal(legacy.items.length, 1);
+    assert.equal(legacy.items[0].amount, 60000);
+    const original = await timeline.query({ telegramUserId: request.telegramUserId, month: '1999-12' });
+    assert.equal(original.items.length, 2);
+    assert.ok(original.items.every(item => item.kind === 'transaction' && item.hasInstallmentPlan && item.budgetAmount === 6000000));
+  });
+});
+
+function timelineService(database: DatabaseService): TransactionTimelineService {
+  return new TransactionTimelineService(new TransactionTimelineRepository(database), new WebTransactionsRepository(database));
+}
 
 async function waitForPlanInsertBlock(pool: Pool): Promise<void> {
   for (let attempt = 0; attempt < 100; attempt += 1) {

@@ -14,6 +14,8 @@ import { InstallmentsRepository } from './transactions/installments.repository';
 import { InstallmentsService } from './transactions/installments.service';
 import { TransactionRiskReviewRepository } from './transactions/transaction-risk-review.repository';
 import { TransactionService } from './transactions/transaction.service';
+import { TransactionTimelineRepository } from './transactions/transaction-timeline.repository';
+import { TransactionTimelineService } from './transactions/transaction-timeline.service';
 import { WebTransactionsController } from './transactions/web-transactions.controller';
 import { WebTransactionsRepository } from './transactions/web-transactions.repository';
 import { WebTransactionsService } from './transactions/web-transactions.service';
@@ -38,6 +40,8 @@ import { VeyraController } from './veyra.controller';
     InstallmentsService,
     TransactionRiskReviewRepository,
     TransactionService,
+    TransactionTimelineRepository,
+    TransactionTimelineService,
     WebTransactionsRepository,
     WebTransactionsService,
   ],
