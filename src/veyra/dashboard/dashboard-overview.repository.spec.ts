@@ -189,6 +189,7 @@ test("findCreditCardSummaries maps only requested cycles to safe IDR integers", 
   ]);
 
   assert.match(calls[0].text, /FROM credit_card_cycle_summaries/);
+  assert.match(calls[0].text, /cycle_start::text AS cycle_start/);
   assert.match(calls[0].text, /cycle_start = ANY\(\$2::date\[\]\)/);
   assert.deepEqual(calls[0].values, ["1", ["2026-07-15", "2026-06-15"]]);
   assert.deepEqual(summaries, [

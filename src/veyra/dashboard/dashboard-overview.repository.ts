@@ -60,7 +60,7 @@ interface BudgetRow extends QueryResultRow {
 }
 
 interface CreditCardSummaryRow extends QueryResultRow {
-  cycle_start: string | Date;
+  cycle_start: string;
   credit_limit: string | number;
   credit_used: string | number;
   statement_balance: string | number;
@@ -168,7 +168,7 @@ export class DashboardOverviewRepository {
   ): Promise<DashboardCreditCardSummary[]> {
     const result = await this.database.query<CreditCardSummaryRow>(
       `
-        SELECT cycle_start, credit_limit, credit_used, statement_balance
+        SELECT cycle_start::text AS cycle_start, credit_limit, credit_used, statement_balance
         FROM credit_card_cycle_summaries
         WHERE user_id::text = $1
           AND cycle_start = ANY($2::date[])
@@ -177,10 +177,7 @@ export class DashboardOverviewRepository {
     );
 
     return result.rows.map((row) => ({
-      cycleStart:
-        row.cycle_start instanceof Date
-          ? row.cycle_start.toISOString().slice(0, 10)
-          : row.cycle_start,
+      cycleStart: row.cycle_start,
       limit: this.safeIdr(row.credit_limit),
       used: this.safeIdr(row.credit_used),
       statementBalance: this.safeIdr(row.statement_balance),
